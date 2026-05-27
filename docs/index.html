@@ -70,6 +70,7 @@
       <li><a href="#example">最短の例</a></li>
       <li><a href="#next">次のステップ</a></li>
       <li><a href="#background">背景 (paps / ProtectionAI)</a></li>
+      <li><a href="#why-evidence">なぜ証拠保全が必要か</a></li>
       <li><a href="#usage">利用について</a></li>
     </ul>
   </aside>
@@ -91,7 +92,7 @@
 
     <h2 id="what">Paprika とは</h2>
     <p>URL を渡すと、フリート上の実ブラウザがページを開き、画像・動画・HTML を収集して返します。
-    ログインが必要・JavaScript で描画される・年齢確認がある、といった「機械的な巡回が難しいサイト」でも安定して動くことを目指した基盤です。
+    ログインが必要・JavaScript で描画される、といった「機械的な巡回が難しいサイト」でも安定して動くことを目指した基盤です。
     同様のものに <a href="https://github.com/browserbase/stagehand" target="_blank" rel="noopener">Stagehand</a>、<a href="https://github.com/browser-use/browser-use" target="_blank" rel="noopener">Browser-Use</a>、<a href="https://www.browserable.ai/" target="_blank" rel="noopener">Browserable</a> があります。</p>
     <p>使い方は 3 通り。<strong>管理 UI</strong> から URL を POST / <strong>HTTP API</strong> を実行 /
     <strong>paprika-client（Python / PHP SDK）</strong>を使います。</p>
@@ -161,6 +162,44 @@ asyncio.run(main())</code></pre>
     <strong><a href="https://www.paps.jp">ProtectionAI</a></strong> を開発しています（対面・電話・メール・SNS で被害相談を受付）。</p>
     <p>その探索基盤として、複雑なサイトでも安定してページを開き画像・動画・リンクを収集できる汎用クローラーが必要になり、Paprika が生まれました。
     本リポジトリには被害者画像の検出ロジックは含まれず（それは ProtectionAI 側）、ここで公開しているのは汎用的な Web 自動化基盤です。</p>
+
+    <h2 id="why-evidence">なぜ証拠保全が必要か</h2>
+
+    <blockquote class="epigraph" style="border-left:3px solid #888; margin:1.2em 0 1.5em 0.5em; padding:0.6em 1em; font-style:italic; color:#555;">
+      加害者だけが技術を使える社会では、被害者は沈黙させられる。<br>
+      被害者側にも同じ技術を届けること &mdash; それが Paprika の出発点です。
+    </blockquote>
+
+    <div class="callout info">
+    <strong>デジタル性暴力と情報の非対称性</strong>
+    デジタル性暴力では、被害は画像そのものだけでなく、「どこにあるのか分からない」「消したくても対象 URL が分からない」「証拠を残せない」という<strong>情報支配</strong>によっても継続します。被害者側の情報アクセスと証拠保全を保障することは、被害拡大を止めるための支援そのものです。
+    </div>
+
+    <p>被害者や支援者が直面する具体的な課題と、Paprika の機能がそれにどう対応するかを以下に示します。</p>
+
+    <table>
+      <thead><tr><th>被害者・支援者が直面する課題</th><th>Paprika が提供する機能</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>画像がどのサイトにあるか分からない</strong><br>拡散先が無数にあり、手作業では追いきれない</td>
+          <td>分散ワーカーによる大規模並列巡回で、多数のサイトを網羅的に探索</td>
+        </tr>
+        <tr>
+          <td><strong>削除要請に使える証拠を残せない</strong><br>スクリーンショットを撮る前にページが消える・変わる</td>
+          <td>ページの HTML・画像・動画・取得時刻をタイムスタンプ付きで自動保存</td>
+        </tr>
+        <tr>
+          <td><strong>ログインの壁で中に入れない</strong><br>閉鎖的なサイトの証拠取得が困難</td>
+          <td>Cookie 管理・プロフィール機能で、認証が必要なサイトにも対応</td>
+        </tr>
+        <tr>
+          <td><strong>技術的知識がないと対応できない</strong><br>URL の取得やスクリーンショットにも専門知識が必要</td>
+          <td>管理画面から URL を入力するだけで収集が完了。SDK を使えばスクリプトによる自動化も可能</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>被害者が「自分の画像がどこにあるか」を知り、証拠を手元に残せる状態を作ること。それが削除要請の第一歩であり、Paprika はそのための技術基盤です。</p>
 
 
     <h2 id="usage">利用について</h2>
