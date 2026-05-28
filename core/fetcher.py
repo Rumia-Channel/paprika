@@ -1393,8 +1393,11 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                 # direct HTTP fetch so we still save the asset.
                 err_str = str(e)
                 _is_cache_miss = (
-                    "-32000" in err_str
-                    or "No resource with given identifier" in err_str
+                    (
+                        "-32000" in err_str
+                        or "No resource with given identifier" in err_str
+                    )
+                    and info["url"].startswith(("http://", "https://"))
                 )
                 if assets_dir is not None and _is_cache_miss:
                     try:
