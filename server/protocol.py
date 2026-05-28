@@ -896,7 +896,7 @@ class HubSessionAgent(BaseModel):
     request_id: str
     goal: str
     max_steps: int = 5
-    engine: Literal["auto", "qwen"] = "auto"
+    engine: Literal["auto", "qwen", "cogagent"] = "auto"
 
 
 class HubProfileSync(BaseModel):

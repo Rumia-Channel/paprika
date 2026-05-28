@@ -641,11 +641,6 @@ Rules
                                box, out-of-viewport).
       - ``"qwen"``:            Qwen-VL only (DOM outline -> CSS
                                selector). Best for clean DOMs.
-      - ``"cogagent"``:        CogAgent only (screenshot -> pixel
-                               box). Best when DOM selectors are
-                               hash-garbled or the target lives
-                               inside a <canvas> / <iframe>.
-
     JP/CN goals are auto-translated to English on the worker side
     before being shown to either engine, so you can write the goal
     in any language and it will work.
@@ -710,8 +705,7 @@ __VIDEO_SECTION_BEGIN__
 
     Correct recipe::
 
-        await page.agent("click video thumbnail N", engine="cogagent",
-                         max_steps=3)
+        await page.agent("click video thumbnail N", max_steps=3)
         await page.wait_for(seconds=3)
         await page.refresh()              # <-- REQUIRED: surface popups
         tabs = list(page)
