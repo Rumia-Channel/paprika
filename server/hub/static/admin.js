@@ -4973,19 +4973,27 @@ function ljpVncZoomDims() {
 function ljpApplyVncZoomToBox(box) {
   const f = box.querySelector('iframe');
   if (!f) return;
-  // Fill the pane width and keep a 16:9 box; noVNC (resize=scale)
-  // scales the 1280x720 framebuffer to fit, so the viewer always
-  // matches the panel width (no right-side black gap). The dropdown
-  // no longer changes this -- it drives the in-browser page zoom.
-  f.style.width = '100%';
+  // Fit the noVNC ENTIRELY inside the pane height so nothing -- incl.
+  // the remote page's bottom horizontal scrollbar -- is cut off (the
+  // previous width:100% sizing overflowed the ~720px pane vertically
+  // and hid the bottom). Size by HEIGHT with a 16:9 box, centered;
+  // noVNC (resize=scale) scales the 1280x720 framebuffer to fit. The
+  // dropdown drives the in-browser page zoom, not this display size.
+  f.style.height = '100%';
+  f.style.width = 'auto';
   f.style.aspectRatio = '16 / 9';
-  f.style.height = 'auto';
   f.style.transform = '';
   f.style.transformOrigin = '';
   const scaleBox = f.parentElement;
+  // 684 ≈ grid height (720) minus the wrap header + borders, so the
+  // full viewer (and any bottom scrollbar) stays on screen.
+  scaleBox.style.height = '684px';
   scaleBox.style.width = '100%';
-  scaleBox.style.height = '';
+  scaleBox.style.display = 'flex';
+  scaleBox.style.alignItems = 'center';
+  scaleBox.style.justifyContent = 'center';
   scaleBox.style.overflow = 'hidden';
+  scaleBox.style.background = '#000';
 }
 function ljpApplyVncZoom() {
   document.querySelectorAll('#ljpVncGrid > div').forEach(ljpApplyVncZoomToBox);
