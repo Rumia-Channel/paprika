@@ -651,15 +651,15 @@ asyncio.run(main())"
     <div class="ljp-pane" data-ljp-pane="vnc" style="display:none;">
       <div class="ljp-pane-toolbar">
         <span>live noVNC</span>
-        <label style="margin-left:auto; cursor:pointer;" title="Chrome ウィンドウサイズ。100% = 1280×720 (基準)。変更すると Chrome の OS ウィンドウが実際にリサイズされ、iframe もそのまま 1:1 で表示する (CSS 拡大縮小ではない)。">
+        <label style="margin-left:auto; cursor:pointer;" title="ページズーム。ブラウザ内のウェブページを拡大縮小します (Ctrl+/Ctrl- 相当)。ウィンドウサイズは変えず、ページ内容だけ拡大縮小 (CSS zoom)。">
           zoom:
           <select id="ljpVncZoom" style="font-size:0.95em; margin-left:4px;">
-            <option value="0.33">33%   (≈ 422×238)</option>
-            <option value="0.5">50%   (640×360)</option>
-            <option value="0.75" selected>75%   (960×540)</option>
-            <option value="1.0">100%  (1280×720)</option>
-            <option value="1.25">125%  (1600×900)</option>
-            <option value="1.5">150%  (1920×1080)</option>
+            <option value="0.5">50%</option>
+            <option value="0.75">75%</option>
+            <option value="1.0" selected>100%</option>
+            <option value="1.25">125%</option>
+            <option value="1.5">150%</option>
+            <option value="2.0">200%</option>
           </select>
         </label>
       </div>

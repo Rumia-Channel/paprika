@@ -4883,12 +4883,79 @@ async function ljpRefreshSessions() {
 // transform -- noVNC renders Chrome pixel-perfect into the iframe.
 const LJP_VNC_BASE_W = 1280;
 const LJP_VNC_BASE_H = 720;
+// Display/window factor for the noVNC pane. FIXED now (decoupled from
+// the zoom dropdown): the dropdown drives the in-browser PAGE zoom
+// (ljpPageZoom) instead of the Chrome window size. 0.75 keeps the pane
+// at the size operators are used to (960x540). The "↔ fit" button and
+// per-mount window resize still use this so Chrome renders 1:1.
 function ljpVncZoom() {
-  try {
-    const v = parseFloat(localStorage.getItem('paprika.ljp.vncZoom') || '0.75');
-    if (v > 0.1 && v <= 3) return v;
-  } catch (_) {}
   return 0.75;
+}
+// In-browser PAGE zoom (the dropdown's new job, 案A). Persisted under a
+// dedicated key so it can't be confused with the old window-size value.
+function ljpPageZoom() {
+  try {
+    const v = parseFloat(localStorage.getItem('paprika.ljp.pageZoom') || '1.0');
+    if (v > 0.1 && v <= 5) return v;
+  } catch (_) {}
+  return 1.0;
+}
+// Real session_id for a vncIframes key (skip the synthetic '__job__'
+// placeholder, which we can't address by session_id).
+function ljpSessionKey(key) {
+  return (key && key !== '__job__') ? key : null;
+}
+// Apply the current page zoom to ONE session's in-browser page via the
+// session evaluate primitive. CSS `zoom` on the document root scales
+// the whole page -- including the cross-origin iframe player box --
+// without touching the OS window size (= real browser zoom). Uses
+// /evaluate (NOT /operator_action) so a viewing-only zoom never
+// pollutes the learned operator recipe trace.
+async function ljpApplyPageZoomToSession(sessionId) {
+  const sid = ljpSessionKey(sessionId);
+  if (!sid) return;
+  const z = ljpPageZoom();
+  try {
+    await fetch('/sessions/' + encodeURIComponent(sid) + '/evaluate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        expression: "document.documentElement.style.zoom=" + JSON.stringify(String(z)),
+      }),
+    });
+  } catch (_) { /* best-effort */ }
+}
+async function ljpApplyPageZoomAll() {
+  if (!LJP || !LJP.vncIframes) return;
+  await Promise.all([...LJP.vncIframes.keys()].map(ljpApplyPageZoomToSession));
+}
+// Forward an operator control action to the recording endpoint so the
+// step lands in operator_actions.json (learn-from-operator). `action`
+// is a {kind, ...} dict; `label` is the human tag stored in the trace.
+async function ljpOpAction(sessionKey, action, label, opts) {
+  const sid = ljpSessionKey(sessionKey);
+  if (!sid) { alert('この pane はセッションIDが不明なため操作できません'); return null; }
+  opts = opts || {};
+  try {
+    const r = await fetch('/sessions/' + encodeURIComponent(sid) + '/operator_action', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        action,
+        label: label || action.kind,
+        screenshot: opts.screenshot !== false,  // default: capture before-shot
+      }),
+    });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert('操作失敗 (' + r.status + '): ' + (out.detail || r.statusText));
+      return null;
+    }
+    return out;
+  } catch (e) {
+    alert('操作失敗: ' + e);
+    return null;
+  }
 }
 function ljpVncZoomDims() {
   const z = ljpVncZoom();
@@ -5001,7 +5068,20 @@ function ljpMountVncFrame(key, s) {
   // The "↻ reload" button is a manual escape hatch: if the iframe got
   // stuck (connection dropped, noVNC server flaked, whatever), the
   // user can re-trigger the load without closing/reopening the panel.
+  // Operator control buttons (learn-from-operator Phase 1). Shown only
+  // for real sessions (not the synthetic '__job__' fetch placeholder).
+  // Each press is forwarded to /operator_action which executes it AND
+  // records it to the per-job trace for later recipe distillation.
+  const _opSid = ljpSessionKey(key);
+  const _opBtnCss = 'background:#2a3550; color:#cfe; border:1px solid #557; border-radius:3px; padding:1px 6px; cursor:pointer; font-size:10px;';
+  const opBtns = _opSid ? (
+    `<button class="ljp-op-back" style="${_opBtnCss}" title="戻る (記録)">◀ 戻る</button>` +
+    `<button class="ljp-op-fwd" style="${_opBtnCss}" title="進む (記録)">▶ 進む</button>` +
+    `<button class="ljp-op-popups" style="${_opBtnCss}" title="広告などのポップアップ・別タブを閉じる (記録)">✕ popup</button>` +
+    `<button class="ljp-op-url" style="${_opBtnCss}" title="URL を入力して移動 (記録)">URL</button>`
+  ) : '';
   head.innerHTML = `<code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:transparent; color:#eee; padding:0;">${esc(s.label)}</code>` +
+                   opBtns +
                    `<button class="ljp-vnc-fit" style="background:#333; color:#eee; border:1px solid #555; border-radius:3px; padding:1px 6px; cursor:pointer; font-size:10px;" title="Chrome のウィンドウサイズを現在の zoom 設定に再同期する">↔ fit</button>` +
                    `<button class="ljp-vnc-reload" style="background:#333; color:#eee; border:1px solid #555; border-radius:3px; padding:1px 6px; cursor:pointer; font-size:10px;" title="reload this iframe">↻</button>` +
                    `<a href="${esc(src)}" target="_blank" style="color:#9cf; text-decoration:none;">↗ open</a>`;
@@ -5032,6 +5112,43 @@ function ljpMountVncFrame(key, s) {
       // before reattaching to the same URL.
       setTimeout(() => { frame.src = cur; }, 50);
     });
+  }
+  // Wire operator control buttons (recorded via /operator_action).
+  if (_opSid) {
+    const _flash = (btn, ok) => {
+      const t = btn.textContent;
+      btn.textContent = ok ? '✓' : '✕';
+      setTimeout(() => { btn.textContent = t; }, 1200);
+    };
+    const backBtn = head.querySelector('.ljp-op-back');
+    if (backBtn) backBtn.addEventListener('click', async () => {
+      backBtn.disabled = true;
+      const r = await ljpOpAction(_opSid, {kind: 'back'}, '戻る');
+      backBtn.disabled = false; _flash(backBtn, !!r);
+    });
+    const fwdBtn = head.querySelector('.ljp-op-fwd');
+    if (fwdBtn) fwdBtn.addEventListener('click', async () => {
+      fwdBtn.disabled = true;
+      const r = await ljpOpAction(_opSid, {kind: 'forward'}, '進む');
+      fwdBtn.disabled = false; _flash(fwdBtn, !!r);
+    });
+    const popupsBtn = head.querySelector('.ljp-op-popups');
+    if (popupsBtn) popupsBtn.addEventListener('click', async () => {
+      popupsBtn.disabled = true;
+      const r = await ljpOpAction(_opSid, {kind: 'close_popups'}, 'ポップアップ閉じる');
+      popupsBtn.disabled = false; _flash(popupsBtn, !!r);
+    });
+    const urlBtn = head.querySelector('.ljp-op-url');
+    if (urlBtn) urlBtn.addEventListener('click', async () => {
+      const url = prompt('移動先 URL を入力:');
+      if (!url) return;
+      urlBtn.disabled = true;
+      const r = await ljpOpAction(_opSid, {kind: 'navigate', url: url}, 'URL移動: ' + url);
+      urlBtn.disabled = false; _flash(urlBtn, !!r);
+    });
+    // Apply the current page zoom to this freshly-mounted session
+    // (best-effort; runs after noVNC has had a moment to connect).
+    setTimeout(() => { ljpApplyPageZoomToSession(_opSid); }, 1500);
   }
   // Wire the "↔ fit" button -- POST /sessions/{sid}/resize with the
   // iframe's logical width/height. Only meaningful when `key` is a
@@ -6334,22 +6451,18 @@ document.getElementById('ljpCodeRerun').addEventListener('click', async () => {
 (function () {
   const sel = document.getElementById('ljpVncZoom');
   if (!sel) return;
+  // The dropdown now controls the IN-BROWSER PAGE zoom (案A), not the
+  // noVNC window size. Restore the saved page-zoom and apply it on
+  // change to every mounted session via the page-zoom (CSS zoom) path.
   try {
-    const saved = localStorage.getItem('paprika.ljp.vncZoom');
+    const saved = localStorage.getItem('paprika.ljp.pageZoom');
     if (saved && [...sel.options].some(o => o.value === saved)) {
       sel.value = saved;
     }
   } catch (_) {}
   sel.addEventListener('change', () => {
-    try { localStorage.setItem('paprika.ljp.vncZoom', sel.value); } catch (_) {}
-    // Two-part sync: (a) resize the iframes locally so the layout
-    // updates instantly, (b) tell each session's Chrome to resize
-    // its OS window to the new dims so the RFB stream renders 1:1.
-    // The Chrome resize is async; the iframe / layout change is
-    // immediate so the operator sees the new size right away even
-    // before the worker has updated Chrome.
-    ljpApplyVncZoom();
-    ljpResizeAllVncChrome();
+    try { localStorage.setItem('paprika.ljp.pageZoom', sel.value); } catch (_) {}
+    ljpApplyPageZoomAll();
   });
 })();
 

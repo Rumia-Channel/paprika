@@ -1706,6 +1706,35 @@ def _load_operator_trace(info: SessionInfo) -> list:
         return []
 
 
+async def _close_session_popups(session_id: str) -> dict:
+    """Close every non-default tab in the session (ad popups / new
+    windows spawned by clicks). Composite of the worker ``pages`` +
+    ``close_page`` actions so the operator gets a single 'close popups'
+    control. Returns {status, result:{closed:[...], count}}."""
+    listing = await _send_session_action(
+        session_id, {"kind": "pages"}, timeout=20.0,
+    )
+    res = listing.get("result") or {}
+    pages = res.get("pages") or []
+    closed: list = []
+    for p in pages:
+        if not isinstance(p, dict) or p.get("is_default"):
+            continue
+        pid = p.get("page_id")
+        if not pid:
+            continue
+        try:
+            r = await _send_session_action(
+                session_id, {"kind": "close_page", "page_id": pid}, timeout=20.0,
+            )
+            if not str(r.get("status") or "").startswith("ERR:"):
+                closed.append(pid)
+        except Exception:
+            pass
+    return {"status": "OK", "elapsed_ms": 0,
+            "result": {"closed": closed, "count": len(closed)}}
+
+
 def _append_operator_trace(info: SessionInfo, entry: dict) -> int:
     p = _operator_trace_path(info)
     if not p:
@@ -1777,12 +1806,17 @@ async def session_operator_action(session_id: str, body: dict) -> dict:
         except Exception:
             shot_ref = None
 
-    # 2) Execute the control action.
-    out = await _send_session_action(
-        session_id,
-        _route_to_page(dict(action), body),
-        timeout=float(body.get("timeout") or 30.0),
-    )
+    # 2) Execute the control action. ``close_popups`` is a hub-side
+    #    composite (no single worker kind); everything else forwards to
+    #    the existing per-kind worker dispatch.
+    if action.get("kind") == "close_popups":
+        out = await _close_session_popups(session_id)
+    else:
+        out = await _send_session_action(
+            session_id,
+            _route_to_page(dict(action), body),
+            timeout=float(body.get("timeout") or 30.0),
+        )
 
     # 3) Record the step (unless explicitly disabled).
     if do_record:
