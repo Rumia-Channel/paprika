@@ -81,7 +81,7 @@ if [ -z "${SKIP_HUB:-}" ]; then
   HUB_VER=""
   for i in $(seq 1 15); do
     sleep 2
-    HUB_VER="$(curl -fsS --max-time 3 http://localhost:8000/system 2>/dev/null \
+    HUB_VER="$(curl -fsS --max-time 3 http://localhost:8000/health 2>/dev/null \
       | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' \
       2>/dev/null || true)"
     if [ -n "$HUB_VER" ]; then
@@ -154,15 +154,15 @@ if [ -z "${SKIP_HUB:-}" ]; then
   echo
   echo "==> [3.5] post-deploy version check"
 
-  # (a) Hub self-consistency: /system == X-Paprika-Version on tarball.
+  # (a) Hub self-consistency: /health version == X-Paprika-Version on tarball.
   TARBALL_VER="$(curl -s -D - http://localhost:8000/worker-source.tar.gz -o /dev/null \
     | grep -i '^x-paprika-version:' | awk '{print $2}' | tr -d '[:space:]' || true)"
   if [ -n "$TARBALL_VER" ] && [ -n "$HUB_VER" ]; then
     if [ "$TARBALL_VER" = "$HUB_VER" ]; then
-      echo "    ✓ hub self-consistent: /system == tarball X-Paprika-Version ($HUB_VER)"
+      echo "    ✓ hub self-consistent: /health == tarball X-Paprika-Version ($HUB_VER)"
     else
       echo "    !! hub module-cache mismatch:"
-      echo "       /system version   : $HUB_VER"
+      echo "       /health version   : $HUB_VER"
       echo "       tarball X-Paprika : $TARBALL_VER"
       echo "    → run: docker compose restart hub"
     fi
