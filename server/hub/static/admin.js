@@ -4906,23 +4906,21 @@ function ljpPageZoom() {
 function ljpSessionKey(key) {
   return (key && key !== '__job__') ? key : null;
 }
-// Apply the current page zoom to ONE session's in-browser page via the
-// session evaluate primitive. CSS `zoom` on the document root scales
-// the whole page -- including the cross-origin iframe player box --
-// without touching the OS window size (= real browser zoom). Uses
-// /evaluate (NOT /operator_action) so a viewing-only zoom never
-// pollutes the learned operator recipe trace.
+// Apply the current page zoom to ONE session via the dedicated /zoom
+// API (worker CDP Emulation.setPageScaleFactor). This magnifies the
+// actual paint output -- so it ALSO zooms full-viewport (100vw/100vh)
+// cross-origin iframe players, which CSS `zoom` cannot. /zoom is
+// allowed even on a fetch-owned session and is NOT recorded in the
+// operator recipe trace (viewing aid only).
 async function ljpApplyPageZoomToSession(sessionId) {
   const sid = ljpSessionKey(sessionId);
   if (!sid) return;
   const z = ljpPageZoom();
   try {
-    await fetch('/sessions/' + encodeURIComponent(sid) + '/evaluate', {
+    await fetch('/sessions/' + encodeURIComponent(sid) + '/zoom', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        expression: "document.documentElement.style.zoom=" + JSON.stringify(String(z)),
-      }),
+      body: JSON.stringify({factor: z}),
     });
   } catch (_) { /* best-effort */ }
 }

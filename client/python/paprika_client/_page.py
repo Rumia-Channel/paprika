@@ -600,6 +600,33 @@ class Page:
             pass
         return reply
 
+    @_action_log
+    async def zoom(self, factor: float) -> dict:
+        """Set the in-browser PAGE zoom -- visually magnify the rendered
+        page like the browser's Ctrl++ / Ctrl+- (``1.0`` = 100%,
+        ``1.25`` = 125%, ``0.5`` = 50%).
+
+        Implemented on the worker via CDP
+        ``Emulation.setPageScaleFactor`` -- it scales the actual paint
+        output, so unlike CSS ``zoom`` it ALSO magnifies full-viewport
+        (100vw/100vh) cross-origin iframe players (e.g. supjav's
+        supremejav embed). Reset to normal with ``zoom(1.0)``.
+
+        Allowed even while a fetch owns the session (it's a viewing aid,
+        not a navigation/write action).
+        """
+        body = dict(self._pid_json())
+        body["factor"] = float(factor)
+        reply = await self._client._json(
+            "POST", f"/sessions/{self._sid}/zoom", json=body,
+        )
+        _check(reply)
+        return reply
+
+    async def set_zoom(self, factor: float) -> dict:
+        """Alias for :meth:`zoom`."""
+        return await self.zoom(factor)
+
     async def reload(self) -> dict:
         return await self.goto(await self._fresh_url())
 

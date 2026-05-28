@@ -1672,6 +1672,31 @@ async def session_history_first(session_id: str, body: dict | None = None) -> di
     return await _send_session_action(session_id, action, timeout=60.0)
 
 
+@router.post("/sessions/{session_id}/zoom")
+async def session_zoom(session_id: str, body: dict) -> dict:
+    """Set the in-browser PAGE zoom (visual magnification of the rendered
+    page, including full-viewport cross-origin iframe players). 1.0 =
+    100%. Implemented via CDP ``Emulation.setPageScaleFactor`` on the
+    worker -- NOT CSS ``zoom``, which can't scale a 100vw/100vh iframe.
+
+    Body: ``{"factor": 1.25}`` (or ``{"percent": 125}``). Allowed even
+    on a fetch-owned session (it's a viewing aid, not a write action).
+    """
+    body = body or {}
+    factor = body.get("factor")
+    if factor is None and body.get("percent") is not None:
+        try:
+            factor = float(body["percent"]) / 100.0
+        except Exception:
+            factor = None
+    try:
+        factor = float(factor)
+    except Exception:
+        raise HTTPException(400, "missing/invalid 'factor' (e.g. 1.25)")
+    action = _route_to_page({"kind": "zoom", "factor": factor}, body)
+    return await _send_session_action(session_id, action, timeout=20.0)
+
+
 # ---------------------------------------------------------------------------
 # Operator-action recording (Phase 1: learn-from-operator)
 # ---------------------------------------------------------------------------

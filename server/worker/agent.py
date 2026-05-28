@@ -3273,6 +3273,11 @@ class WorkerAgent:
             # de-sync). Hence only "pages" / "switch_page" included.
             "pages",
             "switch_page",
+            # Page zoom is a viewing aid (visual magnification only --
+            # Emulation.setPageScaleFactor). It doesn't navigate or
+            # touch the DOM, so it's safe to apply while a fetch drives
+            # the tab (operator zooms in to watch / inspect).
+            "zoom",
         }
         # Session-level kinds (operate on the session as a whole, not
         # on any specific tab). They run under ``state.lock`` rather
@@ -5034,6 +5039,36 @@ class WorkerAgent:
                             reply.status = (
                                 f"ERR: resize_window CDP call failed: {type(e).__name__}: {e}"
                             )
+                elif kind == "zoom":
+                    # In-browser PAGE zoom: visually magnify the rendered
+                    # page via CDP Emulation.setPageScaleFactor. Unlike
+                    # CSS `zoom` on the document root, this scales the
+                    # actual paint output -- so it ALSO zooms full-
+                    # viewport (100vw/100vh) cross-origin iframe players
+                    # like supjav's supremejav embed, which CSS zoom
+                    # can't touch. 1.0 = 100%. Reset by sending 1.0.
+                    try:
+                        z = float(action.get("factor") or 1.0)
+                    except Exception:
+                        z = 1.0
+                    if z < 0.25:
+                        z = 0.25
+                    elif z > 5.0:
+                        z = 5.0
+                    try:
+                        from nodriver import cdp
+
+                        await tab.send(
+                            cdp.emulation.set_page_scale_factor(
+                                page_scale_factor=z,
+                            ),
+                        )
+                        reply.result = {"factor": z}
+                        _slog(f"[zoom] page scale factor = {z}")
+                    except Exception as e:
+                        reply.status = (
+                            f"ERR: zoom CDP call failed: {type(e).__name__}: {e}"
+                        )
                 # ---- tab management (session-level) ---------------------
                 elif kind == "pages":
                     # List all tabs in this session.
