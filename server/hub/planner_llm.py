@@ -152,7 +152,7 @@ name in DETAILs when relevant):
     dedupe + dead-end filters; per-page work happens in the loop
     body. Prefer this over hand-rolled outline regex for any
     "crawl N pages" task.
-  * `page.agent(goal, engine="cogagent"|"qwen"|"auto", max_steps=N)`
+  * `page.agent(goal, engine="qwen"|"auto", max_steps=N)`
     -> hands one step to a vision/text LLM. Use for age-gates,
     consent dialogs, "click the 3rd video thumbnail" tasks.
   * `page.download_video(timeout_s=600)` -> shells out to yt-dlp,

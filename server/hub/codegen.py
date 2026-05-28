@@ -485,15 +485,11 @@ async def main():
             #                                  # NOT subgoal=.
             #         *,
             #         max_steps: int = 5,
-            #         engine: str = "auto",   # "auto" | "qwen" | "cogagent"
+            #         engine: str = "auto",   # "auto" | "qwen"
             #     ) -> dict
             #
-            #   - engine="auto" (default): CogAgent first, falls back
-            #     to Qwen-VL when CogAgent's grounding looks wrong.
-            #     Right choice 90% of the time.
-            #   - engine="cogagent": force pixel-grounded vision agent.
-            #     Best for visually-distinctive targets (image
-            #     thumbnails, canvas, iframe-embedded UI).
+            #   - engine="auto" (default): uses the best available vision
+            #     agent. Right choice 90% of the time.
             #   - engine="qwen": force outline/selector LLM. Best for
             #     well-structured DOM with clear text labels.
             #
@@ -507,7 +503,6 @@ async def main():
             # Click an image thumbnail by visual position:
             await page.agent(
                 "Click the third video thumbnail in the trending grid.",
-                engine="cogagent",
                 max_steps=2,
             )
             # result = {"completed": bool, "steps_taken": int,
