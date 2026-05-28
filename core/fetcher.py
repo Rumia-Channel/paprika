@@ -1553,23 +1553,25 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                 max_total_buffer_size=1536 * 1024 * 1024,
                 max_resource_buffer_size=512 * 1024 * 1024,
             ))
-            # iframe + nested-iframe deep network trace. Only ON when
-            # operator opted in via download_video=True. Reuses the
-            # session-mode helper from server.worker.browser_ops so the
-            # behaviour is consistent across Fetch / session / agent
-            # paths. Child Network events surface on the parent socket
-            # and flow through the on_response handler above.
-            if opts.download_video:
-                try:
-                    from server.worker.browser_ops import (
-                        install_iframe_deep_trace as _install_iframe_deep_trace,
-                    )
-                    await _install_iframe_deep_trace(tab, log=log)
-                except Exception as e:
-                    log(
-                        f"  !! iframe deep-trace install failed "
-                        f"(non-fatal): {type(e).__name__}: {e}"
-                    )
+            # iframe + nested-iframe deep network trace. ON whenever we
+            # are capturing assets (assets_dir is not None, guaranteed
+            # here) so cross-origin iframe resources -- thumbnail images,
+            # preview screenshots from DMM litevideo, etc. -- surface via
+            # on_response just like main-frame assets.
+            # Previously gated on download_video=True only; broadened so
+            # plain asset-capture fetches also see sub-frame network events.
+            # The HTTP-fallback in on_finished handles the -32000 "body
+            # evicted from cache" case that sub-frame responses often hit.
+            try:
+                from server.worker.browser_ops import (
+                    install_iframe_deep_trace as _install_iframe_deep_trace,
+                )
+                await _install_iframe_deep_trace(tab, log=log)
+            except Exception as e:
+                log(
+                    f"  !! iframe deep-trace install failed "
+                    f"(non-fatal): {type(e).__name__}: {e}"
+                )
             if referer:
                 await tab.send(cdp.network.set_extra_http_headers(
                     cdp.network.Headers({"Referer": referer})
