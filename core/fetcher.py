@@ -1383,6 +1383,112 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                     cdp.network.get_response_body(event.request_id)
                 )
             except Exception as e:
+                # CDP -32000 "No resource with given identifier found" means
+                # the browser tracked the request but its response body was
+                # already evicted from Chrome's internal cache.  This is
+                # common for resources loaded inside iframes: the outer CDP
+                # target observes the ResponseReceived event but the body
+                # lives in the iframe's browsing context and is unreachable
+                # via the main target's getResponseBody. Fall back to a
+                # direct HTTP fetch so we still save the asset.
+                err_str = str(e)
+                _is_cache_miss = (
+                    "-32000" in err_str
+                    or "No resource with given identifier" in err_str
+                )
+                if assets_dir is not None and _is_cache_miss:
+                    try:
+                        import httpx as _httpx
+
+                        # Pull cookies for the resource's domain out of
+                        # Chrome so authenticated/region-locked assets work.
+                        _jar: dict[str, str] = {}
+                        try:
+                            _raw_cookies = await tab.send(
+                                cdp.network.get_cookies(
+                                    urls=[info["url"]]
+                                )
+                            )
+                            for _c in (_raw_cookies or []):
+                                try:
+                                    _jar[_c.name] = _c.value
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        _fb_headers = {
+                            "User-Agent": (
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/131.0.0.0 Safari/537.36"
+                            ),
+                            "Referer": url,
+                            "Accept": (
+                                "image/avif,image/webp,image/apng,"
+                                "image/svg+xml,image/*,*/*;q=0.8"
+                            ),
+                        }
+                        async with _httpx.AsyncClient(
+                            follow_redirects=True,
+                            timeout=30.0,
+                            headers=_fb_headers,
+                            cookies=_jar,
+                        ) as _client:
+                            _resp = await _client.get(info["url"])
+                        if _resp.status_code == 200:
+                            _data = _resp.content
+                            if (
+                                opts.min_asset_size_bytes
+                                and len(_data) < opts.min_asset_size_bytes
+                            ):
+                                log(
+                                    f"  SKIP {info['url']}: "
+                                    f"{len(_data)/1024:.1f}KB < min "
+                                    f"{opts.min_asset_size_bytes/1024:.1f}KB"
+                                )
+                                return
+                            _fb_mime = info["mime"] or (
+                                _resp.headers.get("content-type", "").split(";")[0].strip()
+                            )
+                            _fb_name = _filename_from(
+                                info["url"], _fb_mime,
+                                f"resource_{len(result.assets_saved)}"
+                            )
+                            _fb_path = _unique_path(assets_dir, _fb_name)
+                            _fb_path.write_bytes(_data)
+                            result.assets_saved.append({
+                                "name": _fb_path.name,
+                                "path": str(_fb_path.resolve()),
+                                "size": len(_data),
+                                "url": info["url"],
+                                "mime": _fb_mime,
+                            })
+                            for _entry in reversed(_net_log):
+                                if _entry["url"] == info["url"]:
+                                    _entry["size"] = len(_data)
+                                    _entry["saved"] = True
+                                    break
+                            log(
+                                f"  SAVED (http-fallback) "
+                                f"[{len(_data)/1024:>8.1f} KB] "
+                                f"{_fb_path.resolve()}"
+                            )
+                            return
+                        else:
+                            log(
+                                f"  SKIP {info['url']}: "
+                                f"CDP evicted + fallback HTTP {_resp.status_code}"
+                            )
+                            result.assets_failed += 1
+                            return
+                    except Exception as _fb_exc:
+                        log(
+                            f"  SKIP {info['url']}: "
+                            f"CDP evicted + fallback failed "
+                            f"({type(_fb_exc).__name__}: {_fb_exc})"
+                        )
+                        result.assets_failed += 1
+                        return
                 log(f"  SKIP {info['url']}: {e}")
                 result.assets_failed += 1
                 return
