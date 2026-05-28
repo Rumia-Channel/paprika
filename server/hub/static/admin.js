@@ -4883,13 +4883,14 @@ async function ljpRefreshSessions() {
 // transform -- noVNC renders Chrome pixel-perfect into the iframe.
 const LJP_VNC_BASE_W = 1280;
 const LJP_VNC_BASE_H = 720;
-// Display/window factor for the noVNC pane. FIXED now (decoupled from
-// the zoom dropdown): the dropdown drives the in-browser PAGE zoom
-// (ljpPageZoom) instead of the Chrome window size. 0.75 keeps the pane
-// at the size operators are used to (960x540). The "↔ fit" button and
-// per-mount window resize still use this so Chrome renders 1:1.
+// Chrome window resolution for the noVNC session. FIXED at 1.0 =
+// 1280x720 (decoupled from the zoom dropdown, which now drives the
+// in-browser PAGE zoom). The iframe itself fills the pane width and
+// noVNC's resize=scale scales the 720p framebuffer to fit -- so the
+// viewer always matches the panel width instead of leaving a black
+// gap. The "↔ fit" button + per-mount resize use these dims.
 function ljpVncZoom() {
-  return 0.75;
+  return 1.0;
 }
 // In-browser PAGE zoom (the dropdown's new job, 案A). Persisted under a
 // dedicated key so it can't be confused with the old window-size value.
@@ -4972,16 +4973,20 @@ function ljpVncZoomDims() {
 // rendering at every zoom level instead of the previous
 // "blurry / aliased noVNC image" produced by CSS transform: scale.
 function ljpApplyVncZoomToBox(box) {
-  const {w, h} = ljpVncZoomDims();
   const f = box.querySelector('iframe');
   if (!f) return;
-  f.style.width = w + 'px';
-  f.style.height = h + 'px';
+  // Fill the pane width and keep a 16:9 box; noVNC (resize=scale)
+  // scales the 1280x720 framebuffer to fit, so the viewer always
+  // matches the panel width (no right-side black gap). The dropdown
+  // no longer changes this -- it drives the in-browser page zoom.
+  f.style.width = '100%';
+  f.style.aspectRatio = '16 / 9';
+  f.style.height = 'auto';
   f.style.transform = '';
   f.style.transformOrigin = '';
   const scaleBox = f.parentElement;
-  scaleBox.style.width = w + 'px';
-  scaleBox.style.height = h + 'px';
+  scaleBox.style.width = '100%';
+  scaleBox.style.height = '';
   scaleBox.style.overflow = 'hidden';
 }
 function ljpApplyVncZoom() {
