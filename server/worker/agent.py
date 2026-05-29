@@ -5229,16 +5229,20 @@ class WorkerAgent:
                             _to = float(action.get("timeout") or 8.0)
                         except Exception:
                             _to = 8.0
+                        # NOTE: reply.status defaults to "OK" (truthy), so
+                        # gate on a local flag -- not on `not reply.status`.
                         out = None
+                        errored = False
                         try:
                             out = await _paprika_agent_run(
                                 tab, cmd, cargs, timeout=_to, log=_slog,
                             )
                         except Exception as e:
+                            errored = True
                             reply.status = (
                                 f"ERR: ext({cmd}): {type(e).__name__}: {e}"
                             )
-                        if not reply.status:
+                        if not errored:
                             if out is None:
                                 reply.status = (
                                     f"ERR: ext({cmd}): agent unreachable"
