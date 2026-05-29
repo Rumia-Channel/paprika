@@ -383,15 +383,38 @@ class Lane:
         # Built-in Paprika Agent extension (fixed; shipped in the repo,
         # not operator-uploaded). Always loaded first so the worker can
         # reach Chrome capabilities CDP can't (genuine page zoom, ...).
-        # Path is relative to this module: server/worker/lanes.py ->
-        # server/web/extensions/paprika-agent.
+        #
+        # IMPORTANT: load it from a WRITABLE cache dir, not the
+        # read-only bind-mounted code tree. Chrome's unpacked loader
+        # silently fails to load (no content scripts / no SW) from the
+        # read-only /app path -- operator extensions work precisely
+        # because they live under /tmp/paprika-extensions. So mirror the
+        # bundled extension into that same writable location and load
+        # from there. Re-copied when the source manifest is newer (so a
+        # deploy that bumps the extension is picked up on next bounce).
         try:
-            agent_dir = (
+            import shutil as _sh
+
+            src = (
                 Path(__file__).resolve().parents[1]
                 / "web" / "extensions" / "paprika-agent"
             )
-            if (agent_dir / "manifest.json").exists():
-                paths.append(str(agent_dir))
+            if (src / "manifest.json").exists():
+                dst = Path("/tmp/paprika-extensions/paprika-agent")
+                need_copy = not (dst / "manifest.json").exists()
+                if not need_copy:
+                    try:
+                        need_copy = (
+                            (src / "manifest.json").stat().st_mtime
+                            > (dst / "manifest.json").stat().st_mtime
+                        )
+                    except Exception:
+                        need_copy = True
+                if need_copy:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    _sh.rmtree(dst, ignore_errors=True)
+                    _sh.copytree(src, dst)
+                paths.append(str(dst))
         except Exception:
             pass
         ext_root = Path(f"/tmp/chrome-lane-{self.lane_idx}/Default/Extensions")
