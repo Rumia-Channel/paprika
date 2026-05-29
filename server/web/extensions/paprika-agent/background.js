@@ -4,7 +4,7 @@
 // the DevTools Protocol (CDP) / nodriver can't do directly -- genuine
 // per-tab page zoom (chrome.tabs.setZoom), request blocking / header
 // rewrite (declarativeNetRequest), per-site content settings, privacy
-// knobs, controlled downloads, per-profile proxy, tab A/V capture, ...
+// knobs, controlled downloads, per-profile proxy, ...
 //
 // REACHABILITY: an MV3 service worker is dormant until an event wakes
 // it, so the worker can't reliably attach to its CDP target. Instead
@@ -19,7 +19,7 @@
 // session action -> POST /sessions/{id}/ext {cmd,args}; thin typed
 // wrappers live in the Python client (_page.py).
 
-const AGENT_VERSION = "0.3.0";
+const AGENT_VERSION = "0.3.1";
 
 async function activeTab() {
   let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -61,17 +61,6 @@ chrome.webNavigation.onCommitted.addListener((d) => pushNav("committed", d));
 chrome.webNavigation.onCompleted.addListener((d) => pushNav("completed", d));
 chrome.webNavigation.onCreatedNavigationTarget.addListener((d) => pushNav("newtarget", d));
 chrome.webNavigation.onErrorOccurred.addListener((d) => pushNav("error", d));
-
-// ---- offscreen document (for tabCapture; SW can't run MediaRecorder) -
-async function ensureOffscreen() {
-  const has = chrome.offscreen.hasDocument ? await chrome.offscreen.hasDocument() : false;
-  if (has) return;
-  await chrome.offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: ["USER_MEDIA"],
-    justification: "Record tab audio/video for evidence capture.",
-  });
-}
 
 const HANDLERS = {
   async ping() {
@@ -261,23 +250,6 @@ const HANDLERS = {
     await chrome.proxy.settings.clear({ scope: "regular" });
     return { cleared: true };
   },
-
-  // ----- tabCapture: record tab A/V via an offscreen MediaRecorder ---
-  // args: { audio?, video?, tab_id? }
-  async startTabCapture(args, sender) {
-    let tabId = targetTabId(args, sender);
-    if (tabId == null) tabId = (await activeTab()).id;
-    const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
-    await ensureOffscreen();
-    const r = await chrome.runtime.sendMessage({
-      __offscreen: true, op: "start", streamId,
-      audio: args.audio !== false, video: args.video !== false,
-    });
-    return { tab_id: tabId, recording: true, ...(r || {}) };
-  },
-  async stopTabCapture() {
-    return await chrome.runtime.sendMessage({ __offscreen: true, op: "stop" });
-  },
 };
 
 async function dispatch(cmd, args, sender) {
@@ -291,8 +263,7 @@ async function dispatch(cmd, args, sender) {
 }
 
 // Messages relayed from content.js. Returning true keeps sendResponse
-// alive for the async handler. Offscreen-bound messages (__offscreen)
-// are handled in offscreen.js, not here.
+// alive for the async handler.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.__paprikaAgent !== true) return;
   dispatch(msg.cmd, msg.args, sender).then(sendResponse);

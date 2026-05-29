@@ -787,19 +787,6 @@ class Page:
     async def proxy_info(self) -> dict:
         return await self.ext("getProxy")
 
-    # ---- tabCapture --------------------------------------------------
-    async def start_tab_capture(self, *, audio: bool = True, video: bool = True) -> dict:
-        """Start recording the tab's A/V (offscreen MediaRecorder)."""
-        return await self.ext(
-            "startTabCapture", {"audio": audio, "video": video}, timeout=30.0,
-        )
-
-    async def stop_tab_capture(self) -> dict:
-        """Stop recording. For clips < 8 MB the reply ``result`` carries
-        ``data_b64`` (video/webm); larger ones return ``too_large`` (a
-        direct offscreen->hub upload path is a follow-up)."""
-        return await self.ext("stopTabCapture", timeout=60.0)
-
     async def reload(self) -> dict:
         return await self.goto(await self._fresh_url())
 
