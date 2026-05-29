@@ -71,6 +71,17 @@ from server.worker.sessions import SessionState
 
 _logger = logging.getLogger(__name__)
 
+
+async def _get_browser_user_agent(browser) -> str | None:
+    """Ask Chrome for its real User-Agent via CDP.  Returns None on failure."""
+    try:
+        from nodriver import cdp as _cdp
+        ver = await browser.send(_cdp.browser.get_version())
+        return ver.user_agent
+    except Exception:
+        return None
+
+
 # JS snippet that extracts every navigatable <a href> from the current
 # document. Returns a JSON-stringified array of {href,text,target,rel}.
 # Shared by the live ``kind=links`` action handler AND the session-end
@@ -907,6 +918,7 @@ def _make_video_downloader(
     #              CDP-observed document URL (passed as ``referer``) is
     #              then the IFRAME url, which the CDN often rejects --
     #              the top page url is the referer it actually expects.
+    user_agent: str | None = None,  # real Chrome UA from cdp.browser.get_version()
 ):
     """Return ``(maybe_download, drain)`` closures.
 
@@ -953,11 +965,15 @@ def _make_video_downloader(
             except Exception:
                 pass
 
+    _fallback_ua = (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/137.0.0.0 Safari/537.36"
+    )
+
     async def _download_direct(target_url: str, referer: str) -> None:
         base_headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/148.0.0.0 Safari/537.36"
+            "User-Agent": user_agent or _fallback_ua,
         }
         # Attempt ordering: prefer WITH referer when we have one,
         # then fall back to none. Reversed from the original
@@ -3056,6 +3072,7 @@ class WorkerAgent:
             except Exception:
                 pass
             state.browser = chrome
+            _session_ua = await _get_browser_user_agent(chrome)
 
             # Aggressively reduce the browser to one tab so the next
             # navigation starts from a clean state. Done via CDP
@@ -3168,6 +3185,7 @@ class WorkerAgent:
                     if isinstance(getattr(state, "last_response", None), dict)
                     else None
                 ),
+                user_agent=_session_ua,
             )
             state.video_downloader = maybe_download_video_session
             state.video_drainer = drain_video_session
@@ -6056,6 +6074,7 @@ class WorkerAgent:
                 except Exception as e:
                     _slog(f"video upload failed: {type(e).__name__}: {e}")
 
+            _agent_ua = await _get_browser_user_agent(state.browser) if state.browser else None
             maybe_download_video, drain_video_downloads = _make_video_downloader(
                 assets_dir=state.assets_dir,
                 min_asset_size=int(os.environ.get("MIN_ASSET_SIZE_BYTES", "0") or 0),
@@ -6067,6 +6086,7 @@ class WorkerAgent:
                     if isinstance(getattr(state, "last_response", None), dict)
                     else None
                 ),
+                user_agent=_agent_ua,
             )
 
         async def _viewport(tab) -> tuple[int, int]:
@@ -7515,6 +7535,7 @@ class WorkerAgent:
             # .m3u8/.mpd and fetches the file (httpx for direct,
             # yt-dlp for streams). Tasks live in pending_downloads so
             # we can drain() before tearing down the browser.
+            _fetch_ua = await _get_browser_user_agent(chrome)
             maybe_download_video, drain_video_downloads = _make_video_downloader(
                 assets_dir=assets_dir,
                 min_asset_size=min_asset,
@@ -7524,6 +7545,7 @@ class WorkerAgent:
                 # Top-level page URL referer fallback for cross-origin
                 # iframe player streams (see _make_video_downloader).
                 page_url_provider=lambda: getattr(assign, "url", None),
+                user_agent=_fetch_ua,
             )
 
             # ---- main loop --------------------------------------------

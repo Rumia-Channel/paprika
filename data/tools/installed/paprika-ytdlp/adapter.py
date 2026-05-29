@@ -34,12 +34,22 @@ LogFn = Callable[[str], None]
 
 _DEFAULT_LIVE_RECORD_S = 30
 
+_FALLBACK_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36"
+)
+
 
 # ---------------------------------------------------------------------------
 # Live HLS detection
 # ---------------------------------------------------------------------------
 
-def _hls_is_live(url: str, referer: str | None = None) -> bool | None:
+def _hls_is_live(
+    url: str,
+    referer: str | None = None,
+    user_agent: str | None = None,
+) -> bool | None:
     """Fetch the first 8 KB of an HLS manifest and check for liveness.
 
     Returns:
@@ -52,11 +62,7 @@ def _hls_is_live(url: str, referer: str | None = None) -> bool | None:
     import urllib.request as _ur
     try:
         headers: dict[str, str] = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/137.0.0.0 Safari/537.36"
-            )
+            "User-Agent": user_agent or _FALLBACK_USER_AGENT,
         }
         if referer:
             headers["Referer"] = referer
@@ -86,6 +92,7 @@ def download(
     timeout: int = 600,
     live_record_s: int | None = None,
     extra_args: list[str] | None = None,
+    user_agent: str | None = None,
     # Not in plugin.json schema — only used when imported directly from
     # fetcher.py so the caller gets live streaming log lines.
     _log_fn: LogFn | None = None,
@@ -148,7 +155,7 @@ def download(
     # ------------------------------------------------------------------
     # Live HLS detection
     # ------------------------------------------------------------------
-    is_live = _hls_is_live(url, referer)
+    is_live = _hls_is_live(url, referer, user_agent=user_agent)
     if is_live is True:
         rec_s = live_record_s
         if rec_s is None:

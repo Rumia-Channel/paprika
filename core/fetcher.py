@@ -212,6 +212,23 @@ async def _force_single_page_target(browser, log=None) -> int:
 import nodriver as uc
 from nodriver import cdp
 
+# Real User-Agent obtained from the Chrome instance at startup via
+# cdp.browser.get_version().  Populated once inside fetch() and reused by
+# helper functions (_hls_is_live, fallback HTTP downloads) so that every
+# outgoing request carries the same UA the browser sends.
+_BROWSER_USER_AGENT: Optional[str] = None
+
+_FALLBACK_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36"
+)
+
+
+def _get_user_agent() -> str:
+    """Return the real Chrome UA if available, else a static fallback."""
+    return _BROWSER_USER_AGENT or _FALLBACK_USER_AGENT
+
 
 # ----------------------------------------------------------------------------
 # Logging callback
@@ -537,13 +554,7 @@ def _hls_is_live(url: str, referer: Optional[str] = None) -> Optional[bool]:
         return None
     import urllib.request as _ur
     try:
-        headers: dict[str, str] = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/137.0.0.0 Safari/537.36"
-            )
-        }
+        headers: dict[str, str] = {"User-Agent": _get_user_agent()}
         if referer:
             headers["Referer"] = referer
         req = _ur.Request(url, headers=headers)
@@ -597,6 +608,7 @@ def run_ytdlp(
             cookies_file=str(cookies_file) if cookies_file else None,
             cookies_from_browser=cookies_from_browser,
             timeout=timeout,
+            user_agent=_BROWSER_USER_AGENT,
             _log_fn=log,
         )
         return result["ok"], result["message"]
@@ -1268,6 +1280,17 @@ async def fetch(opts: FetchOptions) -> FetchResult:
             log(f"  ... using Chrome user-data-dir: {opts.user_data_dir}")
     browser = await uc.start(**start_kwargs)
 
+    # Grab the real User-Agent from the running Chrome so every HTTP
+    # request we make outside the browser (HLS probes, fallback asset
+    # downloads, etc.) carries the same UA string.
+    global _BROWSER_USER_AGENT
+    try:
+        _ver = await browser.send(cdp.browser.get_version())
+        _BROWSER_USER_AGENT = _ver.user_agent
+        log(f"  ... Chrome UA: {_BROWSER_USER_AGENT}")
+    except Exception as _e:
+        log(f"  !! could not read Chrome UA: {_e}")
+
     # Chrome reports `ws://localhost:9222/...` in its /json/version response
     # regardless of how the client reached it. When attaching across
     # containers (or any non-loopback path), that hostname is wrong for the
@@ -1426,11 +1449,7 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                         except Exception:
                             pass
                         _fb_headers = {
-                            "User-Agent": (
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Chrome/131.0.0.0 Safari/537.36"
-                            ),
+                            "User-Agent": _get_user_agent(),
                             "Referer": url,
                             "Accept": (
                                 "image/avif,image/webp,image/apng,"

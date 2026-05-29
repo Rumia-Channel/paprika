@@ -45,7 +45,7 @@ import httpx
 _DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
     ),
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;q=0.9,"
@@ -55,7 +55,7 @@ _DEFAULT_HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "Sec-Ch-Ua": '"Chromium";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua": '"Chromium";v="137", "Not-A.Brand";v="99"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Linux"',
     "Sec-Fetch-Dest": "document",
