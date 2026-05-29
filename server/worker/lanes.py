@@ -288,6 +288,12 @@ class Lane:
             f"--user-data-dir=/tmp/chrome-lane-{self.lane_idx}",
             "--window-size=1920,1080",
             "--start-maximized",
+            # Enable the CDP Extensions domain (Extensions.loadUnpacked)
+            # so we can load the built-in Paprika Agent extension at
+            # runtime. Chrome 148 ignores --load-extension for unpacked
+            # extensions; loadUnpacked is the supported automation path
+            # but is gated behind this flag.
+            "--enable-unsafe-extension-debugging",
         ]
         # Opt-in physical block of new-tab creation at the WebContents
         # layer. kBlockNewWebContents (Chromium internal flag) makes
@@ -330,6 +336,90 @@ class Lane:
                 f"lane {self.lane_idx}: Chrome :{self.chrome_port} "
                 f"failed to respond on /json/version"
             )
+        # Load the built-in Paprika Agent extension via CDP (Chrome 148
+        # ignores --load-extension; Extensions.loadUnpacked is the
+        # supported path, gated by --enable-unsafe-extension-debugging
+        # above). Best-effort: a failure here just means genuine page
+        # zoom falls back to setPageScaleFactor.
+        try:
+            await self._load_agent_extension()
+        except Exception as e:
+            _log(self.lane_idx, f"  agent ext load failed (non-fatal): {e}")
+
+    def _agent_ext_dir(self) -> str | None:
+        """Ensure the built-in Paprika Agent extension is present in a
+        writable cache dir and return its path (or None). Mirrored from
+        the read-only bind-mounted code tree; re-copied when newer."""
+        try:
+            import shutil as _sh
+
+            src = (
+                Path(__file__).resolve().parents[1]
+                / "web" / "extensions" / "paprika-agent"
+            )
+            if not (src / "manifest.json").exists():
+                return None
+            dst = Path("/tmp/paprika-extensions/paprika-agent")
+            need_copy = not (dst / "manifest.json").exists()
+            if not need_copy:
+                try:
+                    need_copy = (
+                        (src / "manifest.json").stat().st_mtime
+                        > (dst / "manifest.json").stat().st_mtime
+                    )
+                except Exception:
+                    need_copy = True
+            if need_copy:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                _sh.rmtree(dst, ignore_errors=True)
+                _sh.copytree(src, dst)
+            return str(dst)
+        except Exception:
+            return None
+
+    async def _load_agent_extension(self) -> None:
+        """Load the Paprika Agent extension into this lane's Chrome via
+        the CDP ``Extensions.loadUnpacked`` command (browser-level
+        target). Idempotent enough: a duplicate load just returns the
+        same id / errors harmlessly."""
+        import json as _json
+
+        path = self._agent_ext_dir()
+        if not path:
+            return
+        try:
+            import websockets as _ws
+        except Exception:
+            return
+        # Browser-level CDP websocket.
+        def _get_ver():
+            with urllib.request.urlopen(
+                f"http://localhost:{self.chrome_port}/json/version", timeout=5,
+            ) as r:
+                return _json.loads(r.read())
+        try:
+            ver = await asyncio.to_thread(_get_ver)
+        except Exception:
+            return
+        wsurl = (ver or {}).get("webSocketDebuggerUrl")
+        if not wsurl:
+            return
+        async with _ws.connect(wsurl, max_size=None) as ws:
+            await ws.send(_json.dumps({
+                "id": 1,
+                "method": "Extensions.loadUnpacked",
+                "params": {"path": path},
+            }))
+            raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
+            msg = _json.loads(raw)
+            if msg.get("error"):
+                _log(
+                    self.lane_idx,
+                    f"  Extensions.loadUnpacked error: {msg['error'].get('message')}",
+                )
+            else:
+                eid = (msg.get("result") or {}).get("id")
+                _log(self.lane_idx, f"  Paprika Agent loaded via CDP (id={eid})")
 
     def set_extra_extension_paths(self, paths: list[str]) -> None:
         """Replace the lane's hub-managed extension path list. The
@@ -380,43 +470,10 @@ class Lane:
         import json
 
         paths: list[str] = []
-        # Built-in Paprika Agent extension (fixed; shipped in the repo,
-        # not operator-uploaded). Always loaded first so the worker can
-        # reach Chrome capabilities CDP can't (genuine page zoom, ...).
-        #
-        # IMPORTANT: load it from a WRITABLE cache dir, not the
-        # read-only bind-mounted code tree. Chrome's unpacked loader
-        # silently fails to load (no content scripts / no SW) from the
-        # read-only /app path -- operator extensions work precisely
-        # because they live under /tmp/paprika-extensions. So mirror the
-        # bundled extension into that same writable location and load
-        # from there. Re-copied when the source manifest is newer (so a
-        # deploy that bumps the extension is picked up on next bounce).
-        try:
-            import shutil as _sh
-
-            src = (
-                Path(__file__).resolve().parents[1]
-                / "web" / "extensions" / "paprika-agent"
-            )
-            if (src / "manifest.json").exists():
-                dst = Path("/tmp/paprika-extensions/paprika-agent")
-                need_copy = not (dst / "manifest.json").exists()
-                if not need_copy:
-                    try:
-                        need_copy = (
-                            (src / "manifest.json").stat().st_mtime
-                            > (dst / "manifest.json").stat().st_mtime
-                        )
-                    except Exception:
-                        need_copy = True
-                if need_copy:
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    _sh.rmtree(dst, ignore_errors=True)
-                    _sh.copytree(src, dst)
-                paths.append(str(dst))
-        except Exception:
-            pass
+        # NOTE: the built-in Paprika Agent extension is NOT loaded here.
+        # Chrome 148 ignores --load-extension for unpacked extensions, so
+        # we load the agent over CDP (Extensions.loadUnpacked) after
+        # Chrome starts instead -- see _load_agent_extension().
         ext_root = Path(f"/tmp/chrome-lane-{self.lane_idx}/Default/Extensions")
         if ext_root.exists():
             for ext_id_dir in sorted(ext_root.iterdir()):
