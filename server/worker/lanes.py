@@ -447,15 +447,34 @@ class Lane:
 
     def _mark_prefs_clean(self) -> None:
         prefs = Path(f"/tmp/chrome-lane-{self.lane_idx}/Default/Preferences")
-        if not prefs.exists():
-            return
         try:
-            data = json.loads(prefs.read_text())
-            profile = data.get("profile")
+            if prefs.exists():
+                data = json.loads(prefs.read_text())
+            else:
+                # Seed a minimal Preferences before the FIRST launch so
+                # developer_mode (below) is on from the very first
+                # Chrome start -- otherwise the built-in Paprika Agent
+                # (an unpacked --load-extension) loads disabled.
+                prefs.parent.mkdir(parents=True, exist_ok=True)
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            profile = data.setdefault("profile", {})
             if isinstance(profile, dict):
                 profile["exit_type"] = "Normal"
                 profile["exited_cleanly"] = True
-                prefs.write_text(json.dumps(data))
+            # Enable the extensions "Developer mode" toggle. Chrome 137+
+            # disables unpacked extensions loaded via --load-extension
+            # unless developer mode is on -- which is exactly how the
+            # built-in Paprika Agent extension is loaded. developer_mode
+            # lives in the regular (non-MAC-protected) Preferences, so
+            # we can set it here and Chrome honours it on launch.
+            ext = data.setdefault("extensions", {})
+            if isinstance(ext, dict):
+                ui = ext.setdefault("ui", {})
+                if isinstance(ui, dict):
+                    ui["developer_mode"] = True
+            prefs.write_text(json.dumps(data))
         except Exception as e:
             _log(self.lane_idx, f"warn: could not sanitize Preferences: {e}")
 
