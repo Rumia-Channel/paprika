@@ -2367,6 +2367,36 @@ class WorkerAgent:
 
     # ----------------------------------------------------------------- run
 
+    # Deterministic id of the built-in Paprika Agent extension (must
+    # match server/hub/routes/extensions.py PAPRIKA_AGENT_ID, derived
+    # from the committed signing key).
+    PAPRIKA_AGENT_ID = "gmhfgiloilioklcofcinlemifjjaeppe"
+
+    def _write_agent_extension_policy(self) -> None:
+        """Write the Chrome managed policy that force-installs the
+        built-in Paprika Agent extension from the hub-served CRX +
+        update manifest. Best-effort; idempotent."""
+        import json as _json
+        from pathlib import Path as _Path
+
+        hub = (self.hub_http_url or "").rstrip("/")
+        if not hub:
+            return
+        update_url = f"{hub}/agent-ext/updates.xml"
+        policy = {
+            "ExtensionInstallForcelist": [
+                f"{self.PAPRIKA_AGENT_ID};{update_url}"
+            ],
+        }
+        pol_dir = _Path("/etc/opt/chrome/policies/managed")
+        pol_dir.mkdir(parents=True, exist_ok=True)
+        pol_file = pol_dir / "paprika-agent.json"
+        pol_file.write_text(_json.dumps(policy, indent=2), encoding="utf-8")
+        _logger.info(
+            f"[worker {self.worker_id}] wrote agent force-install "
+            f"policy ({self.PAPRIKA_AGENT_ID} <- {update_url})",
+        )
+
     async def run(self) -> None:
         """Reconnect loop. Reconnects with backoff on disconnect."""
         # Optional GitHub-releases version check. Fires before any heavy
@@ -2378,6 +2408,21 @@ class WorkerAgent:
         await _check_github_release_once(
             log_prefix=f"[worker {self.worker_id}]",
         )
+
+        # Write the Chrome managed policy that force-installs the
+        # built-in Paprika Agent extension. Chrome 148 ignores
+        # --load-extension for unpacked extensions and the CDP
+        # Extensions.loadUnpacked is pipe-only, so a force-install
+        # enterprise policy (read from /etc/opt/chrome/policies/managed)
+        # is the supported path. MUST run before lanes spawn Chrome so
+        # the first launch already picks it up.
+        try:
+            self._write_agent_extension_policy()
+        except Exception as e:
+            _logger.info(
+                f"[worker {self.worker_id}] agent extension policy "
+                f"write failed (non-fatal): {type(e).__name__}: {e}",
+            )
 
         # Pre-spawn pool if configured
         if self.lane_pool is not None:

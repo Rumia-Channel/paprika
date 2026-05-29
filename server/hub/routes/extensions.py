@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import logging
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from server.hub._state import state
 from server.hub.extensions import (
@@ -29,6 +31,56 @@ from server.hub.extensions import (
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["Extensions"])
+
+# Built-in Paprika Agent extension: deterministic ID (derived from the
+# committed signing key server/web/extensions/paprika-agent.pem) so the
+# worker's force-install policy can reference it. Served as a CRX +
+# update manifest below; workers force-install it via an enterprise
+# policy (Chrome 148 ignores --load-extension for unpacked extensions).
+PAPRIKA_AGENT_ID = "gmhfgiloilioklcofcinlemifjjaeppe"
+_AGENT_EXT_ROOT = Path(__file__).resolve().parents[1] / "web" / "extensions"
+
+
+@router.get("/agent-ext/paprika-agent.crx", include_in_schema=False)
+async def serve_agent_crx():
+    """Serve the packed (signed) Paprika Agent CRX for force-install."""
+    p = _AGENT_EXT_ROOT / "paprika-agent.crx"
+    if not p.exists():
+        raise HTTPException(404, "paprika-agent.crx not present")
+    return FileResponse(
+        str(p),
+        media_type="application/x-chrome-extension",
+        filename="paprika-agent.crx",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/agent-ext/updates.xml", include_in_schema=False)
+async def serve_agent_updates(request: Request):
+    """Omaha update manifest pointing Chrome at the agent CRX. Workers
+    set ExtensionInstallForcelist=<id>;<this-url>."""
+    import json as _json
+
+    crx = _AGENT_EXT_ROOT / "paprika-agent.crx"
+    if not crx.exists():
+        raise HTTPException(404, "paprika-agent.crx not present")
+    try:
+        ver = _json.loads(
+            (_AGENT_EXT_ROOT / "paprika-agent" / "manifest.json").read_text("utf-8")
+        ).get("version", "0.0.0")
+    except Exception:
+        ver = "0.0.0"
+    base = str(request.base_url).rstrip("/")
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">\n'
+        f'  <app appid="{PAPRIKA_AGENT_ID}">\n'
+        f'    <updatecheck codebase="{base}/agent-ext/paprika-agent.crx" '
+        f'version="{ver}" />\n'
+        '  </app>\n'
+        '</gupdate>\n'
+    )
+    return Response(content=xml, media_type="application/xml")
 
 
 def _require_extensions() -> ExtensionRegistry:
