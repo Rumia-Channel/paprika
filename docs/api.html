@@ -43,11 +43,13 @@
   table.apiref .ret { color: var(--stem); font-weight: 600; }
 
   /* Playwright-style per-method blocks: 見出し → 説明 → Usage → Arguments → Returns */
-  .pw { margin: 0 0 26px; }
-  .pw > h3 { font-family: ui-monospace, Consolas, monospace; font-size: 1.02rem;
-    font-weight: 600; margin: 1.5em 0 .35em; padding-bottom: .25em;
-    border-bottom: 1px solid var(--border-soft); }
-  .pw > h3 .pw-ret { color: var(--stem); }
+  .pw { margin: 30px 0 0; padding-top: 26px; border-top: 2px solid var(--border); }
+  h2 + .pw { border-top: none; padding-top: 10px; margin-top: 14px; }
+  .pw > h3 { font-family: ui-monospace, Consolas, monospace; font-size: 1.04rem;
+    font-weight: 700; margin: 0 0 .55em; padding: 9px 14px; line-height: 1.5;
+    background: var(--bg-soft); border-left: 4px solid var(--accent);
+    border-radius: 0 7px 7px 0; }
+  .pw > h3 .pw-ret { color: var(--stem); font-weight: 600; }
   .pw > p { margin: .4em 0 .2em; }
   .pw-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em;
     color: var(--fg-muted); font-weight: 700; margin: 12px 0 5px; }
