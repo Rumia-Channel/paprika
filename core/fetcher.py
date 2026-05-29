@@ -601,7 +601,7 @@ def run_ytdlp(
     # ------------------------------------------------------------------
     adapter = _load_ytdlp_adapter()
     if adapter is not None:
-        result = adapter.download(
+        kwargs: dict[str, Any] = dict(
             url=url,
             output_dir=str(output_dir),
             referer=referer,
@@ -611,6 +611,13 @@ def run_ytdlp(
             user_agent=_BROWSER_USER_AGENT,
             _log_fn=log,
         )
+        try:
+            result = adapter.download(**kwargs)
+        except TypeError:
+            # Older adapter without user_agent param (remote workers
+            # auto-update core/ but data/tools/ may lag behind).
+            kwargs.pop("user_agent", None)
+            result = adapter.download(**kwargs)
         return result["ok"], result["message"]
 
     # ------------------------------------------------------------------
