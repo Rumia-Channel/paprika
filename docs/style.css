@@ -49,12 +49,29 @@ th { background: var(--bg-soft); font-weight: 600; }
 .topnav .logo { width: 28px; height: 28px; display: inline-flex; align-items: center;
   justify-content: center; }
 .topnav .logo img { width: 100%; height: 100%; }
-.topnav .links { display: flex; gap: 4px; flex: 1; }
-.topnav .links a { color: rgba(255,255,255,.88); font-weight: 500; font-size: 0.94rem;
+.topnav .links { display: flex; gap: 4px; flex: 1; align-items: center; }
+.topnav .links > a { color: rgba(255,255,255,.88); font-weight: 500; font-size: 0.94rem;
   padding: 6px 12px; border-radius: 8px; }
-.topnav .links a:hover { background: rgba(255,255,255,.16); color: #fff; text-decoration: none; }
-.topnav .links a.active { background: #fff; color: var(--accent); font-weight: 600;
+.topnav .links > a:hover { background: rgba(255,255,255,.16); color: #fff; text-decoration: none; }
+.topnav .links > a.active { background: #fff; color: var(--accent); font-weight: 600;
   box-shadow: 0 2px 6px rgba(0,0,0,.18); }
+
+/* ---- dropdown nav ---- */
+.topnav .dropdown { position: relative; }
+.topnav .dropdown-toggle { display: inline-block; color: rgba(255,255,255,.88); font-weight: 500;
+  font-size: 0.94rem; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+.topnav .dropdown-toggle:hover { background: rgba(255,255,255,.16); color: #fff; text-decoration: none; }
+.topnav .dropdown-toggle.active { background: #fff; color: var(--accent); font-weight: 600;
+  box-shadow: 0 2px 6px rgba(0,0,0,.18); }
+.topnav .dropdown-menu { display: none; position: absolute; top: calc(100% + 4px); left: 0;
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.12); padding: 6px 0; min-width: 190px; z-index: 100; }
+.topnav .dropdown:hover .dropdown-menu { display: block; }
+.topnav .dropdown-menu a { display: block; color: var(--fg); padding: 8px 18px;
+  font-size: 0.9rem; font-weight: 400; white-space: nowrap; }
+.topnav .dropdown-menu a:hover { background: var(--bg-soft); text-decoration: none; }
+.topnav .dropdown-menu a.active { color: var(--accent); font-weight: 600; background: #fdeceb; }
+
 .topnav .gh { color: rgba(255,255,255,.92); font-size: 0.88rem; padding: 5px 12px;
   border-radius: 8px; background: rgba(255,255,255,.16); }
 .topnav .gh:hover { background: rgba(255,255,255,.28); text-decoration: none; }
@@ -166,4 +183,5 @@ html.mode-php   .ex-async, html.mode-php   .ex-sync { display: none; }
   .content { padding: 24px 18px 80px; }
   .topnav .links { gap: 0; overflow-x: auto; }
   .topnav .gh { display: none; }
+  .topnav .dropdown-menu { position: fixed; left: 8px; right: 8px; min-width: auto; }
 }
