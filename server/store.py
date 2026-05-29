@@ -245,9 +245,15 @@ class RedisJobStore:
                 data = message.get("data")
                 if isinstance(data, bytes):
                     data = data.decode("utf-8")
-                yield data
-                if data == "__JOB_DONE__":
-                    return
+                # LogBatcher joins multiple lines with "\n" in a single
+                # PUBLISH so one message may carry a batch.  Split and
+                # yield each line individually for the live-log UI.
+                for line in data.split("\n"):
+                    if not line:
+                        continue
+                    yield line
+                    if line == "__JOB_DONE__":
+                        return
         finally:
             try:
                 await pubsub.unsubscribe(chan)

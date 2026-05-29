@@ -1054,8 +1054,16 @@ async def _handle_worker_message(worker, msg) -> None:
         return
 
     if isinstance(msg, WorkerJobLog):
-        await state.store.append_log_line(msg.job_id, msg.line)
-        await state.store.publish_log(msg.job_id, msg.line)
+        # When the LogBatcher is active (Redis store), buffer the line
+        # and let it flush in pipeline batches (50 lines or 100ms).
+        # This cuts Redis ops from ~10 000/sec to ~200/sec at scale.
+        # For InMemoryJobStore the batcher is None; fall through to
+        # the direct (zero-cost) path.
+        if state.log_batcher is not None:
+            await state.log_batcher.add(msg.job_id, msg.line)
+        else:
+            await state.store.append_log_line(msg.job_id, msg.line)
+            await state.store.publish_log(msg.job_id, msg.line)
         # Mirror onto the per-worker ring buffer so the operator can
         # browse "what has this worker been doing" without correlating
         # job ids by hand. Short job-id prefix keeps lines greppable.

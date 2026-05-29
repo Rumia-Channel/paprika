@@ -98,6 +98,15 @@ async def lifespan(app: FastAPI):
     state.store, state.store_kind = await make_store(config.redis_url)
     state._local_sem = asyncio.Semaphore(config.max_concurrent_jobs)
 
+    # WorkerJobLog batcher: when using Redis, buffer log lines and
+    # flush in pipeline batches (50 lines or 100ms). Cuts Redis ops
+    # from ~10 000/sec to ~200/sec at 200 workers. No-op for
+    # InMemoryJobStore (which is already zero-cost).
+    if state.store_kind == "redis":
+        from server.hub._log_batcher import LogBatcher
+
+        state.log_batcher = LogBatcher(state.store)
+
     # Worker registry — pass the redis client if we have one
     redis_client = getattr(state.store, "_r", None)
     state.registry = WorkerRegistry(redis_client=redis_client)
@@ -182,6 +191,12 @@ async def lifespan(app: FastAPI):
     for t in list(state.local_tasks.values()):
         if not t.done():
             t.cancel()
+    # Drain any buffered log lines before closing the store.
+    if state.log_batcher is not None:
+        try:
+            await state.log_batcher.flush_all()
+        except Exception:
+            pass
     if state.store is not None:
         try:
             await state.store.close()

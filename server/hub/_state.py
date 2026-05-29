@@ -120,6 +120,11 @@ class AppState:
     # the EngineRecord itself (daily_token_budget /
     # daily_request_budget); the registry just persists the counts.
     engine_usage: EngineUsageRegistry | None = None
+    # WorkerJobLog batcher: buffers incoming log lines and flushes
+    # to Redis in pipeline batches (50 lines or 100ms, whichever
+    # comes first). Only active when Redis store is in use; None
+    # when running with InMemoryJobStore. See _log_batcher.py.
+    log_batcher: object | None = None  # LogBatcher | None (lazy import)
 
 
 state = AppState()
