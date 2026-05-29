@@ -848,7 +848,7 @@ async def _paprika_agent_run(
     args = args or {}
     # Build a page snippet: post the command on window, wait for the
     # matching response (relayed by content.js), resolve with it.
-    expr = (
+    inner = (
         "(function(){return new Promise(function(resolve){"
         "var id='pa_'+Date.now()+'_'+Math.random().toString(36).slice(2);"
         "var done=false;"
@@ -862,17 +862,30 @@ async def _paprika_agent_run(
         "resolve({ok:false,error:'agent-timeout'});}}," + str(int(timeout * 1000))
         + ");});})()"
     )
+    # nodriver returns JS objects as RemoteObject descriptors, NOT plain
+    # dicts -- so a bare ``tab.evaluate(inner)`` gives back an unusable
+    # descriptor and every agent call wrongly falls back. JSON.stringify
+    # in-page (a string always crosses by value) then json.loads here,
+    # exactly like the ``evaluate`` session action does.
+    wrapped = "(async()=>{return JSON.stringify(await (" + inner + "));})()"
     try:
-        res = await asyncio.wait_for(
-            tab.evaluate(expr, await_promise=True),
+        raw = await asyncio.wait_for(
+            tab.evaluate(wrapped, await_promise=True),
             timeout=timeout + 3.0,
         )
     except Exception as e:
         if log:
             log(f"[agent] page relay evaluate failed: {type(e).__name__}: {e}")
         return None
-    if isinstance(res, dict):
-        return res
+    if isinstance(raw, str):
+        try:
+            res = _json.loads(raw)
+        except Exception as e:
+            if log:
+                log(f"[agent] page relay bad JSON: {type(e).__name__}: {e}")
+            return None
+        if isinstance(res, dict):
+            return res
     return None
 
 
