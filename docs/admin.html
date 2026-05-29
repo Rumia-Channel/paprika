@@ -263,24 +263,85 @@
 
     <!-- ================================================================ -->
     <h2 id="knowledge">AI Knowledge</h2>
-    <p>「…その他」メニューから開く。ホストごとに蓄積された AI の学習知識を閲覧・管理するタブ。</p>
+    <p>「…その他」メニューから開く。ホストごとに蓄積された AI の学習知識を閲覧・管理するタブ。Paprika が過去のジョブ実行から自動的に学習した「各サイトの攻略情報」をまとめたデータベースです。</p>
+    <img class="shot" src="img/cap-knowledge.png" alt="AI Knowledge タブ（ホスト別の信頼度・バリア・抽出手法一覧）">
+    <p class="shot-cap">AI Knowledge タブ。ホストごとの信頼度・バリア・抽出手法が一覧で確認できる。</p>
+
+    <h3>サマリーバッジ</h3>
+    <p>画面上部に全体の統計バッジが並びます：</p>
+    <table>
+      <thead><tr><th>バッジ</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td><strong>N ホスト</strong></td><td>学習済みホストの総数</td></tr>
+        <tr><td><strong>high / medium / low</strong></td><td>信頼度別のホスト数。high = 成功率が高く安定、low = 未検証または成功率が低い</td></tr>
+        <tr><td><strong>stale</strong></td><td>長期間更新がないホスト</td></tr>
+        <tr><td><strong>barriers 学習済</strong></td><td>アクセス障壁（Cloudflare / 年齢確認等）が検出・記録されたホスト数</td></tr>
+        <tr><td><strong>extractions 学習済</strong></td><td>抽出手法（CSS セレクタ / XPath 等）が記録されたホスト数</td></tr>
+      </tbody>
+    </table>
+
+    <h3>AI Insights パネル</h3>
+    <p>バッジ下に表示される 4 枚のカード。Shadow Judge（Phase 3-6）と R1 Distiller の動作状態を表示：</p>
     <ul>
-      <li><strong>バリア検出</strong> — 各ホストで検出されたアクセス障壁（Cloudflare / 年齢確認 / ログイン壁等）の学習結果</li>
-      <li><strong>抽出手法</strong> — 各ホストでの画像・動画抽出に成功した手法の記録</li>
-      <li><strong>信頼度</strong> — ホストごとの tier / trust レベル</li>
-      <li><strong>Judge 一致率</strong> — 旧 Judge と R1 Shadow Judge の判定一致率</li>
+      <li><strong>JUDGE 判定ペア数</strong> — shadow モードで旧 Judge / R1 Judge の両方が判定したペア数</li>
+      <li><strong>一致率</strong> — 旧 Judge と R1 の判定一致率（高いほど R1 への切替が安全）</li>
+      <li><strong>R1 DISTILLER の最近の更新</strong> — 直近 24h で Distiller が更新した知識エントリ数</li>
+      <li><strong>R1 が学習に貢献したホスト</strong> — Distiller が知識を生成したユニークホスト数</li>
     </ul>
-    <p>ホスト名でフィルタ可能。以前の「Skills / Conventions」タブはこの Knowledge に統合され、R1 Distiller によって自動メンテナンスされます。</p>
+
+    <h3>ホスト一覧テーブル</h3>
+    <table>
+      <thead><tr><th>列</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td><strong>ホスト</strong></td><td>対象サイトのドメイン名</td></tr>
+        <tr><td><strong>信頼度</strong></td><td>tier バッジ（<span class="badge" style="background:#d4edda;color:#155724;">high</span> / <span class="badge" style="background:#fff3cd;color:#856404;">medium</span> / <span class="badge" style="background:#f8d7da;color:#721c24;">low</span>）</td></tr>
+        <tr><td><strong>ジョブ数</strong></td><td>このホストへの累計ジョブ実行回数</td></tr>
+        <tr><td><strong>成功率</strong></td><td>ジョブの成功率（%）</td></tr>
+        <tr><td><strong>barriers</strong></td><td>検出されたアクセス障壁のタグ（<code>cloudflare_challenge</code> / <code>age_gate</code> / <code>login_wall</code> 等）</td></tr>
+        <tr><td><strong>extractions</strong></td><td>学習済みの抽出ルール（CSS / XPath / カスタムロジック）</td></tr>
+        <tr><td><strong>最終更新</strong></td><td>知識が最後に更新された相対時刻</td></tr>
+        <tr><td><strong>更新元</strong></td><td>知識の生成元（<code>distiller-light</code> = 軽量自動蒸留 / <code>distiller-r1</code> = R1 による深い分析）</td></tr>
+      </tbody>
+    </table>
+    <p>ホスト名フィルタと信頼度ソートで絞り込み可能。以前の「Skills / Conventions」タブはこの Knowledge に統合され、R1 Distiller によって自動メンテナンスされます。</p>
 
     <!-- ================================================================ -->
     <h2 id="plugins">Plugins</h2>
-    <p>「…その他」メニューから開く。インストール済みプラグインの一覧と呼び出し履歴を管理するタブ。</p>
-    <ul>
-      <li><strong>プラグイン一覧</strong> — 名前 / 機能（capabilities）/ 有効状態を表示</li>
-      <li><strong>呼び出し履歴</strong> — 各プラグインの実行ログ（タイムスタンプ / 入力 / 出力 / 成否）</li>
-      <li><strong>フィルタ</strong> — プラグイン名で検索</li>
-      <li><strong>履歴の全削除</strong> — 呼び出し履歴の一括クリア</li>
-    </ul>
+    <p>「…その他」メニューから開く。インストール済みプラグインの一覧と呼び出し履歴を管理するタブ。プラグインはジョブ実行時に capability ベースで自動起動されます。</p>
+    <img class="shot" src="img/cap-plugins.png" alt="Plugins タブ（プラグイン一覧と呼び出し履歴）">
+    <p class="shot-cap">Plugins タブ。インストール済みプラグインの capability・呼び出し履歴が確認できる。</p>
+
+    <h3>サマリーバッジ</h3>
+    <table>
+      <thead><tr><th>バッジ</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td><strong>N インストール済</strong></td><td>有効なプラグイン数</td></tr>
+        <tr><td><strong>N カタログ登録</strong></td><td>カタログ（<code>data/tools/catalog.json</code>）に登録されたプラグイン数</td></tr>
+        <tr><td><strong>N 呼び出し記録</strong></td><td>累計の呼び出し回数</td></tr>
+        <tr><td><strong>成功率</strong></td><td>呼び出しの成功率</td></tr>
+      </tbody>
+    </table>
+
+    <h3>自動起動の仕組み</h3>
+    <div class="callout info"><strong>capability ベースのマッチング</strong>
+    ジョブ投入時、Hub は対象ホストの AI Knowledge（barriers）を参照し、<code>per_page.barriers.&lt;kind&gt;.suggested_tool</code> に設定された capability を持つプラグインを pre-flight で呼び出します。例えば <code>cloudflare_challenge</code> バリアが検出されたホストでは、その capability を持つプラグインが自動的に起動します。</div>
+
+    <h3>プラグイン一覧テーブル</h3>
+    <table>
+      <thead><tr><th>列</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td><strong>状態</strong></td><td>インストール状態（✓ インストール済 / カタログのみ）</td></tr>
+        <tr><td><strong>名前</strong></td><td>プラグイン名とバージョン</td></tr>
+        <tr><td><strong>カテゴリ</strong></td><td>プラグインの分類（<code>cloudflare_bypass</code> / <code>video_extraction</code> 等）</td></tr>
+        <tr><td><strong>説明</strong></td><td>プラグインの機能説明</td></tr>
+        <tr><td><strong>機能（capabilities）</strong></td><td>提供する capability タグ一覧。Hub はこのタグでマッチングする</td></tr>
+        <tr><td><strong>最終呼び出し / 直近成功</strong></td><td>最後に呼び出された日時と直近の成功日時</td></tr>
+        <tr><td><strong>詳細</strong></td><td>設定ファイル・依存関係・詳細ログを確認</td></tr>
+      </tbody>
+    </table>
+
+    <h3>呼び出し履歴</h3>
+    <p>ページ下部に pre-flight / 手動 / ジョブ起動すべての呼び出し記録が表示されます。時刻 / プラグイン名 / アクション / 結果 / 所要時間 / 対象ホスト・ジョブ / 呼び出し元を確認できます。</p>
 
     <!-- ================================================================ -->
     <h2 id="settings">Settings</h2>
