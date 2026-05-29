@@ -33,6 +33,19 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # the shared requirements.txt.
 RUN pip install --no-cache-dir opencv-python-headless
 
+# Patch yt-dlp extractors that crash on missing keys.
+# xhamster: KeyError('title') when window.initials JSON lacks the field.
+# Applied after pip install; harmless if the upstream fixes it later
+# (the .get() is strictly more defensive than bare dict[key]).
+RUN python -c "\
+import pathlib, re; \
+p = pathlib.Path(__import__('yt_dlp.extractor.xhamster', fromlist=['x']).__file__); \
+t = p.read_text(); \
+t = t.replace(\"initials['videoModel']\", \"initials.get('videoModel') or {}\"); \
+t = t.replace(\"video['title']\", \"video.get('title', '')\"); \
+p.write_text(t); \
+print(f'patched {p}')"
+
 COPY core /app/core
 COPY server /app/server
 COPY fetch_html.py /app/fetch_html.py
