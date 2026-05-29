@@ -291,18 +291,18 @@ _ADMIN_HTML = r"""<!DOCTYPE html>
         <!-- Fetch sub-mode (Phase 2a). 3-way radio sits ABOVE the
              collapsible options so it's always visible -- this is a
              primary execution choice, not a tuning knob.
-              * 通常    : ignore any registered recipe (skip HostRegistry.pick_recipe)
-              * 登録    : default, apply matched recipe (Phase 1 behavior)
-              * AI調査  : submit as codegen-loop (paid LLM) using the inline goal -->
+              * そのまま       : ignore any registered recipe (skip HostRegistry.pick_recipe)
+              * AI学習済みを使う : default, apply matched recipe (Phase 1 behavior)
+              * AI調査         : submit as codegen-loop (paid LLM) using the inline goal -->
         <div id="fetchSubMode" class="fetch-submode">
-          <span class="fo-submode-title">実行モード:</span>
-          <label title="HostRegistry の recipe を無視して素の Fetch を実行">
-            <input type="radio" name="fetchSubMode" value="normal" id="fetchSubModeNormal"> 通常
+          <span class="fo-submode-title">取得方法:</span>
+          <label title="レシピを使わず、そのまま素の Fetch を実行 (比較・検証用)">
+            <input type="radio" name="fetchSubMode" value="normal" id="fetchSubModeNormal"> そのまま
           </label>
-          <label title="HostRegistry の recipe があれば適用 (Phase 1 既定)">
-            <input type="radio" name="fetchSubMode" value="recipe" id="fetchSubModeRecipe" checked> 登録
+          <label title="AI調査などで学習・登録済みのレシピがあれば適用 (既定)">
+            <input type="radio" name="fetchSubMode" value="recipe" id="fetchSubModeRecipe" checked> AI学習済みを使う
           </label>
-          <label title="課金 LLM (codegen-loop) で攻略手順を生成">
+          <label title="課金 LLM (codegen-loop) で攻略手順を生成・学習">
             <input type="radio" name="fetchSubMode" value="ai_investigate" id="fetchSubModeAi"> AI調査
           </label>
           <span id="fetchSubModeBadge" style="color:#888; font-size:.85em; margin-left:auto;"></span>
