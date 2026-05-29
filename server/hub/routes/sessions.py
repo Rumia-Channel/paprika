@@ -1697,6 +1697,47 @@ async def session_zoom(session_id: str, body: dict) -> dict:
     return await _send_session_action(session_id, action, timeout=20.0)
 
 
+@router.post("/sessions/{session_id}/ext")
+async def session_ext(session_id: str, body: dict) -> dict:
+    """Run a generic Paprika Agent extension command on the session.
+
+    The Paprika Agent extension exposes a command bus for Chrome
+    capabilities CDP / nodriver can't reach (request header/block rules,
+    content settings, privacy, downloads, proxy, tab capture, genuine
+    zoom, ...). This single endpoint relays any command; thin typed
+    wrappers (``page.set_referer``, ``page.allow_popups``, ...) live in
+    the Python client.
+
+    Body::
+
+        {"cmd": "netSetHeader", "args": {...}, "timeout"?: 20}
+
+    Returns ``{status, result, elapsed_ms}`` where ``result`` is the
+    extension handler's return value. Allowed on a fetch-owned session
+    (browser config, not a navigation/DOM write).
+    """
+    body = body or {}
+    cmd = (body.get("cmd") or "").strip()
+    if not cmd:
+        raise HTTPException(400, "missing 'cmd'")
+    try:
+        timeout = float(body.get("timeout") or 20.0)
+    except Exception:
+        timeout = 20.0
+    action = _route_to_page(
+        {
+            "kind": "ext",
+            "cmd": cmd,
+            "args": body.get("args") or {},
+            "timeout": timeout,
+        },
+        body,
+    )
+    return await _send_session_action(
+        session_id, action, timeout=max(timeout + 5.0, 20.0),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Operator-action recording (Phase 1: learn-from-operator)
 # ---------------------------------------------------------------------------

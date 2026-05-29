@@ -3390,6 +3390,12 @@ class WorkerAgent:
             # touch the DOM, so it's safe to apply while a fetch drives
             # the tab (operator zooms in to watch / inspect).
             "zoom",
+            # Generic Paprika Agent extension command. Applies browser
+            # config (request header/block rules, content settings,
+            # privacy, proxy, ...) -- it doesn't navigate or drive the
+            # fetch loop's tab. Notably lets an operator set a Referer
+            # header rule to rescue a CDN fetch mid-capture.
+            "ext",
         }
         # Session-level kinds (operate on the session as a whole, not
         # on any specific tab). They run under ``state.lock`` rather
@@ -5206,6 +5212,44 @@ class WorkerAgent:
                                 f"ERR: zoom failed (agent + CDP): "
                                 f"{type(e).__name__}: {e}"
                             )
+                elif kind == "ext":
+                    # Generic Paprika Agent extension command bus. The
+                    # worker stays vendor-neutral: it just relays
+                    # cmd/args to the extension's service worker (via the
+                    # page<->content-script relay) and returns whatever
+                    # the matching HANDLERS[cmd] yields. New capabilities
+                    # are added in the extension + the Python client; this
+                    # dispatch branch never changes.
+                    cmd = action.get("cmd")
+                    cargs = action.get("args") or {}
+                    if not cmd:
+                        reply.status = "ERR: ext: missing 'cmd'"
+                    else:
+                        try:
+                            _to = float(action.get("timeout") or 8.0)
+                        except Exception:
+                            _to = 8.0
+                        out = None
+                        try:
+                            out = await _paprika_agent_run(
+                                tab, cmd, cargs, timeout=_to, log=_slog,
+                            )
+                        except Exception as e:
+                            reply.status = (
+                                f"ERR: ext({cmd}): {type(e).__name__}: {e}"
+                            )
+                        if not reply.status:
+                            if out is None:
+                                reply.status = (
+                                    f"ERR: ext({cmd}): agent unreachable"
+                                )
+                            elif out.get("ok"):
+                                reply.result = out.get("result")
+                                _slog(f"[ext] {cmd} ok")
+                            else:
+                                reply.status = (
+                                    f"ERR: ext({cmd}): {out.get('error')}"
+                                )
                 # ---- tab management (session-level) ---------------------
                 elif kind == "pages":
                     # List all tabs in this session.

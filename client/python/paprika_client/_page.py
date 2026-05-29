@@ -627,6 +627,179 @@ class Page:
         """Alias for :meth:`zoom`."""
         return await self.zoom(factor)
 
+    # ------------------------------------------------------------------
+    # Paprika Agent extension command bus
+    # ------------------------------------------------------------------
+    # The built-in Paprika Agent Chrome extension exposes capabilities
+    # CDP / nodriver can't reach. ``ext()`` is the generic passthrough;
+    # the typed wrappers below are thin conveniences over it. Adding a
+    # new capability = a new HANDLERS entry in the extension + a wrapper
+    # here (the hub/worker ``ext`` plumbing never changes).
+
+    async def ext(
+        self, cmd: str, args: Optional[dict] = None, *, timeout: float = 20.0,
+    ) -> dict:
+        """Run a generic Paprika Agent extension command.
+
+        ``cmd`` is the extension HANDLERS key (e.g. ``"netSetHeader"``);
+        ``args`` is its argument dict. Returns the full reply; the
+        handler's value is under ``reply["result"]``.
+        """
+        body = dict(self._pid_json())
+        body.update({"cmd": cmd, "args": args or {}, "timeout": timeout})
+        reply = await self._client._json(
+            "POST", f"/sessions/{self._sid}/ext", json=body,
+        )
+        _check(reply)
+        return reply
+
+    # ---- declarativeNetRequest --------------------------------------
+    async def block_hosts(self, hosts) -> dict:
+        """Block all requests to ``hosts`` (ad / tracker domains)."""
+        return await self.ext("netBlock", {"hosts": list(hosts)})
+
+    async def set_request_header(
+        self, header: str, value: str, *, url_filter: str = "*", rule_id: int = 2000,
+    ) -> dict:
+        """Force a request header on matching URLs (declarativeNetRequest
+        modifyHeaders). Re-using the same ``rule_id`` replaces the rule."""
+        return await self.ext("netSetHeader", {
+            "id": rule_id, "header": header, "value": value,
+            "urlFilter": url_filter, "where": "request",
+        })
+
+    async def set_referer(self, value: str, *, url_filter: str = "*") -> dict:
+        """Force a ``Referer`` request header -- rescues CDN fetches that
+        reject the cross-origin iframe URL as referer (e.g. HLS players)."""
+        return await self.set_request_header("Referer", value, url_filter=url_filter)
+
+    async def clear_net_rules(self) -> dict:
+        """Remove every dynamic block / header rule."""
+        return await self.ext("netClear")
+
+    async def net_rules(self) -> list[dict]:
+        """List active dynamic declarativeNetRequest rules."""
+        r = await self.ext("netList")
+        return (r.get("result") or {}).get("rules", [])
+
+    # ---- contentSettings --------------------------------------------
+    async def set_content_setting(
+        self, type: str, setting: str, *, pattern: str = "*://*/*",
+    ) -> dict:
+        """Set a per-site content setting (``type`` e.g. ``"popups"`` /
+        ``"images"`` / ``"javascript"`` / ``"automaticDownloads"``;
+        ``setting`` e.g. ``"allow"`` / ``"block"``)."""
+        return await self.ext("setContentSetting", {
+            "type": type, "setting": setting, "pattern": pattern,
+        })
+
+    async def allow_popups(self, *, pattern: str = "*://*/*") -> dict:
+        """Let popups through (redirect-chain players open new windows)."""
+        return await self.set_content_setting("popups", "allow", pattern=pattern)
+
+    async def allow_auto_downloads(self, *, pattern: str = "*://*/*") -> dict:
+        """Allow multiple automatic downloads without a prompt."""
+        return await self.set_content_setting(
+            "automaticDownloads", "allow", pattern=pattern,
+        )
+
+    # ---- privacy -----------------------------------------------------
+    async def set_privacy(self, path: str, value) -> dict:
+        """Set a ``chrome.privacy`` ChromeSetting by dotted ``path``
+        (e.g. ``"network.webRTCIPHandlingPolicy"``)."""
+        return await self.ext("setPrivacy", {"path": path, "value": value})
+
+    async def prevent_webrtc_leak(self) -> dict:
+        """Stop WebRTC from leaking the real IP behind a proxy."""
+        return await self.set_privacy(
+            "network.webRTCIPHandlingPolicy", "disable_non_proxied_udp",
+        )
+
+    # ---- webNavigation ----------------------------------------------
+    async def navigation_events(self, *, since: float = 0.0) -> list[dict]:
+        """Drain buffered navigation events (committed / completed /
+        newtarget / error). ``newtarget`` carries popup / new-tab
+        provenance (source frame + url)."""
+        r = await self.ext("getNavEvents", {"since": since})
+        return (r.get("result") or {}).get("events", [])
+
+    # ---- userScripts -------------------------------------------------
+    async def register_user_script(
+        self, id: str, code: str, *, matches=None,
+        world: str = "MAIN", run_at: str = "document_idle",
+    ) -> dict:
+        """Register a persistent MAIN-world user script (e.g. to hook a
+        player API and surface its real source URL)."""
+        return await self.ext("registerUserScript", {
+            "id": id, "code": code, "matches": list(matches) if matches else ["<all_urls>"],
+            "world": world, "run_at": run_at,
+        })
+
+    async def unregister_user_script(self, id: str) -> dict:
+        return await self.ext("unregisterUserScript", {"id": id})
+
+    # ---- management --------------------------------------------------
+    async def installed_extensions(self) -> list[dict]:
+        """List extensions installed in this lane's Chrome."""
+        r = await self.ext("listExtensions")
+        return (r.get("result") or {}).get("extensions", [])
+
+    async def set_extension_enabled(self, ext_id: str, enabled: bool) -> dict:
+        return await self.ext(
+            "setExtensionEnabled", {"id": ext_id, "enabled": bool(enabled)},
+        )
+
+    # ---- downloads ---------------------------------------------------
+    async def download(
+        self, url: str, *, filename: Optional[str] = None,
+        conflict: str = "uniquify", headers=None,
+    ) -> dict:
+        """Start a controlled download (chrome.downloads). Returns
+        ``{download_id}``; poll with :meth:`download_status`."""
+        return await self.ext("download", {
+            "url": url, "filename": filename,
+            "conflictAction": conflict, "headers": headers,
+        })
+
+    async def download_status(self, *, download_id: Optional[int] = None) -> list[dict]:
+        """Search download state (all, or one ``download_id``)."""
+        query = {"id": download_id} if download_id is not None else {}
+        r = await self.ext("downloadSearch", {"query": query})
+        return (r.get("result") or {}).get("items", [])
+
+    async def cancel_download(self, download_id: int) -> dict:
+        return await self.ext("downloadCancel", {"id": download_id})
+
+    # ---- proxy (per-lane) -------------------------------------------
+    async def set_proxy(
+        self, host: str, port: int, *, scheme: str = "http", bypass=None,
+    ) -> dict:
+        """Set a fixed proxy for this lane's Chrome profile. Note: no
+        per-tab scope and no auth (use proxies that don't require it)."""
+        return await self.ext("setProxy", {
+            "mode": "fixed_servers", "host": host, "port": port,
+            "scheme": scheme, "bypass": list(bypass) if bypass else ["<local>"],
+        })
+
+    async def clear_proxy(self) -> dict:
+        return await self.ext("clearProxy")
+
+    async def proxy_info(self) -> dict:
+        return await self.ext("getProxy")
+
+    # ---- tabCapture --------------------------------------------------
+    async def start_tab_capture(self, *, audio: bool = True, video: bool = True) -> dict:
+        """Start recording the tab's A/V (offscreen MediaRecorder)."""
+        return await self.ext(
+            "startTabCapture", {"audio": audio, "video": video}, timeout=30.0,
+        )
+
+    async def stop_tab_capture(self) -> dict:
+        """Stop recording. For clips < 8 MB the reply ``result`` carries
+        ``data_b64`` (video/webm); larger ones return ``too_large`` (a
+        direct offscreen->hub upload path is a follow-up)."""
+        return await self.ext("stopTabCapture", timeout=60.0)
+
     async def reload(self) -> dict:
         return await self.goto(await self._fresh_url())
 
