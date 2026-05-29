@@ -1169,6 +1169,13 @@ class FetchOptions:
     # session-mode flag of the same name. Plumbed from
     # JobOptions.download_video at the /jobs Fetch dispatch site.
     download_video: bool = False
+    # When True (worker fetch path), DETECT video streams during capture
+    # but do NOT run the (often 10+ min) yt-dlp download inline. The
+    # chosen targets are returned on FetchResult.deferred_video_targets
+    # so the caller can release the lane and run the download in a
+    # detached background task (the job's "downloading" phase). Default
+    # False keeps the legacy inline-download behaviour.
+    defer_video_download: bool = False
     cookies_from: Optional[str] = None
     referer: Optional[str] = None
     user_data_dir: Optional[Path] = None
@@ -1243,6 +1250,11 @@ class FetchResult:
     ytdlp_results: list[dict] = field(default_factory=list)
     # The expanded list of all iframe srcs we found (for diagnostics).
     iframe_srcs: list[str] = field(default_factory=list)
+    # Populated only when FetchOptions.defer_video_download is True: the
+    # video targets that WOULD have been downloaded inline, as a list of
+    # {url, referer, label}. The caller (worker) runs these in a detached
+    # background task after releasing the lane.
+    deferred_video_targets: list[dict] = field(default_factory=list)
 
 
 async def fetch(opts: FetchOptions) -> FetchResult:
@@ -1890,7 +1902,21 @@ async def fetch(opts: FetchOptions) -> FetchResult:
             for s in pick_stream_urls(result.video_urls_seen):
                 add_target(s, url, "network-stream")
 
-            if ytdlp_targets:
+            if ytdlp_targets and opts.defer_video_download:
+                # Detect-only: hand the targets back to the caller, which
+                # releases the lane and downloads them in a detached
+                # background task (job phase = "downloading").
+                result.deferred_video_targets = [
+                    {"url": u, "referer": ref, "label": lbl}
+                    for (u, ref, lbl) in ytdlp_targets
+                ]
+                log(
+                    f"\n=== {len(ytdlp_targets)} video target(s) detected; "
+                    f"deferring download to background (lane released) ==="
+                )
+                for u, _ref, lbl in ytdlp_targets:
+                    log(f"     [{lbl}] deferred: {u}")
+            elif ytdlp_targets:
                 if not shutil.which("yt-dlp"):
                     log(
                         f"\n!! {len(ytdlp_targets)} video URL(s) detected "

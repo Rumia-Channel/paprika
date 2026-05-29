@@ -53,6 +53,7 @@ from server.protocol import (
     WorkerJobComplete,
     WorkerJobFailed,
     WorkerJobLog,
+    WorkerJobProgress,
     WorkerRegister,
     WorkerScreenshotReply,
     WorkerSessionActionResult,
@@ -7130,6 +7131,20 @@ class WorkerAgent:
                     on_after_navigate=_recipe_cb if _picked_recipe else None,
                     network_log=fetch_network_log,
                 )
+                # Detach big-video downloads from the lane. When the
+                # operator asked for video AND this isn't a keep_session
+                # job, DETECT streams during capture but defer the
+                # (often 10+ min) yt-dlp download to a background task so
+                # the lane is freed immediately. The job sits in phase
+                # "downloading" until the background task uploads the
+                # video and sends the final WorkerJobComplete. keep_session
+                # is excluded -- there the operator drives download_video()
+                # interactively inside the live session.
+                _defer_video = (
+                    bool(getattr(assign.options, "download_video", False))
+                    and not keep_session
+                )
+                fetch_opts.defer_video_download = _defer_video
                 try:
                     result = await fetch(fetch_opts)
                 except Exception as e:
@@ -7187,12 +7202,38 @@ class WorkerAgent:
                     ],
                     visited_urls=list(getattr(result, "visited_urls", []) or []),
                 )
-                await self._send(
-                    WorkerJobComplete(
-                        job_id=job_id,
-                        result=job_result,
-                    )
+                # Deferred video download: capture is done and the
+                # image assets are uploaded, but a (big) video was
+                # detected. Mark the job "downloading", then run yt-dlp
+                # in a detached background task that uploads the video
+                # and sends the FINAL WorkerJobComplete. The lane is
+                # released by the finally below (the download doesn't
+                # need the browser), so other jobs can use it meanwhile.
+                _deferred_targets = list(
+                    getattr(result, "deferred_video_targets", []) or []
                 )
+                if _defer_video and _deferred_targets:
+                    await self._send(
+                        WorkerJobProgress(job_id=job_id, phase="downloading")
+                    )
+                    _logger.info(
+                        f"[{job_id}] video deferred to background "
+                        f"({len(_deferred_targets)} target(s)); lane released, "
+                        f"phase=downloading",
+                    )
+                    self._spawn_deferred_video_download(
+                        assign,
+                        _deferred_targets,
+                        job_result,
+                        page_url_for_assets,
+                    )
+                else:
+                    await self._send(
+                        WorkerJobComplete(
+                            job_id=job_id,
+                            result=job_result,
+                        )
+                    )
                 # keep_session: hand the (now post-fetch) browser /
                 # session over to the operator instead of tearing down.
                 # Concretely:
@@ -7890,6 +7931,119 @@ class WorkerAgent:
 
         return _on_ready, _on_closing
 
+    def _spawn_deferred_video_download(
+        self,
+        assign: HubAssignJob,
+        targets: list[dict],
+        base_result,
+        page_url: str | None,
+    ) -> None:
+        """Run a fetch job's deferred yt-dlp download(s) in a DETACHED
+        background task, upload the resulting video(s) to the job's
+        /assets, then send the FINAL WorkerJobComplete.
+
+        Called after the lane has been released (the download only needs
+        the stream URL + referer, not the live browser), so the job sits
+        in phase "downloading" without pinning a Chrome lane. Uses its
+        OWN temp dir (not the job workdir, which the caller rmtree's) and
+        a generous per-download timeout so big VODs aren't killed
+        mid-stream (the old inline path capped at 600s and died ~50%).
+        """
+        import os as _os
+        import shutil as _shutil
+        import tempfile as _tempfile
+
+        job_id = assign.job_id
+
+        async def _run() -> None:
+            from core.fetcher import run_ytdlp
+
+            tmp = Path(_tempfile.mkdtemp(prefix=f"paprika-vid-{job_id}-"))
+            dl_timeout = int(
+                _os.environ.get("PAPRIKA_VIDEO_DOWNLOAD_TIMEOUT_S", "7200")
+            )
+
+            def _dl_log(line: str) -> None:
+                # Worker stderr only -- thread-safe (logging), and the
+                # phase badge already says "downloading". Streaming every
+                # progress line to the hub from this worker thread would
+                # need call_soon_threadsafe; not worth it.
+                _logger.info("[%s] [downloading] %s", job_id, line)
+
+            added: list = []
+            try:
+                await self._send(WorkerJobLog(
+                    job_id=job_id,
+                    line=f"  [downloading] {len(targets)} video target(s) "
+                         f"in background…",
+                ))
+                for t in targets:
+                    u = t.get("url")
+                    ref = t.get("referer")
+                    if not u:
+                        continue
+                    ok, msg = await asyncio.to_thread(
+                        run_ytdlp, u, tmp,
+                        referer=ref, timeout=dl_timeout, log=_dl_log,
+                    )
+                    if not ok:
+                        await self._send(WorkerJobLog(
+                            job_id=job_id,
+                            line=f"  [downloading] FAIL {u}: {str(msg)[:200]}",
+                        ))
+                # Upload every completed file (skip in-progress parts).
+                _video_ext = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".ts"}
+                for p in sorted(tmp.iterdir()):
+                    if not p.is_file():
+                        continue
+                    low = p.name.lower()
+                    if low.endswith((".part", ".ytdl")) or ".part-" in low:
+                        continue
+                    mime = "video/mp4" if p.suffix.lower() in _video_ext else None
+                    await self._upload_asset(
+                        assign, p, p.name,
+                        mime=mime, page_url=page_url, timeout=900.0,
+                    )
+                    try:
+                        sz = p.stat().st_size
+                    except Exception:
+                        sz = 0
+                    added.append(AssetInfo(
+                        name=p.name, size=sz, mime=mime,
+                        url=None, page_url=page_url,
+                        href=f"/jobs/{job_id}/assets/{p.name}",
+                    ))
+                await self._send(WorkerJobLog(
+                    job_id=job_id,
+                    line=f"  [downloading] done: {len(added)} video asset(s) "
+                         f"uploaded",
+                ))
+            except Exception as e:
+                await self._send(WorkerJobLog(
+                    job_id=job_id,
+                    line=f"  [downloading] error: {type(e).__name__}: {e}",
+                ))
+            finally:
+                _shutil.rmtree(tmp, ignore_errors=True)
+                # ALWAYS finish the job so it can never hang in
+                # "downloading" -- include whatever video assets landed.
+                try:
+                    base_result.assets = list(base_result.assets) + added
+                except Exception:
+                    pass
+                try:
+                    await self._send(WorkerJobComplete(
+                        job_id=job_id, result=base_result,
+                    ))
+                except Exception:
+                    pass
+
+        task = asyncio.create_task(_run())
+        if not hasattr(self, "_bg_video_tasks"):
+            self._bg_video_tasks = set()
+        self._bg_video_tasks.add(task)
+        task.add_done_callback(lambda t: self._bg_video_tasks.discard(t))
+
     def _make_cookie_save_callback(self, assign, save_host: str, log):
         """Return an async callable suitable for FetchOptions.on_complete_dump_cookies.
 
@@ -8136,6 +8290,7 @@ class WorkerAgent:
         source_url: str | None = None,
         mime: str | None = None,
         page_url: str | None = None,
+        timeout: float | None = None,
     ) -> None:
         url = assign.asset_upload_base
         try:
@@ -8156,7 +8311,10 @@ class WorkerAgent:
                     data["page_url"] = page_url
                 if self.worker_secret:
                     data["secret"] = self.worker_secret
-                r = await self._http.post(url, files=files, data=data)
+                post_kwargs: dict[str, Any] = {"files": files, "data": data}
+                if timeout is not None:
+                    post_kwargs["timeout"] = float(timeout)
+                r = await self._http.post(url, **post_kwargs)
                 r.raise_for_status()
         except Exception as e:
             await self._send(

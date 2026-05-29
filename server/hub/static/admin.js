@@ -2397,14 +2397,18 @@ function syncScreenshotBusyState(jobs, sessions) {
       // progress.phase set by WorkerJobComplete when keep_session=True.
       // Falls back to RUNNING for in-progress crawls + codegen-loop
       // sessions (which don't have the keepalive phase).
-      const isKeepalive = !!(
-        job && job.progress && job.progress.phase === 'keepalive'
-      );
+      const _phase = job && job.progress && job.progress.phase;
+      const isKeepalive = _phase === 'keepalive';
+      // "downloading": fetch finished, a detached yt-dlp download is
+      // still uploading the video. Distinct orange-ish badge.
+      const isDownloading = _phase === 'downloading';
       tile.wrap.classList.add('busy');
       tile.wrap.classList.remove('idle');
-      tile.badge.className = isKeepalive ? 'ssbadge keepalive' : 'ssbadge running';
+      tile.badge.className =
+        (isKeepalive || isDownloading) ? 'ssbadge keepalive' : 'ssbadge running';
       const txt = tile.badge.querySelector('.ssbadge-text');
-      if (txt) txt.textContent = isKeepalive ? 'KEEPALIVE' : 'RUNNING';
+      if (txt) txt.textContent =
+        isDownloading ? 'DOWNLOADING' : (isKeepalive ? 'KEEPALIVE' : 'RUNNING');
       // Title + sub-label: prefer the job URL when we have it, otherwise
       // fall back to the session's current_url / initial_url so codegen-
       // loop / vision-agent jobs still give the operator something
@@ -4377,9 +4381,13 @@ function ljpAppendMeta(text) {
   el.scrollTop = el.scrollHeight;
 }
 
-function ljpSetStatus(s) {
+function ljpSetStatus(s, phase) {
   const el = document.getElementById('ljpStatus');
-  el.textContent = s || '…';
+  // "downloading" phase: status is still running (the fetch finished but
+  // a detached yt-dlp download is uploading the video). Show it as a
+  // distinct label while keeping the running palette/pulse.
+  const isDownloading = (s === 'running' && phase === 'downloading');
+  el.textContent = isDownloading ? 'downloading' : (s || '…');
   // The status pill colour is driven by a CSS class -- swap the
   // class based on the current state so the palette stays in sync
   // with the rest of the panel.
@@ -4587,7 +4595,7 @@ async function ljpRefreshStatus() {
     // Stash mode so ljpSetStatus can decide whether ▶ resume should be
     // enabled (codegen-loop / rerun have script; fetch doesn't).
     LJP.mode = (info.options || {}).mode || null;
-    ljpSetStatus(info.status);
+    ljpSetStatus(info.status, info.progress && info.progress.phase);
     // Asset counter -- visible as soon as the first asset lands.
     const saved = (info.progress && info.progress.assets_saved) || 0;
     const failed = (info.progress && info.progress.assets_failed) || 0;
