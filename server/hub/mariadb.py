@@ -144,8 +144,7 @@ _TABLES: list[tuple[str, str]] = [
             created_at       DATETIME(3),
             updated_at       DATETIME(3),
             last_used_at     DATETIME(3),
-            INDEX idx_tier (tier),
-            INDEX idx_tags ((CAST(tags AS CHAR(512))))
+            INDEX idx_tier (tier)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
     ),
