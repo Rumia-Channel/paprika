@@ -34,6 +34,10 @@ _START_URL_RE = re.compile(r"^==> start_url:\s+(.+)")
 _GOAL_RE = re.compile(r"^==> goal:\s+(.+)")
 # Pattern for codegen-loop header
 _CODEGEN_RE = re.compile(r"^==> codegen-loop start")
+# Pattern for rerun/inline header
+_RERUN_RE = re.compile(r"^==> rerun start:")
+# Fallback: look for any URL-like string in the first lines
+_FALLBACK_URL_RE = re.compile(r"(https?://\S+)")
 
 
 def _parse_log(log_path: Path) -> dict[str, str]:
@@ -42,7 +46,7 @@ def _parse_log(log_path: Path) -> dict[str, str]:
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f):
-                if i > 20:
+                if i > 30:
                     break
                 line = line.strip()
                 m = _HEADER_RE.match(line)
@@ -66,6 +70,15 @@ def _parse_log(log_path: Path) -> dict[str, str]:
                 if m:
                     info["mode"] = "codegen"
                     continue
+                m = _RERUN_RE.match(line)
+                if m:
+                    info["mode"] = "rerun"
+                    continue
+                # Fallback: if no URL yet, look for any URL on the line
+                if "url" not in info:
+                    fm = _FALLBACK_URL_RE.search(line)
+                    if fm:
+                        info["url"] = fm.group(1).strip()
     except Exception as e:
         log.debug("parse log %s: %s", log_path, e)
     return info
@@ -165,11 +178,21 @@ async def recover_from_disk(
             async with conn.cursor() as cur:
                 for job in batch:
                     try:
+                        # Use INSERT ... ON DUPLICATE KEY UPDATE so
+                        # we can fill in missing url/mode/goal on
+                        # previously recovered rows that lacked them.
                         await cur.execute(
-                            """INSERT IGNORE INTO jobs
+                            """INSERT INTO jobs
                                (job_id, status, url, mode, goal, options,
                                 created_at, completed_at)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                               ON DUPLICATE KEY UPDATE
+                                 url = IF(url = '' OR url IS NULL,
+                                          VALUES(url), url),
+                                 mode = IF(mode IS NULL,
+                                           VALUES(mode), mode),
+                                 goal = IF(goal IS NULL,
+                                           VALUES(goal), goal)""",
                             (
                                 job["job_id"],
                                 job["status"],
@@ -181,7 +204,7 @@ async def recover_from_disk(
                                 job["completed_at"],
                             ),
                         )
-                        if cur.rowcount > 0:
+                        if cur.rowcount == 1:
                             recovered += 1
                         else:
                             skipped += 1
