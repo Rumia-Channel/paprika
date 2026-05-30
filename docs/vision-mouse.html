@@ -2,10 +2,10 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>Vision AI とマウス操作 — 人間的な軌跡でボット検知を回避</title>
+<title>Vision AI とマウス操作 — 人間的な軌跡で自然にクリック</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
-<meta name="description" content="Paprika の Vision AI エージェントがスクリーンショットから座標を特定し、Bézier 曲線による人間的なマウス軌跡でクリックを実行する仕組み。CDP Input API、加減速、ジッター、ボット検知回避の技術解説。">
+<meta name="description" content="Paprika の Vision AI エージェントがスクリーンショットから座標を特定し、Bézier 曲線による人間的なマウス軌跡でクリックを実行する仕組み。CDP Input API、加減速、ジッター、自然な操作のための技術解説。">
 <link rel="canonical" href="https://paps-jp.github.io/paprika/vision-mouse.html">
 </head>
 <body>
@@ -56,7 +56,6 @@
       <li><a href="#easing">加減速とジッター</a></li>
       <li><a href="#actions">対応アクション一覧</a></li>
       <li><a href="#config">設定</a></li>
-      <li><a href="#detection">ボット検知との関係</a></li>
     </ul>
   </aside>
 
@@ -84,7 +83,8 @@
     </table>
     <p>CSS セレクタ方式は DOM の <code>element.click()</code> を呼ぶため、マウスの物理的な移動は発生しません。
     一方 Vision AI 方式は、人間と同じように <strong>画面上のピクセル座標にマウスを動かしてクリック</strong> します。
-    このマウス移動の「動かし方」がボット検知の判定に影響します。</p>
+    Paprika では「人間が実際にブラウザを触っているような動かし方」を再現することを大事にしており、
+    本ページではその仕組みを解説します。</p>
 
     <h2 id="vision-pipeline">Vision AI パイプライン</h2>
     <p>Vision エージェント（CogAgent / Qwen-VL 等）の 1 ステップ：</p>
@@ -114,15 +114,15 @@ Input.dispatchMouseEvent(type="mouseReleased", x=432, y=218, button="left")</cod
     <h2 id="problem">瞬間移動の問題</h2>
 
     <div class="callout warn">
-    <strong>「瞬間移動」はボットの指紋</strong>
+    <strong>「瞬間移動」は人間の操作ではない</strong>
     従来の実装では <code>mouseMoved</code> を 1 回だけ発行してターゲットに瞬間移動していました。
-    人間のマウスは必ず曲線を描いて移動するため、ボット検知システムはこのパターンを見分けます。
+    人間が実際にブラウザを触るときのマウスは必ず曲線を描いて動き、加減速も伴います。
+    瞬間移動はその振る舞いから乖離しており、人間的な操作ではありません。
     </div>
 
-    <p>ボット検知システム（Cloudflare Turnstile、reCAPTCHA v3 等）は、
-    マウスの移動軌跡を分析してスコアリングします：</p>
+    <p>人間がブラウザを操作したときのマウス移動と、瞬間移動の振る舞いを比較すると次のような違いがあります：</p>
     <table>
-      <thead><tr><th>特徴</th><th>人間</th><th>ボット（瞬間移動）</th></tr></thead>
+      <thead><tr><th>特徴</th><th>人間の操作</th><th>瞬間移動</th></tr></thead>
       <tbody>
         <tr><td>移動軌跡</td><td>曲線（微妙な S 字カーブ）</td><td>直線 or 瞬間移動</td></tr>
         <tr><td>速度変化</td><td>加速 → 巡航 → 減速</td><td>一定速度 or 0ms</td></tr>
@@ -130,6 +130,8 @@ Input.dispatchMouseEvent(type="mouseReleased", x=432, y=218, button="left")</cod
         <tr><td>mouseMoved 数</td><td>数十〜数百イベント</td><td>0〜1 イベント</td></tr>
       </tbody>
     </table>
+    <p>Paprika ではブラウザ操作の振る舞いを「人間が実際に画面を見て触っているような動かし方」に
+    寄せるため、後述の Bezier 曲線軌跡 + 加減速 + マイクロジッターを採用しています。</p>
 
     <h2 id="bezier">Bezier 曲線による軌跡生成</h2>
     <p>Paprika は <strong>3 次 Bezier 曲線</strong>（cubic Bezier）でマウスの軌跡を生成します。</p>
@@ -259,55 +261,9 @@ if 0 &lt; i &lt; steps:
 
     <div class="callout tip">
     <strong>速度と自然さのトレードオフ</strong>
-    steps を減らすか duration を短くすると速くなりますが、軌跡が荒くなりボット検知に引っかかりやすくなります。
+    steps を減らすか duration を短くすると速くなりますが、軌跡が荒く・動きが不自然になります。
     デフォルト値（30 steps / 250ms）は人間のマウス移動速度の研究に基づいた妥当な値です。
     </div>
-
-    <h2 id="detection">ボット検知との関係</h2>
-
-    <h3>検知システムが見ているもの</h3>
-    <p>主要なボット検知システムがマウスイベントから判定する特徴：</p>
-    <table>
-      <thead><tr><th>検知手法</th><th>判定内容</th><th>Paprika の対応</th></tr></thead>
-      <tbody>
-        <tr>
-          <td><strong>軌跡分析</strong></td>
-          <td>mouseMoved イベントの座標列が直線的すぎないか</td>
-          <td>Bezier 曲線で自然なカーブを生成</td>
-        </tr>
-        <tr>
-          <td><strong>速度プロファイル</strong></td>
-          <td>移動速度が一定すぎないか、加減速があるか</td>
-          <td>sinusoidal ease-in-out で加減速</td>
-        </tr>
-        <tr>
-          <td><strong>ジッター検出</strong></td>
-          <td>完全に滑らかな軌跡は人間ではない</td>
-          <td>±1.5px のマイクロノイズを付加</td>
-        </tr>
-        <tr>
-          <td><strong>イベント頻度</strong></td>
-          <td>mouseMoved が 0 回 or 1 回は自動化の証拠</td>
-          <td>30 回の mouseMoved を発行</td>
-        </tr>
-        <tr>
-          <td><strong>タイミング</strong></td>
-          <td>イベント間隔が完全に等間隔すぎないか</td>
-          <td>ease-in-out で間隔に自然な変動</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h3>限界</h3>
-    <p>マウス軌跡だけでは回避できない検知手法もあります：</p>
-    <ul>
-      <li><strong>ブラウザフィンガープリント</strong> — WebGL / Canvas / AudioContext のハッシュ値。
-      Paprika は実際の Chrome を使うため、これは自然にパスします。</li>
-      <li><strong>navigator.webdriver</strong> — CDP 接続時にセットされるフラグ。
-      nodriver（undetected-chromedriver の後継）がパッチ済み。</li>
-      <li><strong>IP レピュテーション</strong> — 同一 IP からの大量アクセス。
-      プロキシローテーションで対応（<code>paprika-proxy-fetch</code> プラグイン参照）。</li>
-    </ul>
 
     <div class="footer">
       Paprika &copy; 2026 <a href="https://www.paps.jp">paps-jp</a>
