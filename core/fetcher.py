@@ -562,6 +562,14 @@ def _hls_is_live(url: str, referer: Optional[str] = None) -> Optional[bool]:
             content = resp.read(8192).decode("utf-8", errors="replace")
     except Exception:
         return None
+    # Master playlists (multi-variant) list sub-streams via
+    # EXT-X-STREAM-INF but never contain EXT-X-ENDLIST.  They are
+    # NOT live — yt-dlp resolves variants itself.  Returning True
+    # here would inject --hls-use-mpegts / --download-sections flags
+    # that break ffmpeg on CDNs with JPEG thumbnails in the variant
+    # manifest (e.g. surrit.com).
+    if "#EXT-X-STREAM-INF" in content:
+        return None
     if "#EXT-X-ENDLIST" in content:
         return False
     if "#EXT-X-PLAYLIST-TYPE:VOD" in content:
@@ -1147,6 +1155,63 @@ _FORCE_LAZY_LOAD_JS = r"""
 # enforces a click-to-load gate).
 _FORCE_LAZY_LOAD_ENABLED = os.environ.get(
     "PAPRIKA_FORCE_LAZY_LOAD", "1",
+).strip().lower() not in ("0", "false", "no", "off", "")
+
+
+# Read the live hls.js / Plyr player instance to recover the AUTHORITATIVE
+# HLS manifest + every quality variant. Modern JAV/streaming sites hand
+# hls.js a master playlist and play through a blob: URL; the network only
+# shows whatever variant the player happened to fetch (often a low-quality
+# muted-autoplay PREVIEW from a decoy CDN), so the passive network sniff
+# misses the real master and the top quality. hls.js has already parsed
+# the master into ``instance.url`` (master) and ``instance.levels[]``
+# (each variant's ``.url`` + resolution), so reading the live instance is
+# the canonical, CORS-free way to enumerate every stream. Generalised:
+# probes window.hls, Plyr (window.player.hls), any global that quacks like
+# an Hls instance (has .url + .levels[]), plus <video>/<source> currentSrc.
+# Only http(s) manifest/video URLs are returned (blob: excluded), so the
+# results drop straight into video_urls_seen -> pick_stream_urls -> yt-dlp.
+_HLS_INSTANCE_JS = r"""
+JSON.stringify((() => {
+  const out = [];
+  const _ok = u => typeof u === 'string'
+    && /^https?:/.test(u)
+    && /\.(m3u8|mpd|mp4|webm|m4v|mov)(\?|$)/i.test(u);
+  const push = u => { if (_ok(u)) out.push(u); };
+  const harvest = h => {
+    if (!h || typeof h !== 'object') return;
+    try { push(h.url); } catch (_) {}
+    try { (h.levels || []).forEach(l => { if (l) push(l.url); }); } catch (_) {}
+  };
+  try {
+    const cands = [];
+    try { if (window.hls) cands.push(window.hls); } catch (_) {}
+    try { if (window.player && window.player.hls) cands.push(window.player.hls); } catch (_) {}
+    // Scan globals for anything that quacks like an Hls instance.
+    for (const k of Object.getOwnPropertyNames(window)) {
+      try {
+        const v = window[k];
+        if (v && typeof v === 'object'
+            && typeof v.url === 'string'
+            && Array.isArray(v.levels)) {
+          cands.push(v);
+        }
+      } catch (_) {}
+    }
+    cands.forEach(harvest);
+  } catch (_) {}
+  // Direct <video>/<source> http manifests (blob: is excluded by _ok).
+  try {
+    document.querySelectorAll('video, source').forEach(v => {
+      push(v.currentSrc || ''); push(v.src || '');
+    });
+  } catch (_) {}
+  return [...new Set(out)];
+})())
+"""
+
+_HLS_INSTANCE_PROBE_ENABLED = os.environ.get(
+    "PAPRIKA_HLS_INSTANCE_PROBE", "1",
 ).strip().lower() not in ("0", "false", "no", "off", "")
 
 
@@ -1928,6 +1993,30 @@ async def fetch(opts: FetchOptions) -> FetchResult:
         except Exception as e:
             log(f"  (video detection failed: {e})")
             result.video_detection = {"videos": [], "iframes": []}
+
+        # Recover the authoritative HLS manifest + every quality variant
+        # from the live hls.js / Plyr instance (see _HLS_INSTANCE_JS). The
+        # passive network sniff only sees whatever variant the player
+        # fetched -- often a low-quality decoy preview -- so this is what
+        # gets the real master + top quality into the yt-dlp pipeline.
+        if _HLS_INSTANCE_PROBE_ENABLED:
+            try:
+                raw_hls = await tab.evaluate(_HLS_INSTANCE_JS)
+                hls_urls = json.loads(raw_hls) if raw_hls else []
+                added = 0
+                for u in hls_urls:
+                    if u and u not in result.video_urls_seen:
+                        result.video_urls_seen.append(u)
+                        added += 1
+                if hls_urls:
+                    log(
+                        f"  ... hls.js instance probe: {len(hls_urls)} "
+                        f"manifest URL(s) ({added} new) from live player"
+                    )
+            except Exception as e:
+                log(f"  ... hls.js instance probe skipped "
+                    f"({type(e).__name__}: {e})")
+
         for line in _format_video_report(
             result.video_detection, result.video_urls_seen
         ):
