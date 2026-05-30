@@ -749,6 +749,44 @@ class Page:
             "setExtensionEnabled", {"id": ext_id, "enabled": bool(enabled)},
         )
 
+    # ---- forensics / analyze agent ---------------------------------
+    async def forensics(
+        self,
+        goal: str,
+        *,
+        max_steps: int = 18,
+        page_url: Optional[str] = None,
+    ) -> dict:
+        """Run a read-only forensics agent on this session.
+
+        Drives an LLM in an iterative investigation loop over the live
+        page: each turn the LLM proposes one JS probe (via the same
+        transport as :meth:`evaluate`), reads the result, and refines
+        its hypothesis until it can write a structured Markdown report.
+        Useful for *"why doesn't X happen on this page?"* diagnosis
+        without writing a script up front.
+
+        Read-only by contract — the loop pre-flights each probe against
+        a safety regex that rejects navigation, form submit, element
+        ``.click()``, cookie / storage writes, ``POST`` fetches, and DOM
+        mutation. Calling site-defined JS functions (e.g. a suspected
+        reveal trigger) IS allowed.
+
+        Returns the hub reply dict::
+
+            {"completed", "steps_taken", "max_steps", "report",
+             "trace": [{n, thought, expression, await_promise,
+                        result, error, elapsed_ms}, ...],
+             "model", "elapsed_ms", "default_max_steps"}
+        """
+        body = dict(self._pid_json())
+        body.update({"goal": goal, "max_steps": int(max_steps)})
+        if page_url:
+            body["page_url"] = page_url
+        return await self._client._json(
+            "POST", f"/sessions/{self._sid}/forensics", json=body,
+        )
+
     # ---- downloads ---------------------------------------------------
     async def download(
         self, url: str, *, filename: Optional[str] = None,

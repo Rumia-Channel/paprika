@@ -571,6 +571,9 @@ app.include_router(_settings_router)
 # controls / show a banner when no engine is configured. Kept separate
 # from /settings to avoid bloating the hot page-load payload and so the
 # UI can poll it cheaply.
+from server.hub.routes.forensics import router as _forensics_router
+app.include_router(_forensics_router)
+
 from server.hub.routes.llm import router as _llm_router
 
 app.include_router(_llm_router)
