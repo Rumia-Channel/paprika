@@ -188,6 +188,12 @@ async def lifespan(app: FastAPI):
     # Otherwise a client that forgets to DELETE leaks a Lane forever.
     reaper_task = asyncio.create_task(_session_reaper_loop())
 
+    # Selection-loop retire phase: hourly, drop auto-tier skills/conventions
+    # that the fitness signal (success_count/use_count) shows are duds or
+    # zombies. Curated is never auto-touched; auto deletion is gated by the
+    # ``auto_retire_enabled`` setting (default off -> dry-run logs only).
+    retire_task = asyncio.create_task(_skill_convention_reaper_loop())
+
     # SMB storage: a cifs mount does not survive a restart, so re-mount
     # the configured share NOW (before the first job needs storage_dir)
     # and spawn a watchdog that re-mounts it if it ever drops (NAS
@@ -259,6 +265,7 @@ async def lifespan(app: FastAPI):
     yield
 
     reaper_task.cancel()
+    retire_task.cancel()
     if smb_watchdog_task is not None:
         smb_watchdog_task.cancel()
     for t in list(state.local_tasks.values()):
@@ -291,6 +298,7 @@ from server.hub._reaper import (  # noqa: F401
     _RUNNING_TO_KEEPALIVE_QUIET_S,
     _recover_orphan_running_jobs,
     _session_reaper_loop,
+    _skill_convention_reaper_loop,
 )
 
 # Tag taxonomy: groups every endpoint into a logical section in the

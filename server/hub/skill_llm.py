@@ -126,12 +126,20 @@ paprika-client script for a new task.
 
 You will be given:
   1. The new task description (goal + URL).
-  2. A list of available skills with their slug + short description.
+  2. A list of available skills, each with slug + short description plus
+     its track record: use_count (times injected into past jobs),
+     success_count, and success_rate (success_count / use_count).
 
 Pick up to N skills that you genuinely believe will improve the
 generated script. Skip skills that look only superficially related.
 DEFAULT TO PICKING FEWER. It is better to return zero skills than
 to return irrelevant ones.
+
+When two skills are similarly relevant, PREFER the one with the higher
+success_rate. Treat a skill with a high use_count but low success_rate
+(e.g. used 5+ times yet success_rate < 0.2) as a repeated dud and avoid
+it unless it is clearly the best match. A null success_rate just means
+untried (no track record yet) -- that is not a strike against it.
 
 Output JSON ONLY:
 
@@ -331,9 +339,29 @@ async def pick_relevant_skills(
         meta["reason"] = "no candidates or top_k=0"
         return [], meta
 
-    # Build candidate roster. Curated wins ties (sort key).
+    # Build candidate roster. Order by fitness so the highest-signal
+    # skills appear first (LLMs weight earlier items): curated before
+    # auto, then by track record. Untried skills get a neutral 0.5 prior
+    # so a brand-new skill isn't buried beneath a proven-but-mediocre one,
+    # while a repeatedly-injected dud (high use, ~0 success) sinks.
+    def _score(s) -> float:
+        uc = s.use_count or 0
+        if not uc:
+            return 0.5
+        return getattr(s, "success_count", 0) / uc
+
+    ordered = sorted(
+        candidates,
+        key=lambda s: (
+            0 if s.tier == "curated" else 1,
+            -_score(s),
+            -(s.use_count or 0),
+        ),
+    )
     rows = []
-    for s in candidates:
+    for s in ordered:
+        uc = s.use_count or 0
+        sc = getattr(s, "success_count", 0)
         rows.append(
             {
                 "slug": s.slug,
@@ -341,6 +369,10 @@ async def pick_relevant_skills(
                 "description": s.description,
                 "applicable_when": s.applicable_when,
                 "tags": s.tags,
+                # Track record so the model can prefer proven skills.
+                "use_count": uc,
+                "success_count": sc,
+                "success_rate": (round(sc / uc, 2) if uc else None),
             }
         )
     user = (

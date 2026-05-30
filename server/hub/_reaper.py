@@ -202,3 +202,103 @@ async def _session_reaper_loop():
                 log.warning(
                     "reaper: failed to close %s", s.session_id, exc_info=True
                 )
+
+
+# ----------------------------------------------------------------------------
+# Skill / convention retire reaper (selection loop, retire phase)
+# ----------------------------------------------------------------------------
+# How often to scan the registries. Slow -- fitness only shifts over many
+# jobs, so hourly is plenty and keeps the log quiet.
+_RETIRE_INTERVAL_S = 3600
+# Need at least this many injections before a low success_rate is trusted
+# as a real "dud" verdict (small samples are noise).
+_RETIRE_MIN_USE = 5
+# success_rate at/below this (with >= _RETIRE_MIN_USE uses) = repeatedly
+# rode along yet rarely correlated with success.
+_RETIRE_MAX_RATE = 0.15
+# Auto-tier record never injected AND older than this = zombie the operator
+# never groomed; safe to drop.
+_RETIRE_IDLE_DAYS = 30
+
+
+def _retire_reason(rec) -> str | None:
+    """Why this record should be retired, or None to keep it. Pure /
+    tier-agnostic; the caller decides whether to ACT (auto) or just
+    suggest (curated)."""
+    uc = getattr(rec, "use_count", 0) or 0
+    sc = getattr(rec, "success_count", 0) or 0
+    if uc >= _RETIRE_MIN_USE and (sc / uc) <= _RETIRE_MAX_RATE:
+        return f"dud (use={uc} success={sc} rate={sc / uc:.2f})"
+    if uc == 0:
+        try:
+            created = datetime.fromisoformat((rec.created_at or "").replace("Z", ""))
+            age_days = (datetime.utcnow() - created).days
+        except Exception:
+            age_days = 0
+        if age_days >= _RETIRE_IDLE_DAYS:
+            return f"zombie (never injected, age={age_days}d)"
+    return None
+
+
+async def _skill_convention_reaper_loop():
+    """Retire auto-tier skills / conventions that aren't earning their
+    keep -- repeatedly injected but rarely tied to success (duds), or
+    never exercised and old (zombies). The fitness signal comes from the
+    selection loop (success_count / use_count).
+
+    Safety rails:
+      * CURATED entries are operator-approved and NEVER auto-deleted --
+        a curated dud is only logged as a suggestion.
+      * Auto-tier deletion is gated by the ``auto_retire_enabled`` setting
+        (default off). When off, candidates are logged as a dry-run so the
+        operator can review before turning it on. Human stays in the loop.
+    """
+    first = True
+    while True:
+        try:
+            # First scan shortly after startup so the operator sees the
+            # dry-run candidate list promptly; hourly thereafter.
+            await asyncio.sleep(120 if first else _RETIRE_INTERVAL_S)
+        except asyncio.CancelledError:
+            return
+        first = False
+        enabled = False
+        try:
+            if state.settings is not None:
+                enabled = bool(state.settings.get("auto_retire_enabled", False))
+        except Exception:
+            enabled = False
+        for kind, reg in (("skill", state.skills), ("convention", state.conventions)):
+            if reg is None:
+                continue
+            try:
+                records = reg.list_all()
+            except Exception:
+                continue
+            for rec in records:
+                reason = _retire_reason(rec)
+                if not reason:
+                    continue
+                tier = getattr(rec, "tier", "auto")
+                slug = getattr(rec, "slug", "?")
+                if tier != "auto":
+                    log.info(
+                        "retire: curated %s %r looks stale -- %s "
+                        "(curated is never auto-deleted; review manually)",
+                        kind, slug, reason,
+                    )
+                    continue
+                if not enabled:
+                    log.info(
+                        "retire(dry-run): would delete auto %s %r -- %s "
+                        "(set auto_retire_enabled=true to act)",
+                        kind, slug, reason,
+                    )
+                    continue
+                try:
+                    reg.delete(slug, tier="auto")
+                    log.info("retire: deleted auto %s %r -- %s", kind, slug, reason)
+                except Exception:
+                    log.warning(
+                        "retire: failed to delete auto %s %r", kind, slug, exc_info=True
+                    )
