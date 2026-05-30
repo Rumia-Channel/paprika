@@ -389,6 +389,20 @@ async def mariadb_migrate(category: str) -> dict:
     if category == "jobs":
         if state.store is None:
             raise HTTPException(503, "JobStore が未初期化です")
+        # Guard: if the current JobStore IS MariaDB, migrating
+        # MariaDB→MariaDB is a no-op that would INSERT IGNORE (all
+        # skipped) then purge (DELETE) all rows — catastrophic data loss.
+        if state.store_kind == "mariadb":
+            return {
+                "ok": True,
+                "category": "jobs",
+                "migrated": 0,
+                "skipped": 0,
+                "total": 0,
+                "purged": 0,
+                "errors": [],
+                "message": "既に MariaDB を使用中のため移行不要です",
+            }
         try:
             return await mariadb.migrate_jobs(state.store, pool)
         except Exception as e:
@@ -445,6 +459,25 @@ async def mariadb_migrate(category: str) -> dict:
             raise HTTPException(500, f"Presets 移行失敗: {e}")
 
     raise HTTPException(400, f"不明なカテゴリ: {category}")
+
+
+@router.post("/settings/mariadb/recover-jobs")
+async def mariadb_recover_jobs() -> dict:
+    """Recover lost job records from on-disk output directories.
+
+    Scans the storage directory for job output folders (log.txt,
+    assets/, page.html) and reconstructs ``jobs`` rows in MariaDB
+    using ``INSERT IGNORE`` (safe to re-run).
+    """
+    from server.hub.recover_jobs import recover_from_disk
+
+    pool = await _get_or_create_pool()
+    storage_dir = get_storage_dir()
+
+    try:
+        return await recover_from_disk(pool, storage_dir)
+    except Exception as e:
+        raise HTTPException(500, f"復旧失敗: {e}")
 
 
 @router.get("/settings/mariadb/tables")
