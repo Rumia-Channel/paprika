@@ -619,8 +619,14 @@
        * hover:   apply --la-bg / --la-bd / --la-fg accent + lift + shadow
      This keeps the bar visually consistent with the 一時停止 / 再開 /
      その他 / 閉じる buttons above. Per-button inline --la-* props
-     still distinguish nav vs popup vs URL vs screenshot at hover. */
-  .ljp-vnc-head .pill {
+     still distinguish nav vs popup vs URL vs screenshot at hover.
+     IMPORTANT: selector is prefixed with #liveJobPanel so its specificity
+     (0,2,1) beats the back-compat `#liveJobPanel .pill` rule below
+     (0,1,1) which otherwise re-applies border-radius:999px (full pill)
+     and font-size:.72em -- the exact symptoms reported in the screenshot
+     where noVNC pills rendered as fully-rounded chips instead of the
+     flat 7px-radius look of the LJP top header. */
+  #liveJobPanel .ljp-vnc-head .pill {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: .78em; line-height: 1; font-weight: 600;
     padding: 6px 10px; border-radius: 7px;
@@ -631,22 +637,22 @@
     transition: background .14s ease, border-color .14s ease,
                 color .14s ease, transform .1s ease, box-shadow .14s ease;
   }
-  .ljp-vnc-head .pill:not(:disabled):hover {
+  #liveJobPanel .ljp-vnc-head .pill:not(:disabled):hover {
     background: var(--la-bg, #f0f0f6);
     border-color: var(--la-bd, #d8d8e2);
     color: var(--la-fg, #2a2a35);
     transform: translateY(-1px);
     box-shadow: 0 3px 9px rgba(0,0,0,.10);
   }
-  .ljp-vnc-head .pill:not(:disabled):active {
+  #liveJobPanel .ljp-vnc-head .pill:not(:disabled):active {
     transform: translateY(0);
     box-shadow: 0 1px 2px rgba(0,0,0,.06);
   }
-  .ljp-vnc-head .pill:disabled {
+  #liveJobPanel .ljp-vnc-head .pill:disabled {
     cursor: not-allowed; opacity: .4;
     box-shadow: none; transform: none;
   }
-  .ljp-vnc-head .pill iconify-icon { font-size: 1.05em; }
+  #liveJobPanel .ljp-vnc-head .pill iconify-icon { font-size: 1.05em; }
   /* URL input + zoom select inside the bar: match the same height and
      border-radius so they read as one continuous control row alongside
      the pills. */
