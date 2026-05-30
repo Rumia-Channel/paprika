@@ -4306,6 +4306,13 @@ const LJP = {
   // After the job hits a terminal status, we do one final gallery sweep
   // and then stop polling -- assets stop arriving anyway.
   galleryStopped: false,
+  // Sticky flag set once ljpRefreshStatus has observed a terminal
+  // status AND the job is NOT a keep_session crawl. After this is true
+  // the periodic status / sessions / code timers are torn down --
+  // the underlying job state can't change anymore so further polls
+  // are pure noise (and noticeable hub load when many tabs are open).
+  // Reset to false on every fresh ljpAttach.
+  _terminalStopped: false,
   // JobOptions.mode of the attached job; needed so ljpSetStatus knows
   // whether ▶ resume should be enabled (only codegen-loop / rerun
   // have a saved script to re-rerun). Stashed by ljpRefreshStatus.
@@ -4656,6 +4663,24 @@ async function ljpRefreshStatus() {
           LJP.galleryStopped = true; // one more pass after terminal status, then stop polling it
         }
       }
+    }
+    // Tear down the periodic status / sessions / code timers when the
+    // job is fully terminal AND not a keep_session crawl. keep_session
+    // jobs keep mutating session state (noVNC iframe lifecycle, cookie
+    // dumps) until the operator closes the session, so we leave them
+    // alone. Plain Fetch / codegen-loop / vision-agent jobs in a
+    // terminal state can't change anymore -- continuing to poll wastes
+    // ~3 req/2.5s per opened Live panel for nothing.
+    const _isTerminal = info.status === 'completed' || info.status === 'succeeded'
+      || info.status === 'failed' || info.status === 'cancelled';
+    const _keepSession = !!(info.options && info.options.keep_session);
+    if (_isTerminal && !_keepSession && !LJP._terminalStopped) {
+      // One final sessions + code sweep so a last-second update doesn't
+      // get lost, then halt.
+      try { await ljpRefreshSessions(); } catch (_) {}
+      try { await ljpRefreshCode(); } catch (_) {}
+      ljpStopTimers();
+      LJP._terminalStopped = true;
     }
   } catch (_) {}
 }
@@ -6002,6 +6027,7 @@ function ljpReset() {
   LJP.galleryLastCount = -1;
   LJP.gallerySignature = "";
   LJP.galleryStopped = false;
+  LJP._terminalStopped = false;
   LJP.mode = null;
   LJP_CODE.attempts = [];
   LJP_CODE.selectedN = null;
@@ -6936,15 +6962,36 @@ function _stopRefreshLoop() {
   clearInterval(_refreshTimer);
   _refreshTimer = null;
 }
+// LJP timers also pause on hidden -- once a Live panel is attached
+// the job-specific polling (status/sessions/code at 2.5-4s) keeps
+// going independently of the main refresh loop. Without this gate the
+// LJP keeps polling /jobs/{id} forever in a backgrounded tab.
+function _ljpRestartTimersIfNeeded() {
+  if (!LJP.jobId || LJP.finished || LJP._terminalStopped) return;
+  if (!LJP.pollTimer) LJP.pollTimer = setInterval(ljpRefreshSessions, 3000);
+  if (!LJP.statusTimer) LJP.statusTimer = setInterval(ljpRefreshStatus, 2500);
+  if (!LJP.codeTimer) LJP.codeTimer = setInterval(ljpRefreshCode, 4000);
+}
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     _stopRefreshLoop();
+    // Also pause LJP per-job polling. ljpStopTimers clears all three
+    // (status / sessions / code) — they get re-armed on visibility
+    // resume below if LJP is still attached.
+    if (typeof ljpStopTimers === 'function') ljpStopTimers();
   } else {
     // Tab came back to the foreground: refresh once immediately so the
     // operator sees current state without waiting a full interval, then
     // resume the periodic loop.
     refresh();
     _startRefreshLoop();
+    // Catch-up LJP refresh + restart its timers if a job is attached.
+    if (LJP.jobId && !LJP.finished && !LJP._terminalStopped) {
+      try { ljpRefreshStatus(); } catch (_) {}
+      try { ljpRefreshSessions(); } catch (_) {}
+      try { ljpRefreshCode(); } catch (_) {}
+      _ljpRestartTimersIfNeeded();
+    }
   }
 });
 // Initial paint + loop. If the page somehow loads already-hidden
