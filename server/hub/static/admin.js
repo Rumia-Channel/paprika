@@ -5327,6 +5327,22 @@ const LJP_SHOT = {
   // are set.
   workerId: null,
   laneIdx: null,
+  // === Saved screenshots viewer state ===
+  // ``shots`` is the chronologically-sorted list from
+  // /jobs/{id}/screenshots.json (oldest first; latest = last index).
+  // It includes EVERY image asset (operator captures, SDK
+  // page.screenshot(), page.capture() label PNG, AI attempt
+  // final_screenshot.jpg, etc.) regardless of subdirectory depth.
+  shots: [],
+  // -1 = no shots loaded yet. Otherwise the index of the currently
+  // shown image in shots[].
+  currentIndex: -1,
+  // When true, ljpShotRefreshScreenshots() auto-advances currentIndex
+  // to the new latest entry as fresh shots arrive. Flipped off when
+  // the operator manually navigates backwards via prev/← / thumbnail
+  // click; flipped back on by next/→ reaching the end OR the
+  // 「⏭ 最新」button.
+  followLatest: true,
 };
 
 function ljpShotStopTimer() {
@@ -5346,11 +5362,11 @@ function ljpShotOnTabChange(activeTab) {
     return;
   }
   // Entering the tab: probe lane info, fire one immediate refresh,
-  // then start polling at the selected interval. Thumbnails are
-  // refreshed at a slower cadence than the live image.
+  // then start polling at the selected interval. The saved-shots
+  // viewer is refreshed at a slower cadence than the live image.
   ljpShotProbeLane().then(() => {
     ljpShotRefreshLive();
-    ljpShotRefreshThumbs();
+    ljpShotRefreshScreenshots();
     ljpShotResetTimer();
   });
 }
@@ -5376,9 +5392,9 @@ function ljpShotResetTimer() {
   if (sec > 0) {
     LJP_SHOT.timer = setInterval(ljpShotRefreshLive, sec * 1000);
   }
-  // Thumbnails refresh every 5s regardless of live interval -- new
-  // captures arrive sparingly, polling more often is wasted.
-  LJP_SHOT.refreshThumbsTimer = setInterval(ljpShotRefreshThumbs, 5000);
+  // Saved-shots viewer refreshes every 5s regardless of live interval
+  // -- new captures arrive sparingly, polling more often is wasted.
+  LJP_SHOT.refreshThumbsTimer = setInterval(ljpShotRefreshScreenshots, 5000);
 }
 
 function ljpShotRefreshLive() {
@@ -5405,43 +5421,168 @@ function ljpShotRefreshLive() {
     + `?width=1280&quality=70&t=${t}`;
 }
 
-async function ljpShotRefreshThumbs() {
+// Refresh the saved-screenshots list. Backed by /jobs/{id}/screenshots.json
+// (recursive over assets/, image extensions only) -- includes operator
+// 'Screenshot' captures, page.screenshot() / page.capture(label=...)
+// from SDK code, and AI-attempt final_screenshot.jpg files.
+async function ljpShotRefreshScreenshots() {
   if (!LJP.jobId) return;
-  let assets = [];
+  let shots = [];
   try {
-    const r = await fetch('/jobs/' + encodeURIComponent(LJP.jobId) + '/assets.json');
+    const r = await fetch('/jobs/' + encodeURIComponent(LJP.jobId) + '/screenshots.json');
     if (!r.ok) return;
     const d = await r.json();
-    assets = d.items || [];
+    shots = (d.items || []).slice();
   } catch (_) { return; }
-  // Filter to manual screenshots; keep them in chronological order
-  // (the filename embeds a timestamp, so a name-sort = time-sort).
-  const shots = assets
-    .filter(a => (a.name || '').startsWith('screenshot-'))
-    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  const host = document.getElementById('ljpShotThumbs');
-  const cnt  = document.getElementById('ljpShotCount');
-  const tCnt = document.getElementById('ljpShotThumbsCount');
-  if (cnt)  cnt.textContent  = String(shots.length);
-  if (tCnt) tCnt.textContent = String(shots.length);
-  if (!host) return;
+  // Stick-to-latest semantics: keep the operator's current position
+  // unchanged on refresh UNLESS they were already viewing the latest
+  // (followLatest=true) -- in which case advance to the new latest.
+  const prevLen = LJP_SHOT.shots.length;
+  const wasAtLatest = LJP_SHOT.followLatest && (
+    LJP_SHOT.currentIndex < 0 || LJP_SHOT.currentIndex >= prevLen - 1
+  );
+  LJP_SHOT.shots = shots;
   if (shots.length === 0) {
-    host.innerHTML = `<div style="color:#666; padding:12px; font-size:.85em; grid-column: 1 / -1;">no screenshots yet — click "Screenshot" to take one</div>`;
-    return;
+    LJP_SHOT.currentIndex = -1;
+  } else if (LJP_SHOT.currentIndex < 0 || wasAtLatest) {
+    LJP_SHOT.currentIndex = shots.length - 1;
+    LJP_SHOT.followLatest = true;
+  } else if (LJP_SHOT.currentIndex >= shots.length) {
+    LJP_SHOT.currentIndex = shots.length - 1;
   }
-  host.innerHTML = shots.map(a => {
-    const href = `/jobs/${encodeURIComponent(LJP.jobId)}/assets/${encodeURIComponent(a.name)}`;
-    const tsLabel = (a.name.match(/screenshot-(\d{8}-\d{6})/) || [, ''])[1].replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$2/$3 $4:$5:$6');
-    const sizeLabel = a.size ? `${Math.round(a.size / 1024)} KB` : '';
-    return `
-      <a href="${href}" target="_blank" style="display:block; background:#000; border-radius:5px; overflow:hidden; text-decoration:none; color:inherit;">
-        <img src="${href}" alt="${esc(a.name)}" loading="lazy" style="display:block; width:100%; aspect-ratio:16/9; object-fit:contain; background:#222;">
-        <div style="padding:4px 6px; background:#1a1a22; color:#ddd; font-size:.75em; display:flex; justify-content:space-between; gap:4px;">
-          <span title="${esc(a.name)}">${esc(tsLabel || a.name)}</span>
-          <span style="color:#888;">${sizeLabel}</span>
-        </div>
-      </a>`;
-  }).join('');
+  ljpShotRender();
+}
+
+function _ljpShotFmtTs(epoch) {
+  if (!epoch) return '';
+  try {
+    const d = new Date(epoch * 1000);
+    // ja-JP-ish compact format: 05/30 15:23:45 (year omitted for space)
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${m}/${day} ${hh}:${mm}:${ss}`;
+  } catch (_) { return ''; }
+}
+
+function ljpShotRender() {
+  const n = LJP_SHOT.shots.length;
+  const i = LJP_SHOT.currentIndex;
+  const cur = (i >= 0 && i < n) ? LJP_SHOT.shots[i] : null;
+  // Nav bar
+  const prevBtn = document.getElementById('ljpShotPrev');
+  const nextBtn = document.getElementById('ljpShotNext');
+  const fnameEl = document.getElementById('ljpShotFilename');
+  const tsEl = document.getElementById('ljpShotTimestamp');
+  const posEl = document.getElementById('ljpShotPosition');
+  const fullA = document.getElementById('ljpShotOpenFull');
+  if (prevBtn) prevBtn.disabled = (i <= 0);
+  if (nextBtn) nextBtn.disabled = (i < 0 || i >= n - 1);
+  if (fnameEl) {
+    const label = cur && cur.label ? `${cur.label}/` : '';
+    fnameEl.textContent = cur ? `${label}${cur.name}` : '(no screenshot)';
+    fnameEl.title = cur ? cur.path || cur.name : '';
+  }
+  if (tsEl) tsEl.textContent = cur ? _ljpShotFmtTs(cur.mtime) : '';
+  if (posEl) posEl.textContent = n > 0 ? `${i + 1} / ${n}` : '0 / 0';
+  if (fullA) {
+    if (cur) {
+      fullA.href = cur.href;
+      fullA.style.pointerEvents = '';
+      fullA.style.opacity = '';
+    } else {
+      fullA.href = '#';
+      fullA.style.pointerEvents = 'none';
+      fullA.style.opacity = '0.45';
+    }
+  }
+  // Main viewer
+  const vimg = document.getElementById('ljpShotViewerImg');
+  const vempty = document.getElementById('ljpShotViewerEmpty');
+  if (vimg && vempty) {
+    if (cur) {
+      // Cache-bust on filename change so an updated file (same name,
+      // new bytes) refreshes. Stable URL when index unchanged avoids
+      // re-downloading on every poll tick.
+      if (vimg.dataset.curPath !== cur.path) {
+        vimg.src = cur.href;
+        vimg.alt = cur.name;
+        vimg.dataset.curPath = cur.path;
+      }
+      vimg.style.display = '';
+      vempty.style.display = 'none';
+    } else {
+      vimg.src = '';
+      vimg.style.display = 'none';
+      vempty.style.display = '';
+      delete vimg.dataset.curPath;
+    }
+  }
+  // Thumbnail strip
+  const strip = document.getElementById('ljpShotThumbs');
+  if (strip) {
+    if (n === 0) {
+      strip.innerHTML = '';
+    } else {
+      strip.innerHTML = LJP_SHOT.shots.map((a, idx) => {
+        const isActive = (idx === i);
+        const border = isActive ? '#4a9eff' : '#333';
+        return `
+          <button data-shot-idx="${idx}" title="${esc(a.path || a.name)}"
+            style="flex:0 0 auto; cursor:pointer; padding:0; border:2px solid ${border}; background:#000; border-radius:4px; overflow:hidden; height:70px; aspect-ratio:16/9;">
+            <img src="${a.href}" alt="" loading="lazy" style="display:block; width:100%; height:100%; object-fit:cover;">
+          </button>`;
+      }).join('');
+      strip.querySelectorAll('button[data-shot-idx]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const newIdx = parseInt(btn.dataset.shotIdx, 10);
+          if (!Number.isFinite(newIdx)) return;
+          LJP_SHOT.currentIndex = newIdx;
+          // Stick-to-latest auto-engages only when the operator clicks
+          // the actual latest thumbnail.
+          LJP_SHOT.followLatest = (newIdx === LJP_SHOT.shots.length - 1);
+          ljpShotRender();
+        });
+      });
+      // Auto-scroll the active thumbnail into view (only when
+      // following latest, so the strip doesn't fight manual nav).
+      if (LJP_SHOT.followLatest) {
+        const active = strip.querySelector(`button[data-shot-idx="${i}"]`);
+        if (active && active.scrollIntoView) {
+          try { active.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
+        }
+      }
+    }
+  }
+  // Tab counter (top of pane in the tab strip)
+  const tCnt = document.getElementById('ljpShotCount');
+  if (tCnt) tCnt.textContent = String(n);
+}
+
+function ljpShotPrev() {
+  if (LJP_SHOT.currentIndex > 0) {
+    LJP_SHOT.currentIndex -= 1;
+    LJP_SHOT.followLatest = false;
+    ljpShotRender();
+  }
+}
+function ljpShotNext() {
+  if (LJP_SHOT.currentIndex >= 0 && LJP_SHOT.currentIndex < LJP_SHOT.shots.length - 1) {
+    LJP_SHOT.currentIndex += 1;
+    if (LJP_SHOT.currentIndex === LJP_SHOT.shots.length - 1) {
+      LJP_SHOT.followLatest = true;
+    }
+    ljpShotRender();
+  }
+}
+function ljpShotJumpLatest() {
+  if (LJP_SHOT.shots.length > 0) {
+    LJP_SHOT.currentIndex = LJP_SHOT.shots.length - 1;
+    LJP_SHOT.followLatest = true;
+    ljpShotRender();
+  }
 }
 
 async function ljpShotCapture() {
@@ -5468,8 +5609,11 @@ async function ljpShotCapture() {
       const kb = j.size ? `${Math.round(j.size / 1024)} KB` : '';
       status.textContent = `✓ saved ${j.name || '(unnamed)'} ${kb}`;
     }
-    // Refresh both surfaces right away so the new thumbnail appears.
-    ljpShotRefreshThumbs();
+    // Refresh both surfaces right away so the new thumbnail appears
+    // and the viewer auto-advances to it (followLatest=true after a
+    // manual capture is the most useful default).
+    LJP_SHOT.followLatest = true;
+    ljpShotRefreshScreenshots();
     ljpShotRefreshLive();
   } catch (e) {
     if (status) status.textContent = `❌ ${e}`;
@@ -5487,6 +5631,26 @@ async function ljpShotCapture() {
   if (interval) interval.addEventListener('change', ljpShotResetTimer);
   const btn = document.getElementById('ljpShotCaptureBtn');
   if (btn) btn.addEventListener('click', ljpShotCapture);
+  // Saved-shots viewer nav. The buttons are inert until shots arrive
+  // (ljpShotRender toggles disabled state).
+  const prevBtn = document.getElementById('ljpShotPrev');
+  if (prevBtn) prevBtn.addEventListener('click', ljpShotPrev);
+  const nextBtn = document.getElementById('ljpShotNext');
+  if (nextBtn) nextBtn.addEventListener('click', ljpShotNext);
+  const latestBtn = document.getElementById('ljpShotJumpLatest');
+  if (latestBtn) latestBtn.addEventListener('click', ljpShotJumpLatest);
+  // Keyboard nav (← / →) while the Screenshot tab is active.
+  document.addEventListener('keydown', (ev) => {
+    // Skip when the focus is inside an input/textarea so we don't
+    // hijack form editing.
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    // Active sub-tab check: only react when Screenshot pane is visible.
+    const shotPane = document.querySelector('.ljp-pane[data-ljp-pane="screenshot"]');
+    if (!shotPane || shotPane.style.display === 'none') return;
+    if (ev.key === 'ArrowLeft')      { ljpShotPrev(); ev.preventDefault(); }
+    else if (ev.key === 'ArrowRight'){ ljpShotNext(); ev.preventDefault(); }
+  });
 })();
 
 // --- Links tab -----------------------------------------------------------
@@ -6038,6 +6202,11 @@ function ljpReset() {
   LJP.gallerySignature = "";
   LJP.galleryStopped = false;
   LJP._terminalStopped = false;
+  // Reset the saved-screenshots viewer so a fresh attach starts at
+  // index 0 (no shots) and follow-latest defaults back to true.
+  LJP_SHOT.shots = [];
+  LJP_SHOT.currentIndex = -1;
+  LJP_SHOT.followLatest = true;
   LJP.mode = null;
   LJP_CODE.attempts = [];
   LJP_CODE.selectedN = null;

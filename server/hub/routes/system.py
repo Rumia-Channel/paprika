@@ -733,15 +733,34 @@ asyncio.run(main())"
         <span id="ljpShotStatus" style="margin-left:auto; color:#666; font-size:.85em;"></span>
       </div>
       <div class="ljp-pane-body" style="height:720px; overflow:auto; padding:12px; background:#0a0a14; display:flex; flex-direction:column; gap:10px;">
-        <div id="ljpShotLiveWrap" style="background:#000; border-radius:6px; overflow:hidden; flex:0 0 auto; max-height:55%;">
-          <img id="ljpShotLiveImg" alt="live" style="display:block; width:100%; max-height:55vh; object-fit:contain;">
-          <div id="ljpShotLiveEmpty" style="padding:32px; text-align:center; color:#888; font-style:italic;">waiting for a worker + lane…</div>
+        <!-- Live preview (top, smaller). Shows current lane noVNC frame -->
+        <div id="ljpShotLiveWrap" style="background:#000; border-radius:6px; overflow:hidden; flex:0 0 auto; max-height:35%;">
+          <img id="ljpShotLiveImg" alt="live" style="display:block; width:100%; max-height:35vh; object-fit:contain;">
+          <div id="ljpShotLiveEmpty" style="padding:18px; text-align:center; color:#888; font-style:italic; font-size:.9em;">waiting for a worker + lane…</div>
         </div>
-        <div id="ljpShotThumbsHeader" style="color:#aaa; font-size:.85em; padding:4px 2px;">
-          screenshots (<span id="ljpShotThumbsCount">0</span>)
-          <span id="ljpShotThumbsHint" style="color:#666; margin-left:8px;">— click a thumbnail to open the full-size image</span>
+        <!-- Saved screenshots viewer: nav bar + main image + thumbnail strip.
+             Source: GET /jobs/{id}/screenshots.json (recursive image scan over
+             assets/, so API/client/AI screenshots all surface alongside the
+             manual Capture button output). -->
+        <div style="display:flex; flex-direction:column; gap:6px; flex:1 1 auto; min-height:0;">
+          <!-- Nav bar: prev/next, filename, timestamp, index/total, jump-to-latest -->
+          <div id="ljpShotNav" style="display:flex; align-items:center; gap:8px; padding:6px 10px; background:#1a1a22; border-radius:6px; color:#ddd; font-size:.85em; flex-wrap:wrap;">
+            <button id="ljpShotPrev" class="pill" style="background:#2a2a32; border-color:#444; color:#ddd; padding:3px 10px;" title="前のスクリーンショット (←)"><iconify-icon icon="lucide:chevron-left"></iconify-icon></button>
+            <button id="ljpShotNext" class="pill" style="background:#2a2a32; border-color:#444; color:#ddd; padding:3px 10px;" title="次のスクリーンショット (→)"><iconify-icon icon="lucide:chevron-right"></iconify-icon></button>
+            <span id="ljpShotFilename" style="color:#fff; font-family:ui-monospace,Consolas,monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:50%;"></span>
+            <span id="ljpShotTimestamp" style="color:#aaa; font-size:.95em;"></span>
+            <span id="ljpShotPosition" style="color:#888; margin-left:auto;">0 / 0</span>
+            <button id="ljpShotJumpLatest" class="pill" style="background:#2a3a32; border-color:#496; color:#dfe; padding:3px 10px; font-size:.85em;" title="最新のスクリーンショットへ"><iconify-icon icon="lucide:skip-forward"></iconify-icon> 最新</button>
+            <a id="ljpShotOpenFull" class="pill" href="#" target="_blank" style="background:#2a2a3a; border-color:#458; color:#cdf; padding:3px 10px; font-size:.85em;" title="原寸を別タブで開く"><iconify-icon icon="lucide:external-link"></iconify-icon> 原寸</a>
+          </div>
+          <!-- Main viewer -->
+          <div id="ljpShotViewer" style="background:#000; border-radius:6px; overflow:hidden; flex:1 1 auto; min-height:200px; display:flex; align-items:center; justify-content:center;">
+            <img id="ljpShotViewerImg" alt="" style="display:none; max-width:100%; max-height:100%; object-fit:contain;">
+            <div id="ljpShotViewerEmpty" style="color:#666; font-style:italic; padding:40px 20px; text-align:center;">スクリーンショットがまだありません<br><span style="color:#999; font-size:.85em;">「Screenshot」ボタンか、API / 生成コード / AI 調査の page.capture() / page.screenshot() で保存されたものがここに出ます</span></div>
+          </div>
+          <!-- Thumbnail strip (horizontal scroll) -->
+          <div id="ljpShotThumbs" style="display:flex; gap:6px; overflow-x:auto; padding:4px 2px; flex:0 0 auto; min-height:60px; max-height:84px;"></div>
         </div>
-        <div id="ljpShotThumbs" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px; align-content:start;"></div>
       </div>
     </div>
 

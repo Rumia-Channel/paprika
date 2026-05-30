@@ -1234,9 +1234,32 @@ async def get_job_perception(job_id: str):
     )
 
 
-@router.get("/jobs/{job_id}/assets/{filename}")
+@router.get("/jobs/{job_id}/assets/{filename:path}")
 async def get_asset(job_id: str, filename: str):
-    return FileResponse(_safe_job_file(job_id, "assets", filename))
+    """Serve an asset file. ``filename`` may include forward slashes for
+    nested paths (e.g. ``post_verification/post_verification.png`` from
+    ``page.capture(label=...)`` output). Path traversal is blocked via
+    resolve+relative_to against the job's assets/ root."""
+    if not filename or "\\" in filename or filename.startswith("/"):
+        raise HTTPException(400, "invalid path")
+    # Reject any segment that's empty / "." / ".." so the resolve check
+    # below has well-formed input.
+    parts = filename.split("/")
+    for seg in parts:
+        if seg in ("", ".", ".."):
+            raise HTTPException(400, "invalid path component")
+    job_dir = get_storage_dir() / job_id
+    if not job_dir.exists():
+        raise HTTPException(404, f"job '{job_id}' not found")
+    assets_root = (job_dir / "assets").resolve()
+    target = (job_dir / "assets" / filename)
+    try:
+        target.resolve().relative_to(assets_root)
+    except ValueError:
+        raise HTTPException(400, "path escapes assets dir")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, f"file not found: {filename}")
+    return FileResponse(target)
 
 
 # ----------------------------------------------------------------------------
@@ -1277,7 +1300,12 @@ def _asset_href(job_id: str, filename: str) -> str:
     """
     from urllib.parse import quote
 
-    return f"/jobs/{quote(job_id, safe='')}/assets/{quote(filename, safe='')}"
+    # safe='/' preserves directory separators in nested paths
+    # (e.g. "post_verification/post_verification.png" stays readable),
+    # while still percent-encoding every other special character.
+    # The asset route accepts {filename:path} so slashes match the
+    # directory hierarchy.
+    return f"/jobs/{quote(job_id, safe='')}/assets/{quote(filename, safe='/')}"
 
 
 @router.get("/jobs/{job_id}/assets.json")
@@ -1347,6 +1375,68 @@ async def job_assets_json(job_id: str) -> dict:
 @router.get("/jobs/{job_id}/gallery.json", include_in_schema=False)
 async def job_gallery_json(job_id: str) -> dict:
     return await job_assets_json(job_id)
+
+
+@router.get("/jobs/{job_id}/screenshots.json")
+async def job_screenshots_json(job_id: str) -> dict:
+    """List every screenshot-like asset under this job, regardless of
+    depth. Powers the Live panel's Screenshot tab viewer (operator-driven
+    captures, ``page.screenshot()`` SDK calls, ``page.capture(label=...)``
+    PNG dumps from codegen-loop / vision-agent attempts, and Fetch
+    mode's passive PNG/JPG capture).
+
+    The plain ``assets.json`` endpoint only enumerates the TOP-LEVEL
+    assets/ directory, which misses ``page.capture()`` output that
+    lands at ``assets/<label>/<label>.png`` and per-attempt screenshots
+    at ``assets/.../final_screenshot.jpg``. This endpoint walks
+    recursively and filters to image extensions, so the operator sees
+    a single chronological stream of "what the browser looked like"
+    regardless of which code path saved each PNG.
+
+    Each item carries:
+      * ``name``      -- filename only (no path)
+      * ``path``      -- relative path under assets/ (e.g. "screenshot-...",
+                          "post_verification/post_verification.png")
+      * ``href``      -- absolute URL to fetch the PNG
+      * ``size``      -- bytes
+      * ``mtime``     -- file mtime as POSIX seconds (float)
+      * ``label``     -- subdirectory the file lives in, or "" for top
+                          level. Useful to group AI capture() output.
+
+    Sorted by mtime ASCENDING so the array index lines up with
+    chronology (UI defaults to showing the latest at the end).
+    """
+    await _soft_resolve_job(job_id, require_subdir="assets")
+    assets_dir = get_storage_dir() / job_id / "assets"
+    items: list[dict] = []
+    if assets_dir.exists():
+        for p in assets_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            ext = p.suffix.lower().lstrip(".")
+            if ext not in _IMG_EXTS:
+                continue
+            try:
+                st = p.stat()
+            except Exception:
+                continue
+            try:
+                rel = p.relative_to(assets_dir).as_posix()
+            except Exception:
+                rel = p.name
+            label = rel.rsplit("/", 1)[0] if "/" in rel else ""
+            items.append({
+                "name": p.name,
+                "path": rel,
+                "href": _asset_href(job_id, rel),
+                "size": st.st_size,
+                "size_h": _human_size(st.st_size),
+                "ext": ext,
+                "mtime": st.st_mtime,
+                "label": label,
+            })
+    items.sort(key=lambda d: (d["mtime"], d["path"]))
+    return {"job_id": job_id, "count": len(items), "items": items}
 
 
 @router.get("/ui/assets/{job_id}", response_class=HTMLResponse)
