@@ -230,6 +230,19 @@ const I18N_RESOURCES = {
     "ljp.video.title":        "yt-dlp で動画をダウンロード",
     "ljp.video":              "動画",
     "ljp.screenshots":        "スクリーンショット一覧",
+    // noVNC per-session header (戻る / 進む / reload / popup / fit / open / screenshot)
+    "ljp.vnc.back":           "戻る",
+    "ljp.vnc.back.title":     "戻る (記録)",
+    "ljp.vnc.fwd":            "進む",
+    "ljp.vnc.fwd.title":      "進む (記録)",
+    "ljp.vnc.reload.title":   "このフレームを再読み込み",
+    "ljp.vnc.popups":         "popup",
+    "ljp.vnc.popups.title":   "広告などのポップアップ・別タブを閉じる (記録)",
+    "ljp.vnc.screenshot.title":"現在のフレームを保存",
+    "ljp.vnc.fit":            "fit",
+    "ljp.vnc.fit.title":      "Chrome のウィンドウサイズを現在の zoom 設定に再同期する",
+    "ljp.vnc.open":           "open",
+    "ljp.vnc.open.title":     "新しいタブで開く",
     "ljp.tab.log":            "ログ",
     "ljp.tab.screenshot":     "スクリーンショット",
     "ljp.tab.links":          "リンク",
@@ -560,6 +573,19 @@ const I18N_RESOURCES = {
     "ljp.video.title":        "Download video via yt-dlp",
     "ljp.video":              "video",
     "ljp.screenshots":        "screenshots",
+    // noVNC per-session header (戻る / 進む / reload / popup / fit / open / screenshot)
+    "ljp.vnc.back":           "back",
+    "ljp.vnc.back.title":     "Back (recorded)",
+    "ljp.vnc.fwd":            "fwd",
+    "ljp.vnc.fwd.title":      "Forward (recorded)",
+    "ljp.vnc.reload.title":   "Reload this frame",
+    "ljp.vnc.popups":         "popup",
+    "ljp.vnc.popups.title":   "Close ad popups / extra tabs (recorded)",
+    "ljp.vnc.screenshot.title":"Save the current frame",
+    "ljp.vnc.fit":            "fit",
+    "ljp.vnc.fit.title":      "Re-sync Chrome window size to the current zoom",
+    "ljp.vnc.open":           "open",
+    "ljp.vnc.open.title":     "Open in a new tab",
     "ljp.tab.log":            "Log",
     "ljp.tab.screenshot":     "Screenshot",
     "ljp.tab.links":          "Links",
@@ -5206,19 +5232,27 @@ function ljpMountVncFrame(key, s) {
   // custom props applied by inline style; the .pill class reads them
   // on hover via the LJP override, with the global .pill as fallback
   // for visible default fill).
-  const _navAccent = '--la-bg:#eef0ff; --la-bd:#9bf; --la-fg:#0a4a7e;';
-  const _popupAccent = '--la-bg:#fde6e6; --la-bd:#d68080; --la-fg:#8a1d1d;';
-  const _shotAccent = '--la-bg:#fff7e6; --la-bd:#e8c97a; --la-fg:#7a5a14;';
-  const _rightAccent = '--la-bg:#eef0f6; --la-bd:#bbc; --la-fg:#333;';
+  // Per-button accent custom properties. Trailing "opacity:1; cursor:pointer;"
+  // mirrors the LJP top-header button style block (e.g. #ljpStop) so the
+  // markup is byte-for-byte interchangeable.
+  const _navAccent   = '--la-bg: #eef0ff; --la-bd: #9bf; --la-fg: #0a4a7e; opacity: 1; cursor: pointer;';
+  const _popupAccent = '--la-bg: #fde6e6; --la-bd: #d68080; --la-fg: #8a1d1d; opacity: 1; cursor: pointer;';
+  const _shotAccent  = '--la-bg: #fff7e6; --la-bd: #e8c97a; --la-fg: #7a5a14; opacity: 1; cursor: pointer;';
+  const _rightAccent = '--la-bg: #eef0f6; --la-bd: #bbc; --la-fg: #333; opacity: 1; cursor: pointer;';
   // Left-side nav cluster: 戻る / 進む / reload only. URL entry moved
   // to the dedicated <input> in the centre; popup-close moved to the
   // right next to fit / open since it's used less often than nav.
+  // Each button uses the same structure as #ljpStop / #ljpResume in
+  // the LJP top header: <button class="pill" data-i18n-title=... title=...
+  // style="--la-bg/--la-bd/--la-fg; opacity:1; cursor:pointer;">
+  // <iconify-icon>icon</iconify-icon> <span data-i18n=...>label</span>
+  // </button>. Icon-only buttons omit the trailing span.
   const navBtns = _opSid ? (
-    `<button class="pill ljp-op-back" style="${_navAccent}" title="戻る (記録)"><iconify-icon icon="lucide:chevron-left"></iconify-icon> 戻る</button>` +
-    `<button class="pill ljp-op-fwd"  style="${_navAccent}" title="進む (記録)"><iconify-icon icon="lucide:chevron-right"></iconify-icon> 進む</button>` +
-    `<button class="pill ljp-vnc-reload" style="${_navAccent}" title="reload this iframe"><iconify-icon icon="lucide:rotate-cw"></iconify-icon></button>`
+    `<button class="pill ljp-op-back" data-i18n-title="ljp.vnc.back.title" title="戻る (記録)" style="${_navAccent}"><iconify-icon icon="lucide:chevron-left"></iconify-icon> <span data-i18n="ljp.vnc.back">戻る</span></button>` +
+    `<button class="pill ljp-op-fwd" data-i18n-title="ljp.vnc.fwd.title" title="進む (記録)" style="${_navAccent}"><iconify-icon icon="lucide:chevron-right"></iconify-icon> <span data-i18n="ljp.vnc.fwd">進む</span></button>` +
+    `<button class="pill ljp-vnc-reload" data-i18n-title="ljp.vnc.reload.title" title="このフレームを再読み込み" style="${_navAccent}"><iconify-icon icon="lucide:rotate-cw"></iconify-icon></button>`
   ) : (
-    `<button class="pill ljp-vnc-reload" style="${_navAccent}" title="reload this iframe"><iconify-icon icon="lucide:rotate-cw"></iconify-icon></button>`
+    `<button class="pill ljp-vnc-reload" data-i18n-title="ljp.vnc.reload.title" title="このフレームを再読み込み" style="${_navAccent}"><iconify-icon icon="lucide:rotate-cw"></iconify-icon></button>`
   );
   // Centre: URL <input>. Operator types a URL + Enter to navigate via
   // /sessions/{sid}/operator_action {kind:navigate, url:...}. Pre-fills
@@ -5234,11 +5268,13 @@ function ljpMountVncFrame(key, s) {
     `<input class="ljp-vnc-url" type="text" placeholder="https://example.com (Enter で移動)" value="${esc(_initialVal)}" style="flex:1; min-width:200px;" autocomplete="off" spellcheck="false">` :
     `<code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:#fff; color:#5a5a68; padding:6px 10px; border:1px solid #d4cfca; border-radius:7px; font-size:.78em; font-family:ui-monospace,Consolas,monospace;" title="${esc(s.label)}">${esc(s.label)}</code>`;
   // Right cluster: screenshot, popup-close, zoom, fit, open.
-  const shotBtn = _opSid ?
-    `<button class="pill ljp-vnc-screenshot" style="${_shotAccent}" title="現在のフレームを保存 (POST /jobs/{id}/screenshot)"><iconify-icon icon="lucide:camera"></iconify-icon></button>` :
-    `<button class="pill ljp-vnc-screenshot" style="${_shotAccent}" title="現在のフレームを保存 (POST /jobs/{id}/screenshot)"><iconify-icon icon="lucide:camera"></iconify-icon></button>`;
+  // Screenshot button keeps icon-only structure (no label span); popup
+  // / fit / open follow the LJP top-header button structure with both
+  // iconify-icon + <span data-i18n>.
+  const shotBtn =
+    `<button class="pill ljp-vnc-screenshot" data-i18n-title="ljp.vnc.screenshot.title" title="現在のフレームを保存" style="${_shotAccent}"><iconify-icon icon="lucide:camera"></iconify-icon></button>`;
   const popupBtn = _opSid ?
-    `<button class="pill ljp-op-popups" style="${_popupAccent}" title="広告などのポップアップ・別タブを閉じる (記録)"><iconify-icon icon="lucide:x"></iconify-icon> popup</button>` :
+    `<button class="pill ljp-op-popups" data-i18n-title="ljp.vnc.popups.title" title="広告などのポップアップ・別タブを閉じる (記録)" style="${_popupAccent}"><iconify-icon icon="lucide:x"></iconify-icon> <span data-i18n="ljp.vnc.popups">popup</span></button>` :
     '';
   // Zoom select: styling comes from .ljp-vnc-head select.ljp-vnc-zoom
   // in CSS (height/border/font aligned with the .pill row).
@@ -5257,8 +5293,8 @@ function ljpMountVncFrame(key, s) {
     shotBtn +
     popupBtn +
     zoomSelect +
-    `<button class="pill ljp-vnc-fit" style="${_rightAccent}" title="Chrome のウィンドウサイズを現在の zoom 設定に再同期する"><iconify-icon icon="lucide:maximize"></iconify-icon> fit</button>` +
-    `<a class="pill" href="${esc(src)}" target="_blank" style="${_rightAccent}" title="新しいタブで開く"><iconify-icon icon="lucide:external-link"></iconify-icon> open</a>`;
+    `<button class="pill ljp-vnc-fit" data-i18n-title="ljp.vnc.fit.title" title="Chrome のウィンドウサイズを現在の zoom 設定に再同期する" style="${_rightAccent}"><iconify-icon icon="lucide:maximize"></iconify-icon> <span data-i18n="ljp.vnc.fit">fit</span></button>` +
+    `<a class="pill ljp-vnc-open" href="${esc(src)}" target="_blank" data-i18n-title="ljp.vnc.open.title" title="新しいタブで開く" style="${_rightAccent}"><iconify-icon icon="lucide:external-link"></iconify-icon> <span data-i18n="ljp.vnc.open">open</span></a>`;
   // The iframe lives inside a transform-scale-box so the layout
   // reserves the *visually-scaled* size, not the logical size.
   const scaleBox = document.createElement('div');
