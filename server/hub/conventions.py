@@ -264,6 +264,37 @@ class ConventionRegistry(TieredJsonRecordRegistry[ConventionRecord]):
         self._write(rec)
         return rec
 
+    def merge(self, keep_slug: str, drop_slugs: list[str]) -> ConventionRecord | None:
+        """Consolidate near-duplicate AUTO conventions into ``keep_slug``
+        (sum counts, union provenance, keep latest timestamps; delete the
+        rest). Auto tier only -- curated rules are never auto-merged."""
+        keep = self.get(keep_slug, tier="auto")
+        if keep is None:
+            return None
+        for ds in drop_slugs:
+            if ds == keep_slug:
+                continue
+            d = self.get(ds, tier="auto")
+            if d is None:
+                continue
+            keep.use_count += d.use_count
+            keep.success_count += d.success_count
+            for j in d.extracted_from:
+                if j and j not in keep.extracted_from:
+                    keep.extracted_from.append(j)
+            keep.last_used_at = max(
+                [t for t in (keep.last_used_at, d.last_used_at) if t],
+                default=keep.last_used_at,
+            )
+            keep.last_success_at = max(
+                [t for t in (keep.last_success_at, d.last_success_at) if t],
+                default=keep.last_success_at,
+            )
+            self.delete(ds, tier="auto")
+        keep.updated_at = _utcnow_iso()
+        self._write(keep)
+        return keep
+
 
 def render_conventions_block(
     conventions: list[ConventionRecord],

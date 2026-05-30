@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 
 from server.hub._state import state
@@ -221,6 +222,82 @@ _RETIRE_MAX_RATE = 0.15
 _RETIRE_IDLE_DAYS = 30
 
 
+# Token-Jaccard threshold for calling two AUTO records near-duplicates.
+# High on purpose -- a false merge silently loses a distinct skill, so we
+# only fold things that are almost the same one-liner.
+_DEDUP_SIM = 0.82
+_DEDUP_WORD_RE = re.compile(r"[a-z0-9]+")
+# Drop function words + crudely singularise so morphological / stopword
+# noise ("image" vs "images", "the") doesn't sink the similarity of two
+# descriptions that mean the same thing.
+_DEDUP_STOP = {
+    "a", "an", "the", "of", "to", "for", "and", "or", "in", "on", "with",
+    "at", "by", "from", "that", "this", "it", "is", "are", "be", "as",
+    "into", "via", "after", "then", "any", "all", "n",
+}
+
+
+def _dedup_text(rec, kind: str) -> str:
+    """The retrieval/injection-facing one-liner -- the cleanest similarity
+    signal (a skill's ``description``, a convention's ``advice``)."""
+    if kind == "skill":
+        return getattr(rec, "description", "") or getattr(rec, "name", "") or ""
+    return getattr(rec, "advice", "") or getattr(rec, "name", "") or ""
+
+
+def _dedup_tokens(text: str) -> set[str]:
+    out: set[str] = set()
+    for w in _DEDUP_WORD_RE.findall((text or "").lower()):
+        if w in _DEDUP_STOP:
+            continue
+        if len(w) > 3 and w.endswith("s"):
+            w = w[:-1]  # crude singularise: images -> image, pages -> page
+        out.add(w)
+    return out
+
+
+def _dedup_clusters(records, kind: str) -> list[list]:
+    """Near-duplicate clusters (size >= 2) among AUTO-tier records, by token
+    Jaccard on the description/advice. Curated records are excluded -- they
+    are operator-owned and never auto-merged."""
+    autos = [r for r in records if getattr(r, "tier", "auto") == "auto"]
+    toks = {r.slug: _dedup_tokens(_dedup_text(r, kind)) for r in autos}
+    parent = {r.slug: r.slug for r in autos}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(len(autos)):
+        for j in range(i + 1, len(autos)):
+            a, b = autos[i].slug, autos[j].slug
+            ta, tb = toks[a], toks[b]
+            if not ta or not tb:
+                continue
+            if len(ta & tb) / len(ta | tb) >= _DEDUP_SIM:
+                parent[find(a)] = find(b)
+
+    by_slug = {r.slug: r for r in autos}
+    groups: dict[str, list] = {}
+    for slug in parent:
+        groups.setdefault(find(slug), []).append(by_slug[slug])
+    return [g for g in groups.values() if len(g) >= 2]
+
+
+def _dedup_pick(cluster):
+    """Pick the survivor (best fitness, then most-used, then newest) and
+    return ``(keep, drops)``."""
+    def key(r):
+        uc = getattr(r, "use_count", 0) or 0
+        sc = getattr(r, "success_count", 0) or 0
+        return ((sc / uc) if uc else 0.0, uc, getattr(r, "created_at", "") or "")
+
+    keep = max(cluster, key=key)
+    return keep, [r for r in cluster if r.slug != keep.slug]
+
+
 def _retire_reason(rec, *, allow_dud: bool) -> str | None:
     """Why this record should be retired, or None to keep it. Pure /
     tier-agnostic; the caller decides whether to ACT (auto) or just
@@ -316,4 +393,33 @@ async def _skill_convention_reaper_loop():
                 except Exception:
                     log.warning(
                         "retire: failed to delete auto %s %r", kind, slug, exc_info=True
+                    )
+
+            # ---- dedup pass: consolidate near-duplicate AUTO records ----
+            dedup_enabled = False
+            try:
+                if state.settings is not None:
+                    dedup_enabled = bool(state.settings.get("auto_dedup_enabled", False))
+            except Exception:
+                dedup_enabled = False
+            try:
+                clusters = _dedup_clusters(reg.list_all(), kind)
+            except Exception:
+                clusters = []
+            for cluster in clusters:
+                keep, drops = _dedup_pick(cluster)
+                drop_slugs = [d.slug for d in drops]
+                if not dedup_enabled:
+                    log.info(
+                        "dedup(dry-run): would merge auto %s %r <- %r "
+                        "(set auto_dedup_enabled=true to act)",
+                        kind, keep.slug, drop_slugs,
+                    )
+                    continue
+                try:
+                    reg.merge(keep.slug, drop_slugs)
+                    log.info("dedup: merged auto %s %r <- %r", kind, keep.slug, drop_slugs)
+                except Exception:
+                    log.warning(
+                        "dedup: merge failed %s %r", kind, keep.slug, exc_info=True
                     )
