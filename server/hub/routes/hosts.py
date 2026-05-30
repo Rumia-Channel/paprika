@@ -168,6 +168,52 @@ async def list_host_knowledge() -> dict:
     return {"count": len(hosts), "hosts": hosts}
 
 
+@router.get("/host_knowledge_all")
+async def list_host_knowledge_with_payloads() -> dict:
+    """Return every host's HostKnowledge in one round-trip.
+
+    The Knowledge tab in the admin UI used to call ``/host_knowledge``
+    (list) then fan out one ``/hosts/{host}/knowledge`` request per
+    entry. For a 25-host fleet that's 26 requests per Knowledge-tab
+    open (and once on every page load to populate the badge count),
+    which dominated network traffic in the operator's DevTools view.
+    This endpoint streams all of them as one response so the UI can
+    do one fetch and be done.
+
+    Shape::
+
+        {
+          "count": N,
+          "entries": [
+            {"host": "example.com", "knowledge": {...full JSON...}},
+            {"host": "other.com",   "knowledge": {...}},
+            ...
+          ]
+        }
+
+    Entries whose file is unreadable are silently dropped (the
+    per-host endpoint surfaces the error; the aggregate doesn't
+    fail-fast on one bad file).
+    """
+    import json as _json
+    knowledge_dir = config.data_dir / "host_knowledge"
+    if not knowledge_dir.is_dir():
+        return {"count": 0, "entries": []}
+    entries: list[dict] = []
+    for f in sorted(knowledge_dir.glob("*.json")):
+        try:
+            entries.append({
+                "host": f.stem,
+                "knowledge": _json.loads(f.read_text(encoding="utf-8")),
+            })
+        except Exception:
+            # Bad / corrupted entry — skip so the Knowledge tab still
+            # renders the rest. The single-host endpoint will surface
+            # the error if the operator clicks through.
+            continue
+    return {"count": len(entries), "entries": entries}
+
+
 @router.get("/hosts/{host}/knowledge")
 async def get_host_knowledge(host: str) -> dict:
     """Return the v2 HostKnowledge object for ``host``.
