@@ -466,14 +466,20 @@
     .mode-cards { grid-template-columns: repeat(2, 1fr); }
   }
 
-  /* ------- Live panel: tighter, more polished look ------------------- */
+  /* ------- Live panel: flat content inside the .submit-subpane card.
+     Previously this had its own background gradient + border + shadow,
+     which produced a "frame inside a frame" because .submit-subpane
+     already wraps the live pane with a white card. Strip the box
+     chrome here so the LJP renders directly on the white card -- one
+     frame total, not two. The ID is kept so all descendant rules
+     (#liveJobPanel h2, .ljp-actions-group, ...) still apply. */
   #liveJobPanel {
-    margin-top: 22px;
-    padding: 14px 16px 16px;
-    background: linear-gradient(180deg, #fbfbfd 0%, #f3f3f8 100%);
-    border: 1px solid #d6d6e0;
-    border-radius: 10px;
-    box-shadow: 0 4px 16px rgba(40, 40, 80, .05);
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
   }
   /* Live header: a two-group flex row.
        Left  = status info (LIVE badge + job id + state pill + asset count)
