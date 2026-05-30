@@ -2893,7 +2893,7 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
       ジョブ・ワーカー・ホスト等の永続データを MariaDB に保管。未設定なら従来通り Redis + ファイルを使用。
     </p>
 
-    <div id="mariadbStatusBanner" style="display:none; padding:8px 14px; border-radius:6px; margin-bottom:10px; font-size:.9em; align-items:center; gap:8px;">
+    <div id="mariadbStatusBanner" style="display:none; padding:8px 14px; border-radius:6px; margin-bottom:10px; font-size:.9em; display:flex; align-items:center; gap:8px;">
     </div>
 
     <div style="display:grid; grid-template-columns: 200px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">

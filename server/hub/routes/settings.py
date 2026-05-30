@@ -67,6 +67,26 @@ async def get_settings() -> dict:
     )
 
     smb_mp = reg.get("smb_mount_point", "/mnt/paprika")
+
+    # MariaDB status — show connected/disconnected in the UI
+    mdb_status: dict = {"connected": False}
+    if state.mariadb_pool is not None:
+        try:
+            async with state.mariadb_pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT VERSION()")
+                    ver_row = await cur.fetchone()
+            mdb_status = {
+                "connected": True,
+                "version": ver_row[0] if ver_row else "",
+                "host": reg.get("mariadb_host", ""),
+                "port": int(reg.get("mariadb_port", 3306)),
+                "database": reg.get("mariadb_database", "paprika"),
+                "store_kind": state.store_kind,
+            }
+        except Exception:
+            mdb_status = {"connected": False}
+
     return {
         "values": reg.all(),
         "schema": reg.schema(),
@@ -87,6 +107,7 @@ async def get_settings() -> dict:
             "mounted": _smb_is_mounted(smb_mp),
             "mount_point": smb_mp,
         },
+        "mariadb_status": mdb_status,
     }
 
 

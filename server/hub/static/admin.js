@@ -9608,6 +9608,9 @@ async function loadSettingsPanel() {
       _setVal('setMariadbDatabase', hub.mariadb_database || 'paprika');
       _setVal('setMariadbUsername', hub.mariadb_username);
       _setVal('setMariadbPassword', hub.mariadb_password);
+      // MariaDB status banner
+      const mdbSt = d.mariadb_status || {};
+      _updateMariadbStatusBanner(mdbSt);
 
       // Show migration section if MariaDB host is configured
       const migSec = document.getElementById('mariadbMigrationSection');
@@ -9810,6 +9813,35 @@ function _updateSmbStatusBanner(mounted, mountPoint, server, share) {
     banner.innerHTML = '<iconify-icon icon="lucide:alert-circle" style="font-size:1.2em;"></iconify-icon>'
       + ' <strong>未接続</strong>: //' + esc(server || '') + '/' + esc(share || '')
       + ' (マウントボタンで接続)';
+  }
+}
+
+function _updateMariadbStatusBanner(st) {
+  const banner = document.getElementById('mariadbStatusBanner');
+  if (!banner) return;
+  if (!st || (!st.connected && !st.host)) {
+    banner.style.display = 'none';
+    return;
+  }
+  banner.style.display = 'flex';
+  if (st.connected) {
+    banner.style.background = '#e6f7e9';
+    banner.style.border = '1px solid #7ab68a';
+    banner.style.color = '#196b2c';
+    const storeLabel = st.store_kind === 'mariadb' ? 'プライマリストア' : 'メタデータのみ';
+    banner.innerHTML = '<iconify-icon icon="lucide:check-circle" style="font-size:1.2em;"></iconify-icon>'
+      + ' <strong>接続中</strong>: '
+      + esc(st.host || '') + ':' + (st.port || 3306) + '/' + esc(st.database || '')
+      + ' <span style="margin-left:8px; padding:2px 8px; border-radius:4px; background:#d4edda; font-size:.85em;">'
+      + esc(st.version || '') + '</span>'
+      + ' <span style="margin-left:6px; padding:2px 8px; border-radius:4px; background:#cce5ff; color:#004085; font-size:.85em;">'
+      + esc(storeLabel) + '</span>';
+  } else {
+    banner.style.background = '#fff3e0';
+    banner.style.border = '1px solid #e8c97a';
+    banner.style.color = '#7a5a14';
+    banner.innerHTML = '<iconify-icon icon="lucide:alert-circle" style="font-size:1.2em;"></iconify-icon>'
+      + ' <strong>未接続</strong>: MariaDB に接続できません。Redis / ファイルで動作中。';
   }
 }
 
