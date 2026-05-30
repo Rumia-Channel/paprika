@@ -355,6 +355,17 @@ _ADMIN_HTML = r"""<!DOCTYPE html>
           <div style="display:flex; gap:14px; align-items:center; margin-top:6px; font-size:.9em; flex-wrap:wrap;">
             <label>最大試行回数 <input type="number" id="fetchInvestigateMaxAttempts" value="3" min="1" max="10" style="width:50px"></label>
             <label>1試行タイムアウト <input type="number" id="fetchInvestigateTimeoutSec" value="600" min="60" max="86400" style="width:80px"> 秒</label>
+            <!-- Engine picker: same engine list as the LLM mode's
+                 codegenEngineSelect (chat-completions backends flagged
+                 use_for_codegen). Empty selection = hub uses
+                 CODEGEN_LLM_URL + CODEGEN_MODEL_NAME env defaults.
+                 Filled in at runtime by populateCodegenEngineSelect(). -->
+            <label title="AI調査 (codegen-loop) で planner / coder / judge に使う LLM。空 = hub のデフォルト (env)。">
+              <span style="font-weight:600;">コード生成 LLM:</span>
+              <select id="fetchInvestigateEngineSelect" style="padding:3px 6px; font-size:.9em;">
+                <option value="">(default — env)</option>
+              </select>
+            </label>
             <span style="color:#888;">※ 成功時は次タブで「recipe として保存」できます (Phase 2c)</span>
           </div>
         </div>

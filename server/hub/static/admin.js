@@ -7458,6 +7458,12 @@ document.getElementById('submit').addEventListener('submit', async e => {
       }
       const _max = parseInt(document.getElementById('fetchInvestigateMaxAttempts').value, 10) || 3;
       const _tmo = parseInt(document.getElementById('fetchInvestigateTimeoutSec').value, 10) || 600;
+      // Operator-picked engine (same dropdown shape as LLM mode's
+      // codegenEngineSelect, but an independent selection). Empty
+      // string = "use the hub's env defaults"; in that case we omit
+      // the field entirely so the server takes its fallback path.
+      const _engineSel = document.getElementById('fetchInvestigateEngineSelect');
+      const _engineSlug = (_engineSel && _engineSel.value || '').trim();
       // Start from the full Fetch options (download_video, cookies_from,
       // referer, min_asset_size_bytes, etc.) so the operator's toggles
       // are honoured. Then overlay the codegen-loop-specific fields.
@@ -7474,6 +7480,7 @@ document.getElementById('submit').addEventListener('submit', async e => {
           attempt_timeout_s: _tmo,
         },
       };
+      if (_engineSlug) body.options.codegen_engine = _engineSlug;
     } else {
       body = { url, options: buildFetchOptionsFromForm() };
     }
@@ -8490,12 +8497,21 @@ renderProfiles();
 // engines they just added in the Engines tab show up without a
 // page reload.
 async function populateCodegenEngineSelect() {
-  const sel = document.getElementById('codegenEngineSelect');
-  if (!sel) return;
-  // Remember the current selection so we can restore it after the
-  // options are rebuilt -- otherwise switching tabs wipes the
-  // operator's pick.
-  const prev = sel.value || '';
+  // Both the LLM mode (codegenEngineSelect) and the Fetch >
+  // AI調査 sub-mode (fetchInvestigateEngineSelect) take a
+  // codegen-capable engine -- same eligibility rules, same option
+  // list, but they hold INDEPENDENT operator selections (LLM mode
+  // and AI調査 may want different engines). One fetch of /engines
+  // serves both, then we per-select preserve & restore the prior
+  // value before rebuilding the option list.
+  const sels = [
+    document.getElementById('codegenEngineSelect'),
+    document.getElementById('fetchInvestigateEngineSelect'),
+  ].filter(Boolean);
+  if (sels.length === 0) return;
+  // Snapshot each select's current selection up-front so the rebuild
+  // doesn't wipe the operator's pick.
+  const prevBySel = new Map(sels.map(s => [s, s.value || '']));
   let engines = [];
   try {
     const r = await fetch('/engines');
@@ -8528,12 +8544,16 @@ async function populateCodegenEngineSelect() {
     const label = `${slug}${star}  (${name}${model && model !== name ? ' / ' + model : ''})`;
     opts.push(`<option value="${slug}">${label}</option>`);
   }
-  sel.innerHTML = opts.join('');
-  // Restore the previous selection if still present (= the engine
-  // wasn't deleted between renders); otherwise fall through to the
-  // default option.
-  if (prev && [...sel.options].some(o => o.value === prev)) {
-    sel.value = prev;
+  const html = opts.join('');
+  for (const sel of sels) {
+    sel.innerHTML = html;
+    // Restore the previous selection if still present (= the engine
+    // wasn't deleted between renders); otherwise fall through to the
+    // default option.
+    const prev = prevBySel.get(sel) || '';
+    if (prev && [...sel.options].some(o => o.value === prev)) {
+      sel.value = prev;
+    }
   }
 }
 // Refresh on Submit-tab activation.
