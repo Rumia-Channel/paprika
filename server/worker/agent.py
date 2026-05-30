@@ -3487,6 +3487,85 @@ class WorkerAgent:
             "entries": entries,
         }
 
+    @_session_action("state", read_only=True)
+    async def _act_state(self, ctx: "_ActionCtx") -> None:
+        try:
+            title = await ctx.tab.evaluate("document.title")
+        except Exception:
+            title = ""
+        ctx.reply.result = {
+            "url": ctx.cur,
+            "title": title or "",
+            "lane_idx": ctx.state.lane.lane_idx,
+            "visited_count": len(ctx.state.visited_urls),
+        }
+
+    @_session_action("links", read_only=True)
+    async def _act_links(self, ctx: "_ActionCtx") -> None:
+        # Every <a href> on the page resolved to absolute URLs. The JS
+        # lives in module-scope _LINKS_EXTRACT_JS (shared with the
+        # session-end dump). nodriver returns arrays as a JSON string for
+        # non-scalars, so JSON.stringify on the JS side + json.loads here.
+        raw_str = None
+        try:
+            raw_str = await ctx.tab.evaluate(_LINKS_EXTRACT_JS)
+        except Exception as e:
+            ctx.reply.status = f"ERR: links eval failed: {e}"
+        items: list = []
+        if isinstance(raw_str, str) and raw_str:
+            import json as _json
+
+            try:
+                parsed = _json.loads(raw_str)
+                if isinstance(parsed, list):
+                    items = parsed
+            except Exception:
+                pass
+        elif isinstance(raw_str, list):
+            # Some nodriver versions auto-decode JSON; accept that too.
+            items = raw_str
+        ctx.reply.result = {
+            "current_url": ctx.cur or "",
+            "count": len(items),
+            "links": items,
+        }
+
+    @_session_action("exists", read_only=True)
+    async def _act_exists(self, ctx: "_ActionCtx") -> None:
+        # CSS selector exists check -- cheap, deterministic; used by
+        # macros / scripts for if/else branching without an LLM.
+        selector = ctx.action.get("selector") or ""
+        status, found = await browser_ops.exists(ctx.tab, selector, ctx.slog)
+        ctx.reply.status = status
+        ctx.reply.result = bool(found)
+
+    @_session_action("get_cookies", read_only=True)
+    async def _act_get_cookies(self, ctx: "_ActionCtx") -> None:
+        # Dump cookies via CDP Network.getAllCookies (or getCookies when
+        # ``urls`` narrows it). Used by the "save cookies to host" button.
+        from nodriver import cdp as _cdp
+
+        urls = ctx.action.get("urls")
+        if urls:
+            cookies = await ctx.tab.send(_cdp.network.get_cookies(urls=list(urls)))
+        else:
+            cookies = await ctx.tab.send(_cdp.network.get_all_cookies())
+        # Project CDP Cookie objects to plain dicts the host registry accepts.
+        out: list[dict] = []
+        for c in cookies or []:
+            try:
+                d = c.to_json() if hasattr(c, "to_json") else dict(vars(c))
+            except Exception:
+                d = {}
+            if not d:
+                continue
+            out.append(d)
+        ctx.reply.result = {
+            "current_url": ctx.cur or "",
+            "count": len(out),
+            "cookies": out,
+        }
+
     async def _handle_session_action(self, msg: HubSessionAction) -> None:
         """Dispatch one action against a bound session via browser_ops."""
         sid = msg.session_id
@@ -3601,17 +3680,6 @@ class WorkerAgent:
                 spec = _SESSION_ACTIONS.get(kind)
                 if spec is not None:
                     await spec.fn(self, ctx)
-                elif kind == "state":
-                    try:
-                        title = await tab.evaluate("document.title")
-                    except Exception:
-                        title = ""
-                    reply.result = {
-                        "url": cur,
-                        "title": title or "",
-                        "lane_idx": state.lane.lane_idx,
-                        "visited_count": len(state.visited_urls),
-                    }
                 elif kind == "screenshot":
                     from nodriver import cdp
 
@@ -3651,65 +3719,6 @@ class WorkerAgent:
                             )
                         except Exception as e:
                             _slog(f"screenshot gallery upload failed: {e}")
-                elif kind == "links":
-                    # Return every <a href> on the current page resolved
-                    # to absolute URLs, deduped, with the visible text
-                    # truncated to ~120 chars. We use the live DOM
-                    # ``document.links`` collection (HTMLCollection of all
-                    # anchors with an href, EXCLUDING <area> ping URLs
-                    # and bare <a name>). Properties:
-                    #   * a.href is already resolved against <base> and
-                    #     document URL -- no manual urljoin needed.
-                    #   * skipped: javascript: / mailto: / tel: / blob:
-                    #     / data: -- they're not navigatable in the same
-                    #     sense and clutter the list. Operator opt-in
-                    #     can be added later if there's demand.
-                    # The worker can be on a page that does not yet
-                    # have any anchors (e.g. captcha page). Empty list
-                    # is a valid result.
-                    # nodriver's ``tab.evaluate`` auto-converts only
-                    # scalar return values (string / int / bool); for
-                    # arrays/objects we need to JSON.stringify on the
-                    # JS side and json.loads here. Same pattern used by
-                    # browser_ops.outline(). Source of truth for the JS
-                    # is module-scope ``_LINKS_EXTRACT_JS`` so the
-                    # session-end dump path uses the same extraction.
-                    raw_str = None
-                    try:
-                        raw_str = await tab.evaluate(_LINKS_EXTRACT_JS)
-                    except Exception as e:
-                        reply.status = f"ERR: links eval failed: {e}"
-                    items: list = []
-                    if isinstance(raw_str, str) and raw_str:
-                        import json as _json
-
-                        try:
-                            parsed = _json.loads(raw_str)
-                            if isinstance(parsed, list):
-                                items = parsed
-                        except Exception:
-                            pass
-                    elif isinstance(raw_str, list):
-                        # Some nodriver versions auto-decode JSON;
-                        # accept that path too.
-                        items = raw_str
-                    reply.result = {
-                        "current_url": cur or "",
-                        "count": len(items),
-                        "links": items,
-                    }
-                elif kind == "exists":
-                    # CSS selector exists check -- cheap, deterministic.
-                    # Used by macros / scripts for if/else branching
-                    # without involving an LLM.
-                    selector = action.get("selector") or ""
-                    status, found = await browser_ops.exists(
-                        tab,
-                        selector,
-                        _slog,
-                    )
-                    reply.status = status
-                    reply.result = bool(found)
                 elif kind == "evaluate":
                     # Arbitrary JS evaluation in the tab's page context.
                     # The keystone the SDK builds Locator getters /
@@ -4187,43 +4196,6 @@ class WorkerAgent:
                                     f"{type(parsed).__name__} "
                                     f"({len(parsed) if hasattr(parsed, '__len__') else '-'})"
                                 )
-                elif kind == "get_cookies":
-                    # Dump every cookie the browser currently has via CDP
-                    # Network.getAllCookies. Used by the admin UI's
-                    # "save cookies to host" button so the operator can
-                    # log into a site once in the noVNC viewer and then
-                    # promote that session's cookies into the per-host
-                    # registry. ``urls`` (optional) narrows the dump to
-                    # cookies that would be sent to those URLs (matches
-                    # CDP Network.getCookies semantics).
-                    from nodriver import cdp as _cdp
-
-                    urls = action.get("urls")
-                    if urls:
-                        cookies = await tab.send(_cdp.network.get_cookies(urls=list(urls)))
-                    else:
-                        cookies = await tab.send(_cdp.network.get_all_cookies())
-                    # CDP returns Cookie objects (with extra read-only
-                    # fields like size/session). Project to a plain dict
-                    # the host registry will accept. cookies_for_cdp
-                    # later drops the still-unknown keys before sending
-                    # them back to a future session.
-                    out: list[dict] = []
-                    for c in cookies or []:
-                        # nodriver returns dataclass-like objects; fall
-                        # back to vars(c) when no to_json helper exists.
-                        try:
-                            d = c.to_json() if hasattr(c, "to_json") else dict(vars(c))
-                        except Exception:
-                            d = {}
-                        if not d:
-                            continue
-                        out.append(d)
-                    reply.result = {
-                        "current_url": cur or "",
-                        "count": len(out),
-                        "cookies": out,
-                    }
                 elif kind == "capture":
                     label = action.get("label") or "capture"
                     step = int(action.get("step") or 0)
