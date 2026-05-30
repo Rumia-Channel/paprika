@@ -362,7 +362,12 @@ async def _run_codegen_loop_job(request: Request, info: JobInfo) -> None:
             skill_context=skill_context_block or None,
             convention_addendum=convention_addendum_block,
             llm_target=llm_target,
-            download_video=bool(getattr(opts, "download_video", False)),
+            # codegen-loop: always expose the video-DL docs so the LLM
+            # can use page.network() + page.download_video() when the
+            # goal asks for it.  The negative filter was designed for
+            # fetch-mode where download_video=False means "skip video
+            # capture entirely"; in codegen-loop the LLM decides.
+            download_video=True,
         )
     except Exception as e:
         msg = f"!! codegen-loop crashed: {type(e).__name__}: {e}"
