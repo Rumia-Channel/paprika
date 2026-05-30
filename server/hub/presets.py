@@ -32,11 +32,11 @@ Timestamps:
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from pathlib import Path
+
+from server.hub._jsonstore import JsonRecordRegistry
 
 
 def _safe_filename(name: str) -> str:
@@ -133,44 +133,33 @@ class PresetRecord:
         )
 
 
-class PresetRegistry:
-    """File-backed CRUD over the preset directory. Same shape as
-    :class:`HostRegistry` -- operations are single-file read/write."""
+class PresetRegistry(JsonRecordRegistry[PresetRecord]):
+    """File-backed CRUD over the preset directory. Inherits the generic
+    list / get / delete / atomic-write from :class:`JsonRecordRegistry`;
+    only the preset-specific (de)serialisation + sort + the timestamp
+    bookkeeping in :meth:`upsert` / :meth:`touch_used` live here."""
 
-    def __init__(self, data_dir: Path) -> None:
-        self.dir = Path(data_dir) / "presets"
-        self.dir.mkdir(parents=True, exist_ok=True)
+    subdir = "presets"
 
-    def _path(self, name: str) -> Path:
-        return self.dir / f"{_safe_filename(name)}.json"
+    # ---- JsonRecordRegistry hooks -----------------------------------------
 
-    def list_all(self) -> list[PresetRecord]:
-        records: list[PresetRecord] = []
-        for p in sorted(self.dir.glob("*.json")):
-            try:
-                records.append(PresetRecord.from_json(json.loads(p.read_text(encoding="utf-8"))))
-            except Exception:
-                # Corrupt file -- skip silently so the operator at
-                # least sees the other presets.
-                pass
-        # Sort: by category (empty last), then by name.
-        records.sort(
-            key=lambda r: (
-                r.category == "",
-                r.category.lower(),
-                r.name.lower(),
-            )
-        )
-        return records
+    def _slug(self, key: str) -> str:
+        return _safe_filename(key)
 
-    def get(self, name: str) -> PresetRecord | None:
-        p = self._path(name)
-        if not p.exists():
-            return None
-        try:
-            return PresetRecord.from_json(json.loads(p.read_text(encoding="utf-8")))
-        except Exception:
-            return None
+    def _key_of(self, rec: PresetRecord) -> str:
+        return rec.name
+
+    def _to_json(self, rec: PresetRecord) -> dict:
+        return rec.to_json()
+
+    def _from_json(self, d: dict) -> PresetRecord:
+        return PresetRecord.from_json(d)
+
+    def _sort_key(self, rec: PresetRecord):
+        # Category-grouped (empty category last), then by name.
+        return (rec.category == "", rec.category.lower(), rec.name.lower())
+
+    # ---- preset-specific behaviour ----------------------------------------
 
     def upsert(self, rec: PresetRecord) -> PresetRecord:
         if not rec.name.strip():
@@ -184,16 +173,6 @@ class PresetRegistry:
         self._write(rec)
         return rec
 
-    def delete(self, name: str) -> bool:
-        p = self._path(name)
-        if not p.exists():
-            return False
-        try:
-            p.unlink()
-            return True
-        except Exception:
-            return False
-
     def touch_used(self, name: str) -> PresetRecord | None:
         """Bump ``last_used_at`` to now. Called both when the UI
         loads a preset and when POST /presets/{name}/run fires."""
@@ -203,14 +182,3 @@ class PresetRegistry:
         rec.last_used_at = _utcnow_iso()
         self._write(rec)
         return rec
-
-    def _write(self, rec: PresetRecord) -> None:
-        p = self._path(rec.name)
-        # Write to a temp file + rename so a crashed Python doesn't
-        # leave a half-written record on disk.
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(rec.to_json(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        tmp.replace(p)

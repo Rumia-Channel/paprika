@@ -45,6 +45,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
+from server.hub._jsonstore import JsonRecordRegistry
+
 
 # ----------------------------------------------------------------------------
 # Schema
@@ -213,51 +215,41 @@ class EngineRecord:
 # ----------------------------------------------------------------------------
 
 
-class EngineRegistry:
+class EngineRegistry(JsonRecordRegistry[EngineRecord]):
     """File-backed CRUD over ``{data_dir}/engines/<slug>.json``.
 
-    Same shape as :class:`HostRegistry` / :class:`PresetRegistry`:
-    operations are single-file read / write, no Redis. Operators
-    create every engine explicitly from the admin UI -- there is no
-    auto-seeding of "built-in" entries. (The old seeder added a
-    fixed set of entries on first start but its endpoints pointed
-    at compose-internal hostnames that were wrong on most deploys;
-    operators ended up editing every field by hand anyway, so the
-    seed produced more confusion than convenience and was removed.)
+    Inherits the generic list / get / delete / atomic-write from
+    :class:`JsonRecordRegistry`; only the engine-specific
+    (de)serialisation + sort + the slug-normalising upsert / promote
+    helpers live here. Operators create every engine explicitly from
+    the admin UI -- there is no auto-seeding of "built-in" entries.
+    (The old seeder added a fixed set of entries on first start but its
+    endpoints pointed at compose-internal hostnames that were wrong on
+    most deploys; operators ended up editing every field by hand anyway,
+    so the seed produced more confusion than convenience and was removed.)
     """
 
-    def __init__(self, data_dir: Path) -> None:
-        self.dir = Path(data_dir) / "engines"
-        self.dir.mkdir(parents=True, exist_ok=True)
+    subdir = "engines"
 
-    def _path(self, slug: str) -> Path:
-        return self.dir / f"{normalise_slug(slug)}.json"
+    # ---- JsonRecordRegistry hooks -----------------------------------------
 
-    def list_all(self) -> list[EngineRecord]:
-        records: list[EngineRecord] = []
-        for p in sorted(self.dir.glob("*.json")):
-            try:
-                records.append(EngineRecord.from_json(
-                    json.loads(p.read_text(encoding="utf-8"))
-                ))
-            except Exception:
-                # Corrupt file -- skip silently so the operator at
-                # least sees the other engines in the UI.
-                pass
-        # Sort: built-in first, then by kind, then alphabetically.
-        records.sort(key=lambda r: (not r.builtin, r.kind, r.slug))
-        return records
+    def _slug(self, key: str) -> str:
+        return normalise_slug(key)
 
-    def get(self, slug: str) -> Optional[EngineRecord]:
-        p = self._path(slug)
-        if not p.exists():
-            return None
-        try:
-            return EngineRecord.from_json(
-                json.loads(p.read_text(encoding="utf-8"))
-            )
-        except Exception:
-            return None
+    def _key_of(self, rec: EngineRecord) -> str:
+        return rec.slug
+
+    def _to_json(self, rec: EngineRecord) -> dict:
+        return rec.to_json()
+
+    def _from_json(self, d: dict) -> EngineRecord:
+        return EngineRecord.from_json(d)
+
+    def _sort_key(self, rec: EngineRecord):
+        # Built-in first, then by kind, then alphabetically.
+        return (not rec.builtin, rec.kind, rec.slug)
+
+    # ---- engine-specific behaviour ----------------------------------------
 
     def upsert(self, rec: EngineRecord) -> EngineRecord:
         if not rec.slug.strip():
@@ -311,17 +303,6 @@ class EngineRegistry:
         matches = [r for r in self.list_all() if r.kind == kind]
         promoted = [r for r in matches if r.promoted]
         return (promoted or matches or [None])[0]
-
-    def _write(self, rec: EngineRecord) -> None:
-        p = self._path(rec.slug)
-        # Write to a temp file + rename so a crashed Python doesn't
-        # leave a half-written record on disk.
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(rec.to_json(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        tmp.replace(p)
 
 
 # ----------------------------------------------------------------------------
