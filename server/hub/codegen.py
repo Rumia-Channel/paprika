@@ -626,17 +626,45 @@ Rules
 9. Print useful progress to stdout: which URL was visited, how many
    items collected, etc. The operator will run the script in a
    terminal.
-9b. Use ``page.agent(goal, max_steps=N)`` for short LOCAL unknowns
-    that the script can't predict (age gates, cookie/consent dialogs,
-    SPA elements that vary across visits, login flows where the layout
-    shifts). The script keeps writing the deterministic loops; only the
-    ambiguous spots get delegated to the LLM. Typical ``N`` is 2-5;
-    never above 10.
+9b. ``page.agent()`` is SLOW (2-3 min per call) and often TIMES OUT.
+    ALWAYS prefer deterministic approaches first:
 
-    AVOID ``page.agent()`` for simple one-click actions like clicking a
-    play button. The agent spawns a full LLM vision loop (2-3 min per
-    call) and frequently TIMES OUT on video players. Instead, use
-    ``page.evaluate()`` or ``page.click()`` for deterministic clicks::
+    * ``page.evaluate()`` / ``page.click()`` / ``page.get_by_text()``
+      for clicks (play buttons, age gates, consent dialogs, etc.)
+    * ``page.agent()`` ONLY as a WRAPPED FALLBACK when the deterministic
+      approach fails. ALWAYS wrap ``page.agent()`` in try/except.
+
+    AGE GATE -- JS first, agent fallback::
+
+        # Try common age-gate buttons by text (fast, <1s)
+        try:
+            clicked = await page.evaluate(
+                "(() => {"
+                "  const texts = ['enter', 'i am 18', '18', 'yes', 'agree',"
+                "    '入場', '18歳以上', '同意'];"
+                "  for (const el of document.querySelectorAll("
+                "    'button, a, [role=button], input[type=button], input[type=submit]'"
+                "  )) {"
+                "    const t = (el.textContent || el.value || '').toLowerCase().trim();"
+                "    if (texts.some(x => t.includes(x))) {"
+                "      el.click(); return true;"
+                "    }"
+                "  }"
+                "  return false;"
+                "})()"
+            )
+        except Exception:
+            clicked = False
+        if not clicked:
+            try:
+                await page.agent(
+                    "Accept the age gate or consent dialog.",
+                    max_steps=3,
+                )
+            except Exception as e:
+                print(f"age gate agent failed (non-fatal): {e}", file=sys.stderr)
+
+    PLAY BUTTON -- JS only, NO agent::
 
         # SLOW -- agent loop, 120-180s, often times out:
         #   await page.agent("Click the play button", max_steps=3)
@@ -647,8 +675,10 @@ Rules
             "|| document.querySelector('[class*=play]')?.click()"
         )
 
-    Reserve ``page.agent()`` for multi-step flows with unpredictable
-    DOM layout (age gates, cookie banners, login forms).
+    Reserve ``page.agent()`` for truly unpredictable multi-step flows
+    (login forms, CAPTCHA follow-up, dynamic SPA navigation) where no
+    simple selector exists. Typical ``N`` is 2-5; never above 10.
+    ALWAYS wrap in try/except so a timeout doesn't crash the script.
 
     SIGNATURE (read carefully -- frequent mistake):
 
