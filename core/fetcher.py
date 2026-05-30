@@ -2273,14 +2273,19 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                     f"  !! on_browser_closing callback failed "
                     f"({type(e).__name__}: {e})"
                 )
-        # Whether we keep the browser open or stop it, reduce to one
-        # tab so the next operator (next fetch / human in noVNC) sees
-        # a clean window. Best-effort; cleanup failure must not mask
-        # the actual fetch result.
-        try:
-            await _force_single_page_target(browser, log=log)
-        except Exception as e:
-            log(f"  !! post-fetch tab cleanup failed: {e}")
+        # Reduce to one tab so the next operator (next fetch / human in
+        # noVNC) sees a clean window. Best-effort; cleanup failure must
+        # not mask the actual fetch result.
+        #
+        # NEVER do this in ATTACH mode: we connected to the operator's
+        # OWN running Chrome (attach_host/port), so reducing it to a
+        # single tab would close every other tab they had open. Tab
+        # cleanup only makes sense for a browser this fetch owns.
+        if not attaching:
+            try:
+                await _force_single_page_target(browser, log=log)
+            except Exception as e:
+                log(f"  !! post-fetch tab cleanup failed: {e}")
         if keep_open:
             log(
                 "  ... browser left open (--keep-open). "

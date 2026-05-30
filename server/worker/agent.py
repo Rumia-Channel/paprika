@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -2986,6 +2986,11 @@ class WorkerAgent:
 
         sid = msg.session_id
         ack = WorkerSessionStartAck(session_id=sid)
+        # Tracked outside the try so the except can release the lane even
+        # when the failure happens AFTER acquire() but BEFORE the
+        # SessionState is registered in self._sessions (the rollback
+        # below pops self._sessions, which is empty in that window).
+        lane = None
         try:
             if self.lane_pool is None:
                 raise RuntimeError("worker has no lane pool")
@@ -3320,6 +3325,15 @@ class WorkerAgent:
                         pass
                 if state.lane is not None and self.lane_pool is not None:
                     self.lane_pool.release(state.lane)
+            elif lane is not None and self.lane_pool is not None:
+                # Lane was acquired but the failure happened before the
+                # SessionState was registered (operator-profile install
+                # or mkdtemp threw between acquire() and
+                # self._sessions[sid] = state). Without releasing it
+                # here the lane leaks permanently -- the classic
+                # "no free lane / fleet at capacity" after a transient
+                # profile-fetch error.
+                self.lane_pool.release(lane)
             _logger.info(
                 f"[worker {self.worker_id}] session {sid} start failed: {ack.error}",
             )
