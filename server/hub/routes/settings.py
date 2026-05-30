@@ -391,6 +391,38 @@ async def mariadb_migrate(category: str) -> dict:
         except Exception as e:
             raise HTTPException(500, f"Visited URLs 移行失敗: {e}")
 
+    if category == "skills":
+        if state.skills is None:
+            raise HTTPException(503, "SkillRegistry が未初期化です")
+        try:
+            return await mariadb.migrate_skills(state.skills, pool)
+        except Exception as e:
+            raise HTTPException(500, f"Skills 移行失敗: {e}")
+
+    if category == "conventions":
+        if state.conventions is None:
+            raise HTTPException(503, "ConventionRegistry が未初期化です")
+        try:
+            return await mariadb.migrate_conventions(state.conventions, pool)
+        except Exception as e:
+            raise HTTPException(500, f"Conventions 移行失敗: {e}")
+
+    if category == "engines":
+        if state.engines is None:
+            raise HTTPException(503, "EngineRegistry が未初期化です")
+        try:
+            return await mariadb.migrate_engines(state.engines, pool)
+        except Exception as e:
+            raise HTTPException(500, f"Engines 移行失敗: {e}")
+
+    if category == "presets":
+        if state.presets is None:
+            raise HTTPException(503, "PresetRegistry が未初期化です")
+        try:
+            return await mariadb.migrate_presets(state.presets, pool)
+        except Exception as e:
+            raise HTTPException(500, f"Presets 移行失敗: {e}")
+
     raise HTTPException(400, f"不明なカテゴリ: {category}")
 
 

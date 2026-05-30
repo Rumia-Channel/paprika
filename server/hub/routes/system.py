@@ -2959,6 +2959,28 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
           <iconify-icon icon="lucide:link"></iconify-icon> Visited URLs を移行
         </button>
         <span id="mdbMigrateVisitedStatus" style="font-size:.85em;"></span>
+
+        <hr style="border:0; border-top:1px dashed #dde; margin:10px 0;">
+
+        <button id="mdbMigrateSkillsBtn" class="pill" style="background:#f0f8e8; border-color:#7aab5c; color:#3a5a2a;">
+          <iconify-icon icon="lucide:sparkles"></iconify-icon> Skills を移行
+        </button>
+        <span id="mdbMigrateSkillsStatus" style="font-size:.85em;"></span>
+
+        <button id="mdbMigrateConventionsBtn" class="pill" style="background:#f0f8e8; border-color:#7aab5c; color:#3a5a2a;">
+          <iconify-icon icon="lucide:scroll-text"></iconify-icon> Conventions を移行
+        </button>
+        <span id="mdbMigrateConventionsStatus" style="font-size:.85em;"></span>
+
+        <button id="mdbMigrateEnginesBtn" class="pill" style="background:#f0f8e8; border-color:#7aab5c; color:#3a5a2a;">
+          <iconify-icon icon="lucide:cpu"></iconify-icon> Engines を移行
+        </button>
+        <span id="mdbMigrateEnginesStatus" style="font-size:.85em;"></span>
+
+        <button id="mdbMigratePresetsBtn" class="pill" style="background:#f0f8e8; border-color:#7aab5c; color:#3a5a2a;">
+          <iconify-icon icon="lucide:bookmark"></iconify-icon> Presets を移行
+        </button>
+        <span id="mdbMigratePresetsStatus" style="font-size:.85em;"></span>
       </div>
 
       <div id="mdbTableCounts" style="display:none; margin-top:10px; padding:8px 12px; background:#fff; border:1px solid #dde; border-radius:6px; font-size:.85em;"></div>

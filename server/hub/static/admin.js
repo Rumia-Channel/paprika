@@ -10074,10 +10074,10 @@ async function mdbCreateSchema() {
 
 async function mdbMigrate(category) {
   // Map category -> status span suffix (capitalised first letter)
-  const capMap = { jobs: 'Jobs', hosts: 'Hosts', visited_urls: 'Visited' };
+  const capMap = { jobs: 'Jobs', hosts: 'Hosts', visited_urls: 'Visited', skills: 'Skills', conventions: 'Conventions', engines: 'Engines', presets: 'Presets' };
   const cap = capMap[category] || category;
   const statusEl = document.getElementById('mdbMigrate' + cap + 'Status');
-  const btnMap = { jobs: 'mdbMigrateJobsBtn', hosts: 'mdbMigrateHostsBtn', visited_urls: 'mdbMigrateVisitedBtn' };
+  const btnMap = { jobs: 'mdbMigrateJobsBtn', hosts: 'mdbMigrateHostsBtn', visited_urls: 'mdbMigrateVisitedBtn', skills: 'mdbMigrateSkillsBtn', conventions: 'mdbMigrateConventionsBtn', engines: 'mdbMigrateEnginesBtn', presets: 'mdbMigratePresetsBtn' };
   const btn = document.getElementById(btnMap[category]);
   const origLabel = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<iconify-icon icon="lucide:loader-2" class="spin"></iconify-icon> 移行中…'; }
@@ -10161,6 +10161,14 @@ async function mdbRefreshTableCounts() {
   if (mdbHosts) mdbHosts.addEventListener('click', () => mdbMigrate('hosts'));
   const mdbVisited = document.getElementById('mdbMigrateVisitedBtn');
   if (mdbVisited) mdbVisited.addEventListener('click', () => mdbMigrate('visited_urls'));
+  const mdbSkills = document.getElementById('mdbMigrateSkillsBtn');
+  if (mdbSkills) mdbSkills.addEventListener('click', () => mdbMigrate('skills'));
+  const mdbConventions = document.getElementById('mdbMigrateConventionsBtn');
+  if (mdbConventions) mdbConventions.addEventListener('click', () => mdbMigrate('conventions'));
+  const mdbEngines = document.getElementById('mdbMigrateEnginesBtn');
+  if (mdbEngines) mdbEngines.addEventListener('click', () => mdbMigrate('engines'));
+  const mdbPresets = document.getElementById('mdbMigratePresetsBtn');
+  if (mdbPresets) mdbPresets.addEventListener('click', () => mdbMigrate('presets'));
   // MariaDB password toggle
   const mdbPwToggle = document.getElementById('setMariadbPasswordToggle');
   if (mdbPwToggle) mdbPwToggle.addEventListener('click', () => {

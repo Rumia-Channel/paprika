@@ -125,6 +125,103 @@ _TABLES: list[tuple[str, str]] = [
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
     ),
+    # ---- Additional registries ----
+    (
+        "skills",
+        """
+        CREATE TABLE IF NOT EXISTS skills (
+            slug             VARCHAR(255)  PRIMARY KEY,
+            tier             VARCHAR(20)   NOT NULL DEFAULT 'auto',
+            name             VARCHAR(255)  NOT NULL DEFAULT '',
+            description      TEXT,
+            code_template    MEDIUMTEXT,
+            llm_instructions MEDIUMTEXT,
+            applicable_when  JSON,
+            tags             JSON,
+            auto_extracted   TINYINT(1)    DEFAULT 1,
+            extracted_from   JSON,
+            use_count        INT           DEFAULT 0,
+            created_at       DATETIME(3),
+            updated_at       DATETIME(3),
+            last_used_at     DATETIME(3),
+            INDEX idx_tier (tier),
+            INDEX idx_tags ((CAST(tags AS CHAR(512))))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
+    (
+        "conventions",
+        """
+        CREATE TABLE IF NOT EXISTS conventions (
+            slug             VARCHAR(255)  PRIMARY KEY,
+            tier             VARCHAR(20)   NOT NULL DEFAULT 'auto',
+            name             VARCHAR(255)  NOT NULL DEFAULT '',
+            advice           TEXT,
+            rationale        TEXT,
+            bad_example      TEXT,
+            good_example     TEXT,
+            applicable_when  JSON,
+            tags             JSON,
+            extracted_from   JSON,
+            use_count        INT           DEFAULT 0,
+            created_at       DATETIME(3),
+            updated_at       DATETIME(3),
+            last_used_at     DATETIME(3),
+            INDEX idx_tier (tier)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
+    (
+        "engines",
+        """
+        CREATE TABLE IF NOT EXISTS engines (
+            slug                VARCHAR(128)  PRIMARY KEY,
+            name                VARCHAR(255)  NOT NULL DEFAULT '',
+            kind                VARCHAR(30)   DEFAULT 'chat',
+            protocol            VARCHAR(30)   DEFAULT 'openai',
+            endpoint            TEXT,
+            model               VARCHAR(255)  DEFAULT '',
+            api_key_env         VARCHAR(128)  DEFAULT '',
+            api_key             TEXT          DEFAULT '',
+            headers             JSON,
+            timeout_s           INT           DEFAULT 120,
+            promoted            TINYINT(1)    DEFAULT 0,
+            supports_tools      TINYINT(1)    DEFAULT 1,
+            use_for_codegen     TINYINT(1)    DEFAULT 0,
+            daily_token_budget  INT           DEFAULT 0,
+            daily_request_budget INT          DEFAULT 0,
+            notes               TEXT,
+            builtin             TINYINT(1)    DEFAULT 0,
+            created_at          DATETIME(3),
+            updated_at          DATETIME(3)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
+    (
+        "presets",
+        """
+        CREATE TABLE IF NOT EXISTS presets (
+            name                    VARCHAR(255)  PRIMARY KEY,
+            category                VARCHAR(128)  DEFAULT '',
+            description             TEXT,
+            ui_mode                 VARCHAR(20)   DEFAULT 'fetch',
+            ai_engine               VARCHAR(30)   DEFAULT 'codegen',
+            url                     TEXT,
+            goal                    MEDIUMTEXT,
+            simple_rows             JSON,
+            code_script             MEDIUMTEXT,
+            max_attempts            INT           DEFAULT 3,
+            attempt_timeout_s       INT           DEFAULT 86400,
+            attempt_timeout_simple_s INT          DEFAULT 600,
+            host_dedup              TINYINT(1)    DEFAULT 1,
+            options                 JSON,
+            created_at              DATETIME(3),
+            updated_at              DATETIME(3),
+            last_used_at            DATETIME(3),
+            INDEX idx_category (category)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
 ]
 
 
@@ -510,5 +607,280 @@ async def migrate_visited_urls(
         "migrated": migrated,
         "skipped": skipped,
         "total_hosts": total_hosts,
+        "errors": errors[:20],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Migration: Skills  (file JSON → MariaDB)
+# ---------------------------------------------------------------------------
+
+async def migrate_skills(
+    skill_registry: Any,
+    pool: Any,
+) -> dict:
+    """Migrate SkillRegistry files to MariaDB."""
+    from dataclasses import asdict
+
+    all_skills = skill_registry.list_all()
+    total = len(all_skills)
+    migrated = 0
+    skipped = 0
+    errors: list[dict] = []
+
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for rec in all_skills:
+                try:
+                    d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
+                    await cur.execute(
+                        """INSERT IGNORE INTO skills
+                           (slug, tier, name, description,
+                            code_template, llm_instructions,
+                            applicable_when, tags, auto_extracted,
+                            extracted_from, use_count,
+                            created_at, updated_at, last_used_at)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (
+                            d.get("slug", ""),
+                            d.get("tier", "auto"),
+                            d.get("name", ""),
+                            d.get("description"),
+                            d.get("code_template"),
+                            d.get("llm_instructions"),
+                            _json_dumps(d.get("applicable_when", [])),
+                            _json_dumps(d.get("tags", [])),
+                            1 if d.get("auto_extracted", True) else 0,
+                            _json_dumps(d.get("extracted_from", [])),
+                            d.get("use_count", 0),
+                            _parse_dt(d.get("created_at")),
+                            _parse_dt(d.get("updated_at")),
+                            _parse_dt(d.get("last_used_at")),
+                        ),
+                    )
+                    if cur.rowcount > 0:
+                        migrated += 1
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    slug = d.get("slug", "?") if isinstance(d, dict) else getattr(rec, "slug", "?")
+                    errors.append({"slug": slug, "error": str(e)})
+                    log.warning("migrate skill %s failed: %s", slug, e)
+
+    return {
+        "ok": True,
+        "category": "skills",
+        "migrated": migrated,
+        "skipped": skipped,
+        "total": total,
+        "errors": errors[:20],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Migration: Conventions  (file JSON → MariaDB)
+# ---------------------------------------------------------------------------
+
+async def migrate_conventions(
+    convention_registry: Any,
+    pool: Any,
+) -> dict:
+    """Migrate ConventionRegistry files to MariaDB."""
+    from dataclasses import asdict
+
+    all_convs = convention_registry.list_all()
+    total = len(all_convs)
+    migrated = 0
+    skipped = 0
+    errors: list[dict] = []
+
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for rec in all_convs:
+                try:
+                    d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
+                    await cur.execute(
+                        """INSERT IGNORE INTO conventions
+                           (slug, tier, name, advice, rationale,
+                            bad_example, good_example,
+                            applicable_when, tags, extracted_from,
+                            use_count, created_at, updated_at,
+                            last_used_at)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (
+                            d.get("slug", ""),
+                            d.get("tier", "auto"),
+                            d.get("name", ""),
+                            d.get("advice"),
+                            d.get("rationale"),
+                            d.get("bad_example"),
+                            d.get("good_example"),
+                            _json_dumps(d.get("applicable_when", [])),
+                            _json_dumps(d.get("tags", [])),
+                            _json_dumps(d.get("extracted_from", [])),
+                            d.get("use_count", 0),
+                            _parse_dt(d.get("created_at")),
+                            _parse_dt(d.get("updated_at")),
+                            _parse_dt(d.get("last_used_at")),
+                        ),
+                    )
+                    if cur.rowcount > 0:
+                        migrated += 1
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    slug = d.get("slug", "?") if isinstance(d, dict) else getattr(rec, "slug", "?")
+                    errors.append({"slug": slug, "error": str(e)})
+                    log.warning("migrate convention %s failed: %s", slug, e)
+
+    return {
+        "ok": True,
+        "category": "conventions",
+        "migrated": migrated,
+        "skipped": skipped,
+        "total": total,
+        "errors": errors[:20],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Migration: Engines  (file JSON → MariaDB)
+# ---------------------------------------------------------------------------
+
+async def migrate_engines(
+    engine_registry: Any,
+    pool: Any,
+) -> dict:
+    """Migrate EngineRegistry files to MariaDB."""
+    from dataclasses import asdict
+
+    all_engines = engine_registry.list_all()
+    total = len(all_engines)
+    migrated = 0
+    skipped = 0
+    errors: list[dict] = []
+
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for rec in all_engines:
+                try:
+                    d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
+                    await cur.execute(
+                        """INSERT IGNORE INTO engines
+                           (slug, name, kind, protocol, endpoint,
+                            model, api_key_env, api_key, headers,
+                            timeout_s, promoted, supports_tools,
+                            use_for_codegen, daily_token_budget,
+                            daily_request_budget, notes, builtin,
+                            created_at, updated_at)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                   %s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (
+                            d.get("slug", ""),
+                            d.get("name", ""),
+                            d.get("kind", "chat"),
+                            d.get("protocol", "openai"),
+                            d.get("endpoint", ""),
+                            d.get("model", ""),
+                            d.get("api_key_env", ""),
+                            d.get("api_key", ""),
+                            _json_dumps(d.get("headers", {})),
+                            d.get("timeout_s", 120),
+                            1 if d.get("promoted") else 0,
+                            1 if d.get("supports_tools", True) else 0,
+                            1 if d.get("use_for_codegen") else 0,
+                            d.get("daily_token_budget", 0),
+                            d.get("daily_request_budget", 0),
+                            d.get("notes", ""),
+                            1 if d.get("builtin") else 0,
+                            _parse_dt(d.get("created_at")),
+                            _parse_dt(d.get("updated_at")),
+                        ),
+                    )
+                    if cur.rowcount > 0:
+                        migrated += 1
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    slug = d.get("slug", "?") if isinstance(d, dict) else getattr(rec, "slug", "?")
+                    errors.append({"slug": slug, "error": str(e)})
+                    log.warning("migrate engine %s failed: %s", slug, e)
+
+    return {
+        "ok": True,
+        "category": "engines",
+        "migrated": migrated,
+        "skipped": skipped,
+        "total": total,
+        "errors": errors[:20],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Migration: Presets  (file JSON → MariaDB)
+# ---------------------------------------------------------------------------
+
+async def migrate_presets(
+    preset_registry: Any,
+    pool: Any,
+) -> dict:
+    """Migrate PresetRegistry files to MariaDB."""
+    from dataclasses import asdict
+
+    all_presets = preset_registry.list_all()
+    total = len(all_presets)
+    migrated = 0
+    skipped = 0
+    errors: list[dict] = []
+
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for rec in all_presets:
+                try:
+                    d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
+                    await cur.execute(
+                        """INSERT IGNORE INTO presets
+                           (name, category, description, ui_mode,
+                            ai_engine, url, goal, simple_rows,
+                            code_script, max_attempts,
+                            attempt_timeout_s, attempt_timeout_simple_s,
+                            host_dedup, options,
+                            created_at, updated_at, last_used_at)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (
+                            d.get("name", ""),
+                            d.get("category", ""),
+                            d.get("description", ""),
+                            d.get("ui_mode", "fetch"),
+                            d.get("ai_engine", "codegen"),
+                            d.get("url", ""),
+                            d.get("goal", ""),
+                            _json_dumps(d.get("simple_rows", [])),
+                            d.get("code_script", ""),
+                            d.get("max_attempts", 3),
+                            d.get("attempt_timeout_s", 86400),
+                            d.get("attempt_timeout_simple_s", 600),
+                            1 if d.get("host_dedup", True) else 0,
+                            _json_dumps(d.get("options", {})),
+                            _parse_dt(d.get("created_at")),
+                            _parse_dt(d.get("updated_at")),
+                            _parse_dt(d.get("last_used_at")),
+                        ),
+                    )
+                    if cur.rowcount > 0:
+                        migrated += 1
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    name = d.get("name", "?") if isinstance(d, dict) else getattr(rec, "name", "?")
+                    errors.append({"name": name, "error": str(e)})
+                    log.warning("migrate preset %s failed: %s", name, e)
+
+    return {
+        "ok": True,
+        "category": "presets",
+        "migrated": migrated,
+        "skipped": skipped,
+        "total": total,
         "errors": errors[:20],
     }
