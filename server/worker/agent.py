@@ -3957,6 +3957,148 @@ class WorkerAgent:
             "axtree_name": snap.axtree_name,
         }
 
+    @_session_action("set_input_files", read_only=False)
+    async def _act_set_input_files(self, ctx: "_ActionCtx") -> None:
+        # File upload: the client base64-encodes the file
+        # bytes, we materialise them in a worker tempdir and
+        # point the <input type=file> at the paths via CDP
+        # DOM.setFileInputFiles (a JS expression can't set a
+        # file input -- browsers forbid it). Chrome reads the
+        # paths at form-submit time, so the temp files must
+        # outlive this call; they're cleaned with the lane.
+        import base64 as _b64
+
+        from nodriver import cdp as _cdp
+
+        selector = ctx.action.get("selector") or ""
+        files = ctx.action.get("files") or []
+        if not selector:
+            ctx.reply.status = "ERR: set_input_files: empty selector"
+        else:
+            try:
+                updir = tempfile.mkdtemp(prefix="paprika_upload_")
+                paths: list[str] = []
+                for f in files:
+                    name = (
+                        os.path.basename(f.get("name") or "upload.bin") or "upload.bin"
+                    )
+                    data = _b64.b64decode(f.get("content_b64") or "")
+                    p = os.path.join(updir, name)
+                    with open(p, "wb") as fh:
+                        fh.write(data)
+                    paths.append(p)
+                doc = await ctx.tab.send(_cdp.dom.get_document())
+                node_id = await ctx.tab.send(
+                    _cdp.dom.query_selector(
+                        node_id=doc.node_id,
+                        selector=selector,
+                    )
+                )
+                if not node_id:
+                    ctx.reply.status = "NO_MATCH"
+                else:
+                    await ctx.tab.send(
+                        _cdp.dom.set_file_input_files(
+                            files=paths,
+                            node_id=node_id,
+                        )
+                    )
+                    ctx.reply.result = {
+                        "files": [os.path.basename(p) for p in paths],
+                        "count": len(paths),
+                    }
+            except Exception as e:
+                ctx.reply.status = (
+                    f"ERR: set_input_files failed: {browser_ops.short_error(e)}"
+                )
+
+    @_session_action("fetch_refresh", read_only=False)
+    async def _act_fetch_refresh(self, ctx: "_ActionCtx") -> None:
+        # Operator-triggered refresh on a keep_session
+        # post-fetch session. Captures the current page
+        # HTML (the operator may have navigated via
+        # noVNC) and pushes it to /jobs/{jid}/files/
+        # page.html so /jobs/{jid}/links re-extracts
+        # against the latest DOM. Then walks the worker
+        # tempdir and uploads any files the passive CDP
+        # listener wrote AFTER the original fetch returned
+        # (e.g. .ts segments from a video the operator
+        # played manually). Idempotent: re-running an
+        # already-flushed refresh is cheap and just
+        # returns added=[].
+        state = ctx.state
+        tab = ctx.tab
+        added: list[str] = []
+        html_uploaded = False
+        current_url = ""
+        try:
+            current_url = (
+                await tab.evaluate(
+                    "document.location.href",
+                )
+                or ""
+            )
+        except Exception:
+            current_url = ""
+        # ---- page.html refresh ----
+        if state.asset_upload_base and state.job_id:
+            try:
+                html = await tab.evaluate(
+                    "document.documentElement.outerHTML",
+                )
+                if isinstance(html, str) and html:
+                    base = state.asset_upload_base.split("/jobs/", 1)[0]
+                    page_url = f"{base}/jobs/{state.job_id}/files/page.html"
+                    files = {
+                        "file": (
+                            "page.html",
+                            html.encode("utf-8"),
+                            "text/html",
+                        )
+                    }
+                    data: dict[str, str] = {}
+                    if self.worker_secret:
+                        data["secret"] = self.worker_secret
+                    r = await self._http.post(
+                        page_url,
+                        files=files,
+                        data=data,
+                    )
+                    r.raise_for_status()
+                    html_uploaded = True
+            except Exception as e:
+                ctx.slog(
+                    f"[fetch_refresh] page.html upload failed: {type(e).__name__}: {e}"
+                )
+        # ---- new-asset flush ----
+        if state.assets_dir is not None:
+            try:
+                for p in sorted(state.assets_dir.rglob("*")):
+                    if not p.is_file():
+                        continue
+                    if p.name in state.uploaded_assets:
+                        continue
+                    ok = await self._upload_one_session_asset(
+                        state,
+                        p,
+                        page_url=current_url or None,
+                    )
+                    if ok:
+                        added.append(p.name)
+            except Exception as e:
+                ctx.slog(f"[fetch_refresh] asset flush failed: {type(e).__name__}: {e}")
+        ctx.slog(
+            f"[fetch_refresh] current_url={current_url!r} "
+            f"html_uploaded={html_uploaded} "
+            f"added_assets={len(added)}"
+        )
+        ctx.reply.result = {
+            "current_url": current_url,
+            "html_uploaded": html_uploaded,
+            "added": added,
+            "added_count": len(added),
+        }
+
     async def _handle_session_action(self, msg: HubSessionAction) -> None:
         """Dispatch one action against a bound session via browser_ops."""
         sid = msg.session_id
@@ -4071,59 +4213,6 @@ class WorkerAgent:
                 spec = _SESSION_ACTIONS.get(kind)
                 if spec is not None:
                     await spec.fn(self, ctx)
-                elif kind == "set_input_files":
-                    # File upload: the client base64-encodes the file
-                    # bytes, we materialise them in a worker tempdir and
-                    # point the <input type=file> at the paths via CDP
-                    # DOM.setFileInputFiles (a JS expression can't set a
-                    # file input -- browsers forbid it). Chrome reads the
-                    # paths at form-submit time, so the temp files must
-                    # outlive this call; they're cleaned with the lane.
-                    import base64 as _b64
-
-                    from nodriver import cdp as _cdp
-
-                    selector = action.get("selector") or ""
-                    files = action.get("files") or []
-                    if not selector:
-                        reply.status = "ERR: set_input_files: empty selector"
-                    else:
-                        try:
-                            updir = tempfile.mkdtemp(prefix="paprika_upload_")
-                            paths: list[str] = []
-                            for f in files:
-                                name = (
-                                    os.path.basename(f.get("name") or "upload.bin") or "upload.bin"
-                                )
-                                data = _b64.b64decode(f.get("content_b64") or "")
-                                p = os.path.join(updir, name)
-                                with open(p, "wb") as fh:
-                                    fh.write(data)
-                                paths.append(p)
-                            doc = await tab.send(_cdp.dom.get_document())
-                            node_id = await tab.send(
-                                _cdp.dom.query_selector(
-                                    node_id=doc.node_id,
-                                    selector=selector,
-                                )
-                            )
-                            if not node_id:
-                                reply.status = "NO_MATCH"
-                            else:
-                                await tab.send(
-                                    _cdp.dom.set_file_input_files(
-                                        files=paths,
-                                        node_id=node_id,
-                                    )
-                                )
-                                reply.result = {
-                                    "files": [os.path.basename(p) for p in paths],
-                                    "count": len(paths),
-                                }
-                        except Exception as e:
-                            reply.status = (
-                                f"ERR: set_input_files failed: {browser_ops.short_error(e)}"
-                            )
                 elif kind == "ask":
                     # LLM-based yes/no question. Sends current outline
                     # + URL + the question to the configured text LLM
@@ -5379,89 +5468,6 @@ class WorkerAgent:
                             "iframe_walk_done": iframe_walk_done,
                             "candidates_tried": tried_labels,
                         }
-                elif kind == "fetch_refresh":
-                    # Operator-triggered refresh on a keep_session
-                    # post-fetch session. Captures the current page
-                    # HTML (the operator may have navigated via
-                    # noVNC) and pushes it to /jobs/{jid}/files/
-                    # page.html so /jobs/{jid}/links re-extracts
-                    # against the latest DOM. Then walks the worker
-                    # tempdir and uploads any files the passive CDP
-                    # listener wrote AFTER the original fetch returned
-                    # (e.g. .ts segments from a video the operator
-                    # played manually). Idempotent: re-running an
-                    # already-flushed refresh is cheap and just
-                    # returns added=[].
-                    added: list[str] = []
-                    html_uploaded = False
-                    current_url = ""
-                    try:
-                        current_url = (
-                            await tab.evaluate(
-                                "document.location.href",
-                            )
-                            or ""
-                        )
-                    except Exception:
-                        current_url = ""
-                    # ---- page.html refresh ----
-                    if state.asset_upload_base and state.job_id:
-                        try:
-                            html = await tab.evaluate(
-                                "document.documentElement.outerHTML",
-                            )
-                            if isinstance(html, str) and html:
-                                base = state.asset_upload_base.split("/jobs/", 1)[0]
-                                page_url = f"{base}/jobs/{state.job_id}/files/page.html"
-                                files = {
-                                    "file": (
-                                        "page.html",
-                                        html.encode("utf-8"),
-                                        "text/html",
-                                    )
-                                }
-                                data: dict[str, str] = {}
-                                if self.worker_secret:
-                                    data["secret"] = self.worker_secret
-                                r = await self._http.post(
-                                    page_url,
-                                    files=files,
-                                    data=data,
-                                )
-                                r.raise_for_status()
-                                html_uploaded = True
-                        except Exception as e:
-                            _slog(
-                                f"[fetch_refresh] page.html upload failed: {type(e).__name__}: {e}"
-                            )
-                    # ---- new-asset flush ----
-                    if state.assets_dir is not None:
-                        try:
-                            for p in sorted(state.assets_dir.rglob("*")):
-                                if not p.is_file():
-                                    continue
-                                if p.name in state.uploaded_assets:
-                                    continue
-                                ok = await self._upload_one_session_asset(
-                                    state,
-                                    p,
-                                    page_url=current_url or None,
-                                )
-                                if ok:
-                                    added.append(p.name)
-                        except Exception as e:
-                            _slog(f"[fetch_refresh] asset flush failed: {type(e).__name__}: {e}")
-                    _slog(
-                        f"[fetch_refresh] current_url={current_url!r} "
-                        f"html_uploaded={html_uploaded} "
-                        f"added_assets={len(added)}"
-                    )
-                    reply.result = {
-                        "current_url": current_url,
-                        "html_uploaded": html_uploaded,
-                        "added": added,
-                        "added_count": len(added),
-                    }
                 elif kind == "solve_cloudflare":
                     # Get past a Cloudflare "Just a moment..." challenge.
                     #
