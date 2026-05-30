@@ -650,45 +650,71 @@
   }
 
   /* Submit panel internal sub-tabs (ジョブの実行 / Live).
-     Visually consistent with the top-level .tab style (= same red
-     active accent / box-shadow) but slightly SMALLER so the
-     hierarchy reads "Submit-panel local switch", not "page nav".
-     Main tab metrics for reference:
-        padding: .6rem .9rem;  font: 600 .92rem/1;
-     Sub-tabs subtract a touch from both: */
+     Browser-tab style: top corners rounded, bottom flush against the
+     content panel (= no margin gap), active state visually CONNECTS
+     to the content below (no bottom border, sits 1px above the
+     subpane top edge with z-index so the seam disappears).
+     Slightly smaller font than top-level .tab so the hierarchy
+     reads "Submit-panel local switch", not "page nav". */
   .submit-subtabs {
     display: flex;
-    gap: 6px;
+    gap: 4px;
     padding: 0 2px;
-    margin-bottom: 12px;
+    /* No gap below: the active tab merges with the .submit-subpane
+       border on the next line. */
+    margin: 0;
+    border-bottom: 1px solid #d4cfca;
   }
   .submit-subtab {
-    padding: .48rem .85rem;
+    padding: .42rem .9rem .5rem;
     font: 600 .85rem/1 inherit;
-    border: 0;
-    border-radius: 6px;
+    border: 1px solid #d4cfca;
+    border-bottom: none;
+    border-radius: 7px 7px 0 0;
     background: #f3f0ec;
-    color: #888;
+    color: #777;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    transition: background .15s, color .15s, box-shadow .15s, transform .12s;
+    /* Push the tab down by 1px so its bottom edge sits on TOP of the
+       .submit-subtabs border-bottom; the active tab uses inset shadow
+       to paint over that 1px and visually merge with the subpane. */
+    position: relative;
+    top: 1px;
+    transition: background .15s, color .15s;
   }
   .submit-subtab:hover:not(.active) {
-    background: #f7f3ee;
+    background: #f7f4f0;
     color: #444;
   }
   .submit-subtab.active {
-    background: #c0392b;
-    color: #fff;
-    box-shadow: 0 2px 6px rgba(192,57,43,.25);
+    background: #fff;
+    color: #c0392b;
+    font-weight: 700;
+    z-index: 1;
+    /* Top-edge red accent line (signature paprika look) + clip out the
+       parent's border-bottom on the active tab's footprint by painting
+       the same background color over the seam. */
+    box-shadow:
+      inset 0 3px 0 0 #c0392b,
+      0 -1px 0 0 #d4cfca;
   }
-  /* Active Live sub-tab: when a job is attached, the .live-dot light
-     up to indicate "something is running" -- looks tighter inside the
-     filled red active state. */
-  .submit-subtab.active #submitSubtabLiveDot { background: #fff !important; }
-  .submit-subtab.active #submitSubtabLiveJobBadge { color: rgba(255,255,255,.85) !important; }
+  /* Active Live sub-tab: dot lights up red on white background so it's
+     consistent with "running" semantics. */
+  .submit-subtab.active #submitSubtabLiveDot { background: #c0392b !important; }
+  .submit-subtab.active #submitSubtabLiveJobBadge { color: #c0392b !important; }
+
+  /* Sub-pane body: subtle card style that visually catches the active
+     tab. Side + bottom border close the box; the top is left to the
+     .submit-subtabs border + active tab inset shadow seam. */
+  .submit-subpane {
+    background: #fff;
+    border: 1px solid #d4cfca;
+    border-top: none;
+    padding: 16px 18px;
+    border-radius: 0 0 8px 8px;
+  }
 
   /* Tab bar: clean active-state with bottom accent. */
   .ljp-tabbar {
