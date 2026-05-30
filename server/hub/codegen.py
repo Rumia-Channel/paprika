@@ -898,12 +898,16 @@ __VIDEO_SECTION_BEGIN__
                if ".m3u8" in e.get("url", "") or ".mpd" in e.get("url", "")
            ]
 
-    3. DOWNLOAD using the sniffed URL with a generous timeout::
+    3. DOWNLOAD using the sniffed URL with a generous timeout.
+       ALWAYS pass ``referer=`` with the page URL -- CDNs behind
+       Cloudflare (surrit.com, etc.) reject requests without it::
 
            if streams:
                # prefer the LAST m3u8 (usually highest quality / master)
                r = await page.download_video(
-                   url=streams[-1], timeout_s=3600
+                   url=streams[-1],
+                   referer=TARGET_URL,
+                   timeout_s=3600,
                )
            else:
                # fallback: let yt-dlp try the page URL
@@ -942,9 +946,12 @@ __VIDEO_SECTION_BEGIN__
                     print(f"detected {len(streams)} stream URL(s)")
 
                     # 5) download with sniffed URL (or page URL fallback)
+                    #    ALWAYS pass referer= for cross-origin CDN URLs
                     if streams:
                         r = await page.download_video(
-                            url=streams[-1], timeout_s=3600,
+                            url=streams[-1],
+                            referer=TARGET_URL,
+                            timeout_s=3600,
                         )
                     else:
                         r = await page.download_video(timeout_s=1800)
