@@ -5178,30 +5178,52 @@ function ljpMountVncFrame(key, s) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'border:1px solid #ccc; border-radius:6px; overflow:hidden; background:#000;';
   const head = document.createElement('div');
-  head.style.cssText = 'background:#222; color:#eee; padding:4px 8px; font-size:11px; display:flex; align-items:center; gap:8px;';
-  // Inline-override the global `code { background: #f4f4f4 }` rule --
-  // the global colour collides with this dark header bar and renders
-  // the label invisible (light-grey text on light-grey background).
-  // The "↻ reload" button is a manual escape hatch: if the iframe got
-  // stuck (connection dropped, noVNC server flaked, whatever), the
-  // user can re-trigger the load without closing/reopening the panel.
+  // Chrome-style address bar: dark, rounded buttons, nav (◀ ▶ ↻) on the
+  // LEFT in the order an operator instinctively reaches for. Right-side
+  // controls (zoom / fit / open) are secondary, less-used affordances.
+  head.style.cssText = 'background:#2a2a32; color:#eee; padding:6px 10px; font-size:11.5px; display:flex; align-items:center; gap:6px; border-bottom:1px solid #1a1a22;';
   // Operator control buttons (learn-from-operator Phase 1). Shown only
   // for real sessions (not the synthetic '__job__' fetch placeholder).
   // Each press is forwarded to /operator_action which executes it AND
   // records it to the per-job trace for later recipe distillation.
   const _opSid = ljpSessionKey(key);
-  const _opBtnCss = 'background:#2a3550; color:#cfe; border:1px solid #557; border-radius:3px; padding:1px 6px; cursor:pointer; font-size:10px;';
-  const opBtns = _opSid ? (
-    `<button class="ljp-op-back" style="${_opBtnCss}" title="戻る (記録)">◀ 戻る</button>` +
-    `<button class="ljp-op-fwd" style="${_opBtnCss}" title="進む (記録)">▶ 進む</button>` +
+  // Chrome-feel button styling. Icon-only nav buttons get tighter padding;
+  // labelled "popup" / "URL" buttons slightly wider so the text breathes.
+  const _navBtnCss = 'background:#3a3a44; color:#eee; border:1px solid #555; border-radius:4px; padding:3px 8px; cursor:pointer; font-size:12px; line-height:1; min-width:26px;';
+  const _opBtnCss  = 'background:#2a3550; color:#cfe; border:1px solid #557; border-radius:4px; padding:3px 8px; cursor:pointer; font-size:11px; line-height:1;';
+  const _rightBtnCss = 'background:#333a; color:#ddd; border:1px solid #555; border-radius:4px; padding:3px 8px; cursor:pointer; font-size:11px; line-height:1;';
+  const navBtns = _opSid ? (
+    `<button class="ljp-op-back" style="${_navBtnCss}" title="戻る (記録)">◀</button>` +
+    `<button class="ljp-op-fwd"  style="${_navBtnCss}" title="進む (記録)">▶</button>` +
+    `<button class="ljp-vnc-reload" style="${_navBtnCss}" title="reload this iframe">↻</button>` +
     `<button class="ljp-op-popups" style="${_opBtnCss}" title="広告などのポップアップ・別タブを閉じる (記録)">✕ popup</button>` +
-    `<button class="ljp-op-url" style="${_opBtnCss}" title="URL を入力して移動 (記録)">URL</button>`
-  ) : '';
-  head.innerHTML = `<code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:transparent; color:#eee; padding:0;">${esc(s.label)}</code>` +
-                   opBtns +
-                   `<button class="ljp-vnc-fit" style="background:#333; color:#eee; border:1px solid #555; border-radius:3px; padding:1px 6px; cursor:pointer; font-size:10px;" title="Chrome のウィンドウサイズを現在の zoom 設定に再同期する">↔ fit</button>` +
-                   `<button class="ljp-vnc-reload" style="background:#333; color:#eee; border:1px solid #555; border-radius:3px; padding:1px 6px; cursor:pointer; font-size:10px;" title="reload this iframe">↻</button>` +
-                   `<a href="${esc(src)}" target="_blank" style="color:#9cf; text-decoration:none;">↗ open</a>`;
+    `<button class="ljp-op-url"   style="${_opBtnCss}" title="URL を入力して移動 (記録)">URL</button>`
+  ) : (
+    `<button class="ljp-vnc-reload" style="${_navBtnCss}" title="reload this iframe">↻</button>`
+  );
+  // Per-session zoom selector. Synced globally via the .ljp-vnc-zoom
+  // class -- changing any one in a multi-session view applies to all
+  // panes and persists to localStorage. Replaces the old single
+  // #ljpVncZoom dropdown that lived in a separate toolbar row.
+  const zoomSelect =
+    `<select class="ljp-vnc-zoom" title="ページズーム (Ctrl+/Ctrl- 相当)" style="background:#333; color:#eee; border:1px solid #555; border-radius:4px; padding:2px 4px; font-size:11px;">` +
+      `<option value="0.5">50%</option>` +
+      `<option value="0.75">75%</option>` +
+      `<option value="1.0" selected>100%</option>` +
+      `<option value="1.25">125%</option>` +
+      `<option value="1.5">150%</option>` +
+      `<option value="2.0">200%</option>` +
+    `</select>`;
+  head.innerHTML =
+    // LEFT: nav cluster (戻る / 進む / reload / popup / URL)
+    navBtns +
+    // CENTER: session label (= placeholder for "URL bar"). flex:1 so
+    // it absorbs all leftover horizontal space.
+    `<code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:#1a1a22; color:#aab; padding:3px 8px; border:1px solid #444; border-radius:4px; font-size:11px;" title="${esc(s.label)}">${esc(s.label)}</code>` +
+    // RIGHT: zoom / fit / open (less-frequent affordances)
+    zoomSelect +
+    `<button class="ljp-vnc-fit" style="${_rightBtnCss}" title="Chrome のウィンドウサイズを現在の zoom 設定に再同期する">↔ fit</button>` +
+    `<a href="${esc(src)}" target="_blank" style="color:#9cf; text-decoration:none; padding:3px 4px; font-size:11px;" title="新しいタブで開く">↗ open</a>`;
   // The iframe lives inside a transform-scale-box so the layout
   // reserves the *visually-scaled* size, not the logical size.
   const scaleBox = document.createElement('div');
@@ -6742,24 +6764,53 @@ document.getElementById('ljpCodeRerun').addEventListener('click', async () => {
   }
 });
 
-// Initialise the noVNC zoom picker from localStorage and react to
-// changes by re-applying the transform on every iframe in the grid.
+// noVNC zoom: now rendered PER SESSION (one .ljp-vnc-zoom select inside
+// each iframe wrapper's address bar). All selectors are synced via
+// event delegation -- changing one updates the others + localStorage +
+// applies zoom across every mounted session. Also runs on mount via
+// MutationObserver so freshly-rendered headers initialise to the saved
+// value without each call site having to remember.
 (function () {
-  const sel = document.getElementById('ljpVncZoom');
-  if (!sel) return;
-  // The dropdown now controls the IN-BROWSER PAGE zoom (案A), not the
-  // noVNC window size. Restore the saved page-zoom and apply it on
-  // change to every mounted session via the page-zoom (CSS zoom) path.
-  try {
-    const saved = localStorage.getItem('paprika.ljp.pageZoom');
-    if (saved && [...sel.options].some(o => o.value === saved)) {
-      sel.value = saved;
-    }
-  } catch (_) {}
-  sel.addEventListener('change', () => {
-    try { localStorage.setItem('paprika.ljp.pageZoom', sel.value); } catch (_) {}
-    ljpApplyPageZoomAll();
-  });
+  function _ljpSavedPageZoom() {
+    try {
+      const saved = localStorage.getItem('paprika.ljp.pageZoom');
+      return saved || '1.0';
+    } catch (_) { return '1.0'; }
+  }
+  function _ljpInitZoomSelectsInside(root) {
+    const z = _ljpSavedPageZoom();
+    (root || document).querySelectorAll('.ljp-vnc-zoom').forEach(sel => {
+      if (sel.dataset.ljpZoomInit === '1') return;
+      if ([...sel.options].some(o => o.value === z)) sel.value = z;
+      sel.dataset.ljpZoomInit = '1';
+    });
+  }
+  // Event delegation: one listener on the grid handles every
+  // per-session zoom selector.
+  const grid = document.getElementById('ljpVncGrid');
+  if (grid) {
+    grid.addEventListener('change', (ev) => {
+      const sel = ev.target.closest && ev.target.closest('.ljp-vnc-zoom');
+      if (!sel) return;
+      try { localStorage.setItem('paprika.ljp.pageZoom', sel.value); } catch (_) {}
+      // Sync all sibling selectors to the new value so multi-session
+      // panels stay coherent.
+      document.querySelectorAll('.ljp-vnc-zoom').forEach(other => {
+        if (other !== sel && other.value !== sel.value) other.value = sel.value;
+      });
+      ljpApplyPageZoomAll();
+    });
+    // Init any selectors already in the DOM at script-load time, and
+    // observe future inserts (ljpMountVncFrame appends new wrappers).
+    _ljpInitZoomSelectsInside(grid);
+    new MutationObserver((muts) => {
+      for (const m of muts) {
+        m.addedNodes.forEach(n => {
+          if (n.nodeType === 1) _ljpInitZoomSelectsInside(n);
+        });
+      }
+    }).observe(grid, { childList: true, subtree: true });
+  }
 })();
 
 // Wire Live panel tab buttons + restore previously-selected tab from

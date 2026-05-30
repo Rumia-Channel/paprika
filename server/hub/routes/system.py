@@ -696,21 +696,12 @@ asyncio.run(main())"
     </div>
 
     <div class="ljp-pane" data-ljp-pane="vnc" style="display:none;">
-      <div class="ljp-pane-toolbar">
-        <span>live noVNC</span>
-        <label style="margin-left:auto; cursor:pointer;" title="ページズーム。ブラウザ内のウェブページを拡大縮小します (Ctrl+/Ctrl- 相当)。ウィンドウサイズは変えず、ページ内容だけ拡大縮小 (CSS zoom)。">
-          zoom:
-          <select id="ljpVncZoom" style="font-size:0.95em; margin-left:4px;">
-            <option value="0.5">50%</option>
-            <option value="0.75">75%</option>
-            <option value="1.0" selected>100%</option>
-            <option value="1.25">125%</option>
-            <option value="1.5">150%</option>
-            <option value="2.0">200%</option>
-          </select>
-        </label>
-      </div>
-      <div id="ljpVncGrid" class="ljp-pane-body" style="display:grid; grid-template-columns: 1fr; gap:8px; height:720px; overflow:auto; background:#0a0a14;">
+      <!-- Per-session iframe wrappers (rendered dynamically by
+           ljpMountVncFrame) each carry a Chrome-style address bar
+           with nav buttons on the LEFT, session label in the middle,
+           and zoom / fit / open on the right -- so we no longer need
+           a global pane-toolbar with just a zoom dropdown. -->
+      <div id="ljpVncGrid" class="ljp-pane-body" style="display:grid; grid-template-columns: 1fr; gap:8px; height:760px; overflow:auto; background:#0a0a14;">
         <div class="empty" style="padding:24px; text-align:center; color:#888; border:1px dashed #444; border-radius:6px; align-self:start;">noVNC will appear once a session opens…</div>
       </div>
     </div>
