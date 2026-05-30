@@ -4945,6 +4945,11 @@ async function ljpRefreshSessions() {
           novnc_url: s.novnc_url,
           novnc_url_autoconnect: s.novnc_url_autoconnect,
           label: s.session_id,
+          // Pre-fill the URL <input> with the session's initial URL so
+          // the operator immediately sees "where we are" instead of a
+          // bare placeholder. Subsequent navigates overwrite this via
+          // the keydown handler in ljpMountVncFrame.
+          initial_url: s.initial_url || '',
         });
       }
     }
@@ -5200,20 +5205,36 @@ function ljpMountVncFrame(key, s) {
   // for visible default fill).
   const _navAccent = '--la-bg:#eef0ff; --la-bd:#9bf; --la-fg:#0a4a7e;';
   const _popupAccent = '--la-bg:#fde6e6; --la-bd:#d68080; --la-fg:#8a1d1d;';
-  const _urlAccent = '--la-bg:#e6f7e9; --la-bd:#7ab68a; --la-fg:#196b2c;';
+  const _shotAccent = '--la-bg:#fff7e6; --la-bd:#e8c97a; --la-fg:#7a5a14;';
+  const _rightAccent = '--la-bg:#eef0f6; --la-bd:#bbc; --la-fg:#333;';
+  // Left-side nav cluster: 戻る / 進む / reload only. URL entry moved
+  // to the dedicated <input> in the centre; popup-close moved to the
+  // right next to fit / open since it's used less often than nav.
   const navBtns = _opSid ? (
     `<button class="pill ljp-op-back" style="${_navAccent}" title="戻る (記録)"><iconify-icon icon="lucide:chevron-left"></iconify-icon> 戻る</button>` +
     `<button class="pill ljp-op-fwd"  style="${_navAccent}" title="進む (記録)"><iconify-icon icon="lucide:chevron-right"></iconify-icon> 進む</button>` +
-    `<button class="pill ljp-vnc-reload" style="${_navAccent}" title="reload this iframe"><iconify-icon icon="lucide:rotate-cw"></iconify-icon></button>` +
-    `<button class="pill ljp-op-popups" style="${_popupAccent}" title="広告などのポップアップ・別タブを閉じる (記録)"><iconify-icon icon="lucide:x"></iconify-icon> popup</button>` +
-    `<button class="pill ljp-op-url"  style="${_urlAccent}" title="URL を入力して移動 (記録)"><iconify-icon icon="lucide:link"></iconify-icon> URL</button>`
+    `<button class="pill ljp-vnc-reload" style="${_navAccent}" title="reload this iframe"><iconify-icon icon="lucide:rotate-cw"></iconify-icon></button>`
   ) : (
     `<button class="pill ljp-vnc-reload" style="${_navAccent}" title="reload this iframe"><iconify-icon icon="lucide:rotate-cw"></iconify-icon></button>`
   );
-  // Per-session zoom selector. Synced globally via the .ljp-vnc-zoom
-  // class -- changing any one in a multi-session view applies to all
-  // panes and persists to localStorage. Replaces the old single
-  // #ljpVncZoom dropdown that lived in a separate toolbar row.
+  // Centre: URL <input>. Operator types a URL + Enter to navigate via
+  // /sessions/{sid}/operator_action {kind:navigate, url:...}. Pre-fills
+  // with the session's initial_url so the operator sees where they
+  // landed. Read-only synthetic placeholder ('__job__') sessions get
+  // their session label instead since there's no real session to
+  // navigate.
+  const _urlInputCss = 'flex:1; min-width:200px; background:#fff; color:#3a3a45; padding:5px 10px; border:1px solid #d4cfca; border-radius:6px; font-size:.78rem; font-family:ui-monospace,Consolas,monospace; outline:none;';
+  const _initialVal = _opSid ? (s.initial_url || s.label || '') : (s.label || '');
+  const urlInput = _opSid ?
+    `<input class="ljp-vnc-url" type="text" placeholder="https://example.com (Enter で移動)" value="${esc(_initialVal)}" style="${_urlInputCss}" autocomplete="off" spellcheck="false">` :
+    `<code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:#fff; color:#5a5a68; padding:5px 10px; border:1px solid #d4cfca; border-radius:6px; font-size:.78rem; font-family:ui-monospace,Consolas,monospace;" title="${esc(s.label)}">${esc(s.label)}</code>`;
+  // Right cluster: screenshot, popup-close, zoom, fit, open.
+  const shotBtn = _opSid ?
+    `<button class="pill ljp-vnc-screenshot" style="${_shotAccent}" title="現在のフレームを保存 (POST /jobs/{id}/screenshot)"><iconify-icon icon="lucide:camera"></iconify-icon></button>` :
+    `<button class="pill ljp-vnc-screenshot" style="${_shotAccent}" title="現在のフレームを保存 (POST /jobs/{id}/screenshot)"><iconify-icon icon="lucide:camera"></iconify-icon></button>`;
+  const popupBtn = _opSid ?
+    `<button class="pill ljp-op-popups" style="${_popupAccent}" title="広告などのポップアップ・別タブを閉じる (記録)"><iconify-icon icon="lucide:x"></iconify-icon> popup</button>` :
+    '';
   const zoomSelect =
     `<select class="ljp-vnc-zoom" title="ページズーム (Ctrl+/Ctrl- 相当)" style="background:#fff; color:#3a3a45; border:1px solid #d4cfca; border-radius:6px; padding:3px 6px; font-size:.78rem; font-weight:600;">` +
       `<option value="0.5">50%</option>` +
@@ -5223,14 +5244,11 @@ function ljpMountVncFrame(key, s) {
       `<option value="1.5">150%</option>` +
       `<option value="2.0">200%</option>` +
     `</select>`;
-  const _rightAccent = '--la-bg:#eef0f6; --la-bd:#bbc; --la-fg:#333;';
   head.innerHTML =
-    // LEFT: nav cluster (戻る / 進む / reload / popup / URL) -- chrome-like
     navBtns +
-    // CENTER: session label dressed as a URL bar -- monospace, neutral
-    // chip, takes leftover space via flex:1.
-    `<code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:#fff; color:#5a5a68; padding:5px 10px; border:1px solid #d4cfca; border-radius:6px; font-size:.78rem; font-family:ui-monospace,Consolas,monospace;" title="${esc(s.label)}">${esc(s.label)}</code>` +
-    // RIGHT: zoom / fit / open (less-frequent affordances)
+    urlInput +
+    shotBtn +
+    popupBtn +
     zoomSelect +
     `<button class="pill ljp-vnc-fit" style="${_rightAccent}" title="Chrome のウィンドウサイズを現在の zoom 設定に再同期する"><iconify-icon icon="lucide:maximize"></iconify-icon> fit</button>` +
     `<a class="pill" href="${esc(src)}" target="_blank" style="${_rightAccent}" title="新しいタブで開く"><iconify-icon icon="lucide:external-link"></iconify-icon> open</a>`;
@@ -5287,14 +5305,46 @@ function ljpMountVncFrame(key, s) {
       const r = await ljpOpAction(_opSid, {kind: 'close_popups'}, 'ポップアップ閉じる');
       popupsBtn.disabled = false; _flash(popupsBtn, !!r);
     });
-    const urlBtn = head.querySelector('.ljp-op-url');
-    if (urlBtn) urlBtn.addEventListener('click', async () => {
-      const url = prompt('移動先 URL を入力:');
-      if (!url) return;
-      urlBtn.disabled = true;
-      const r = await ljpOpAction(_opSid, {kind: 'navigate', url: url}, 'URL移動: ' + url);
-      urlBtn.disabled = false; _flash(urlBtn, !!r);
-    });
+    // URL input: Enter to navigate. Replaces the old prompt()-driven
+    // .ljp-op-url button (button removed from the header markup, the
+    // <input> sits in its place + lets the operator see / edit the
+    // current URL inline like a real browser address bar).
+    const urlInputEl = head.querySelector('.ljp-vnc-url');
+    if (urlInputEl) {
+      urlInputEl.addEventListener('keydown', async (ev) => {
+        if (ev.key !== 'Enter') return;
+        ev.preventDefault();
+        const url = (urlInputEl.value || '').trim();
+        if (!url) return;
+        urlInputEl.disabled = true;
+        const r = await ljpOpAction(_opSid, {kind: 'navigate', url: url}, 'URL移動: ' + url);
+        urlInputEl.disabled = false;
+        _flash(urlInputEl, !!r);
+      });
+    }
+    // Screenshot button: hits POST /jobs/{id}/screenshot which captures
+    // the current frame, saves it to data/jobs/{id}/assets/screenshot-*
+    // (= filtered into the Screenshot sub-tab via screenshots.json),
+    // and refreshes the Screenshot tab viewer so the new shot appears.
+    const shotBtnEl = head.querySelector('.ljp-vnc-screenshot');
+    if (shotBtnEl) {
+      shotBtnEl.addEventListener('click', async () => {
+        if (!LJP.jobId) { _flash(shotBtnEl, false); return; }
+        shotBtnEl.disabled = true;
+        let ok = false;
+        try {
+          const r = await fetch('/jobs/' + encodeURIComponent(LJP.jobId) + '/screenshot', { method: 'POST' });
+          ok = r.ok;
+        } catch (_) { ok = false; }
+        shotBtnEl.disabled = false;
+        _flash(shotBtnEl, ok);
+        // Refresh the Screenshot tab viewer so the new shot shows up
+        // without waiting for the next 5s poll.
+        if (ok && typeof ljpShotRefreshScreenshots === 'function') {
+          try { ljpShotRefreshScreenshots(); } catch (_) {}
+        }
+      });
+    }
     // Apply the current page zoom to this freshly-mounted session
     // (best-effort; runs after noVNC has had a moment to connect).
     setTimeout(() => { ljpApplyPageZoomToSession(_opSid); }, 1500);
