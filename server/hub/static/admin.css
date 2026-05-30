@@ -466,21 +466,31 @@
     .mode-cards { grid-template-columns: repeat(2, 1fr); }
   }
 
-  /* ------- Live panel: flat content inside the .submit-subpane card.
-     Previously this had its own background gradient + border + shadow,
-     which produced a "frame inside a frame" because .submit-subpane
-     already wraps the live pane with a white card. Strip the box
-     chrome here so the LJP renders directly on the white card -- one
-     frame total, not two. The ID is kept so all descendant rules
-     (#liveJobPanel h2, .ljp-actions-group, ...) still apply. */
-  #liveJobPanel {
+  /* ------- Flat content inside .submit-subpane cards ----------------
+     `.submit-subpane` already paints a white card (border + radius +
+     padding) tied to the Submit sub-tab bar. The global `section`
+     rule above (background:#fff; padding; border-radius; box-shadow)
+     would re-apply that exact same chrome to ANY <section> dropped
+     inside, giving a "frame inside a frame".
+       form sub-pane  → <section> wrapping the Submit form
+       live sub-pane  → <section id="liveJobPanel">
+     Strip the section chrome via a direct-child selector so both
+     sub-panes render flat on the one outer card. Specificity (0,1,1)
+     cleanly beats the global `section` rule (0,0,1).
+     `> section` matches direct children only -- nested sections (if
+     anyone adds one) keep their card look. */
+  .submit-subpane > section {
     margin: 0;
     padding: 0;
     background: transparent;
-    border: 0;
     border-radius: 0;
     box-shadow: none;
   }
+  /* Belt-and-braces: #liveJobPanel previously had its own gradient
+     bg + border + shadow (set inline by older versions). The strip
+     above handles section chrome but doesn't touch the explicit
+     border, so kill it here too. */
+  #liveJobPanel { border: 0; }
   /* Live header: a two-group flex row.
        Left  = status info (LIVE badge + job id + state pill + asset count)
        Right = action buttons (pause / resume / gallery / result / log / close)
