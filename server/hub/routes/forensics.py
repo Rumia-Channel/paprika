@@ -84,6 +84,13 @@ async def session_forensics(session_id: str, body: dict) -> dict:
                 "kind": "evaluate",
                 "expression": js,
                 "await_promise": bool(await_promise),
+                # Mark this evaluate as read-only so the worker permits it
+                # on a session still owned by a running fetch job. Forensics
+                # pre-flights every probe with safety_check() (no navigate /
+                # click / submit / mutation / POST / storage writes), so the
+                # probe only reads the page. See agent.py's is_fetch_owned
+                # guard.
+                "read_only": True,
             },
             body,
         )

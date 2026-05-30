@@ -3427,11 +3427,24 @@ class WorkerAgent:
         }
         action = msg.action or {}
         kind = action.get("kind") or ""
-        if state.is_fetch_owned and kind not in _READ_ONLY_KINDS_FOR_FETCH:
+        # A read-only evaluate (forensics probe) is also permitted
+        # mid-fetch. The hub's forensics loop pre-flights every probe
+        # against a safety regex (rejects navigate / click / submit /
+        # cookie+storage writes / POST fetch / DOM mutation), so the JS
+        # only READS the page -- as safe as outline / screenshot / state,
+        # which are already allowed. The ``read_only`` flag is set ONLY
+        # by server/hub/routes/forensics.py; the normal /evaluate route
+        # never sets it, so operator writes mid-fetch stay blocked.
+        _is_ro_evaluate = kind == "evaluate" and bool(action.get("read_only"))
+        if (
+            state.is_fetch_owned
+            and kind not in _READ_ONLY_KINDS_FOR_FETCH
+            and not _is_ro_evaluate
+        ):
             reply.status = (
                 f"ERR: session {sid} is owned by a running fetch job; "
                 f"only read-only actions are allowed "
-                f"({sorted(_READ_ONLY_KINDS_FOR_FETCH)}). "
+                f"({sorted(_READ_ONLY_KINDS_FOR_FETCH)} + read-only evaluate). "
                 f"Got: {kind!r}"
             )
             reply.elapsed_ms = int((time.time() - t0) * 1000)
