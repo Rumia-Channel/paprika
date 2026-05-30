@@ -2902,36 +2902,32 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
     <div id="mariadbMigrationSection" style="display:none; margin-top:12px; padding:12px 16px; background:#f8f9fc; border:1px solid #dde; border-radius:8px;">
       <h4 style="margin:0 0 8px; font-size:.9rem; color:#444;">
         <iconify-icon icon="lucide:database-backup"></iconify-icon>
-        <span data-i18n="settings.mariadb.migration_title">データ移行</span>
+        データ移行
       </h4>
-      <p style="margin:0 0 10px; color:#666; font-size:.85em;" data-i18n="settings.mariadb.migration_desc">
+      <p style="margin:0 0 10px; color:#666; font-size:.85em;">
         Redis / ファイルに保存されているデータを MariaDB にコピーします（元データはそのまま残ります）。
       </p>
 
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
         <button id="mdbSchemaBtn" class="pill" style="background:#f5f5fa; border-color:#aab; color:#333;">
-          <iconify-icon icon="lucide:table-2"></iconify-icon>
-          <span data-i18n="settings.mariadb.create_tables">テーブル作成</span>
+          <iconify-icon icon="lucide:table-2"></iconify-icon> テーブル作成
         </button>
         <span id="mdbSchemaStatus" style="font-size:.85em;"></span>
       </div>
 
       <div style="display:grid; grid-template-columns:auto 1fr; gap:8px 14px; align-items:center;">
         <button id="mdbMigrateJobsBtn" class="pill" style="background:#e8f0ff; border-color:#6a8ec7; color:#2a4a8a;">
-          <iconify-icon icon="lucide:list-checks"></iconify-icon>
-          <span data-i18n="settings.mariadb.migrate_jobs">Jobs を移行</span>
+          <iconify-icon icon="lucide:list-checks"></iconify-icon> Jobs を移行
         </button>
         <span id="mdbMigrateJobsStatus" style="font-size:.85em;"></span>
 
         <button id="mdbMigrateHostsBtn" class="pill" style="background:#e8f0ff; border-color:#6a8ec7; color:#2a4a8a;">
-          <iconify-icon icon="lucide:cookie"></iconify-icon>
-          <span data-i18n="settings.mariadb.migrate_hosts">Hosts を移行</span>
+          <iconify-icon icon="lucide:cookie"></iconify-icon> Hosts を移行
         </button>
         <span id="mdbMigrateHostsStatus" style="font-size:.85em;"></span>
 
         <button id="mdbMigrateVisitedBtn" class="pill" style="background:#e8f0ff; border-color:#6a8ec7; color:#2a4a8a;">
-          <iconify-icon icon="lucide:link"></iconify-icon>
-          <span data-i18n="settings.mariadb.migrate_visited">Visited URLs を移行</span>
+          <iconify-icon icon="lucide:link"></iconify-icon> Visited URLs を移行
         </button>
         <span id="mdbMigrateVisitedStatus" style="font-size:.85em;"></span>
       </div>
