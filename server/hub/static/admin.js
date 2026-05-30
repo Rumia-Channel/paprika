@@ -236,6 +236,7 @@ const I18N_RESOURCES = {
     "ljp.vnc.fwd":            "進む",
     "ljp.vnc.fwd.title":      "進む (記録)",
     "ljp.vnc.reload.title":   "このフレームを再読み込み",
+    "ljp.vnc.go.title":       "URL へ移動",
     "ljp.vnc.popups":         "popup",
     "ljp.vnc.popups.title":   "広告などのポップアップ・別タブを閉じる (記録)",
     "ljp.vnc.screenshot.title":"現在のフレームを保存",
@@ -579,6 +580,7 @@ const I18N_RESOURCES = {
     "ljp.vnc.fwd":            "fwd",
     "ljp.vnc.fwd.title":      "Forward (recorded)",
     "ljp.vnc.reload.title":   "Reload this frame",
+    "ljp.vnc.go.title":       "Go to URL",
     "ljp.vnc.popups":         "popup",
     "ljp.vnc.popups.title":   "Close ad popups / extra tabs (recorded)",
     "ljp.vnc.screenshot.title":"Save the current frame",
@@ -4978,6 +4980,10 @@ async function ljpRefreshSessions() {
           initial_url: s.initial_url || '',
         });
       }
+      // Reflect the actual current page URL into the address-bar input.
+      // Fire-and-forget per session; throttled implicitly by this
+      // function's 3 s setInterval. Skips if the operator is mid-edit.
+      ljpRefreshSessionUrl(s.session_id).catch(() => {});
     }
     // Remove iframes for sessions that are no longer alive (closed by
     // worker / TTL). Keep the special '__job__' iframe (fetch mode);
@@ -5005,6 +5011,46 @@ async function ljpRefreshSessions() {
     if (videoBtn) {
       videoBtn.style.display = sessionPresent ? '' : 'none';
     }
+  } catch (_) {}
+}
+
+// Pull the session's actual current page URL from the worker (via
+// /sessions/{sid}/pages, which returns each tab + its URL + which is
+// default) and reflect it into the noVNC header's URL <input>. Called
+// once per session per ljpRefreshSessions cycle (= every 3 s).
+//
+// Two guards keep this from stomping operator input:
+//   1. document.activeElement === inputEl -> operator is currently
+//      typing; leave their unfinished URL alone.
+//   2. inputEl.disabled -> a navigate is in flight (doNavigate sets
+//      this); the post-navigate URL will come back on the next tick.
+//
+// Errors (closed session, worker unreachable, parse failure) are
+// swallowed -- this is purely cosmetic feedback and any failure just
+// means the URL stays at the last value the operator / initial_url
+// pre-fill put there.
+async function ljpRefreshSessionUrl(sid) {
+  const wrap = LJP.vncIframes.get(sid);
+  if (!wrap) return;
+  const inputEl = wrap.querySelector('.ljp-vnc-url');
+  if (!inputEl) return;
+  if (document.activeElement === inputEl) return;
+  if (inputEl.disabled) return;
+  try {
+    const r = await fetch('/sessions/' + encodeURIComponent(sid) + '/pages');
+    if (!r.ok) return;
+    const d = await r.json();
+    const pages = Array.isArray(d.pages) ? d.pages : [];
+    if (pages.length === 0) return;
+    // Default tab wins; fall back to the first listed tab.
+    const def = pages.find(p => p && p.is_default) || pages[0];
+    const url = def && def.url ? String(def.url) : '';
+    if (!url) return;
+    // Re-check focus/disabled after the await -- the operator may
+    // have started typing while the fetch was in flight.
+    if (document.activeElement === inputEl) return;
+    if (inputEl.disabled) return;
+    if (inputEl.value !== url) inputEl.value = url;
   } catch (_) {}
 }
 
@@ -5245,6 +5291,7 @@ function ljpMountVncFrame(key, s) {
   const _navAccent   = '--la-bg: #eef0ff; --la-bd: #9bf; --la-fg: #0a4a7e; opacity: 1; cursor: pointer;';
   const _popupAccent = '--la-bg: #fde6e6; --la-bd: #d68080; --la-fg: #8a1d1d; opacity: 1; cursor: pointer;';
   const _shotAccent  = '--la-bg: #fff7e6; --la-bd: #e8c97a; --la-fg: #7a5a14; opacity: 1; cursor: pointer;';
+  const _goAccent    = '--la-bg: #e6f6e6; --la-bd: #7fc77f; --la-fg: #1a5a1a; opacity: 1; cursor: pointer;';
   const _rightAccent = '--la-bg: #eef0f6; --la-bd: #bbc; --la-fg: #333; opacity: 1; cursor: pointer;';
   // Left-side nav cluster: 戻る / 進む / reload only. URL entry moved
   // to the dedicated <input> in the centre; popup-close moved to the
@@ -5272,8 +5319,15 @@ function ljpMountVncFrame(key, s) {
   // lines up with the .pill buttons.
   const _initialVal = _opSid ? (s.initial_url || s.label || '') : (s.label || '');
   const urlInput = _opSid ?
-    `<input class="ljp-vnc-url" type="text" placeholder="https://example.com (Enter で移動)" value="${esc(_initialVal)}" style="flex:1; min-width:200px;" autocomplete="off" spellcheck="false">` :
+    `<input class="ljp-vnc-url" type="text" placeholder="https://example.com (Enter または → で移動)" value="${esc(_initialVal)}" style="flex:1; min-width:200px;" autocomplete="off" spellcheck="false">` :
     `<code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:#fff; color:#5a5a68; padding:6px 10px; border:1px solid #d4cfca; border-radius:7px; font-size:.78em; font-family:ui-monospace,Consolas,monospace;" title="${esc(s.label)}">${esc(s.label)}</code>`;
+  // Go button (icon-only "→"): same navigation action as pressing Enter
+  // in the URL input. Sits immediately to the right of the input so it
+  // reads as the input's submit affordance. Only shown for real
+  // sessions (no point on the read-only '__job__' fetch placeholder).
+  const goBtn = _opSid ?
+    `<button class="pill ljp-vnc-go" data-i18n-title="ljp.vnc.go.title" title="URL へ移動" style="${_goAccent}"><iconify-icon icon="lucide:arrow-right"></iconify-icon></button>` :
+    '';
   // Right cluster: screenshot, popup-close, zoom, fit, open.
   // Screenshot button keeps icon-only structure (no label span); popup
   // / fit / open follow the LJP top-header button structure with both
@@ -5297,6 +5351,7 @@ function ljpMountVncFrame(key, s) {
   head.innerHTML =
     navBtns +
     urlInput +
+    goBtn +
     shotBtn +
     popupBtn +
     zoomSelect +
@@ -5355,22 +5410,39 @@ function ljpMountVncFrame(key, s) {
       const r = await ljpOpAction(_opSid, {kind: 'close_popups'}, 'ポップアップ閉じる');
       popupsBtn.disabled = false; _flash(popupsBtn, !!r);
     });
-    // URL input: Enter to navigate. Replaces the old prompt()-driven
-    // .ljp-op-url button (button removed from the header markup, the
-    // <input> sits in its place + lets the operator see / edit the
-    // current URL inline like a real browser address bar).
+    // URL input: Enter (or the adjacent → Go button) to navigate.
+    // Replaces the old prompt()-driven .ljp-op-url button (button
+    // removed from the header markup, the <input> sits in its place +
+    // lets the operator see / edit the current URL inline like a real
+    // browser address bar).
     const urlInputEl = head.querySelector('.ljp-vnc-url');
+    const goBtnEl    = head.querySelector('.ljp-vnc-go');
     if (urlInputEl) {
-      urlInputEl.addEventListener('keydown', async (ev) => {
-        if (ev.key !== 'Enter') return;
-        ev.preventDefault();
+      // Shared submit handler -- Enter keypress and Go click both end
+      // up here. Disables the input while the navigate is in flight so
+      // the operator can see the action is being processed, then
+      // flashes ✓/✕ on the input itself for feedback.
+      const doNavigate = async () => {
         const url = (urlInputEl.value || '').trim();
         if (!url) return;
         urlInputEl.disabled = true;
-        const r = await ljpOpAction(_opSid, {kind: 'navigate', url: url}, 'URL移動: ' + url);
-        urlInputEl.disabled = false;
-        _flash(urlInputEl, !!r);
+        if (goBtnEl) goBtnEl.disabled = true;
+        try {
+          const r = await ljpOpAction(_opSid, {kind: 'navigate', url: url}, 'URL移動: ' + url);
+          _flash(urlInputEl, !!r);
+        } finally {
+          urlInputEl.disabled = false;
+          if (goBtnEl) goBtnEl.disabled = false;
+        }
+      };
+      urlInputEl.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter') return;
+        ev.preventDefault();
+        doNavigate();
       });
+      if (goBtnEl) {
+        goBtnEl.addEventListener('click', () => { doNavigate(); });
+      }
     }
     // Screenshot button: hits POST /jobs/{id}/screenshot which captures
     // the current frame, saves it to data/jobs/{id}/assets/screenshot-*
