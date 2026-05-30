@@ -3658,6 +3658,19 @@ class WorkerAgent:
                     import json as _json
 
                     expr = action.get("expression") or ""
+                    # The wrapper below embeds the expression as
+                    # ``JSON.stringify(await (EXPR))`` which REQUIRES EXPR to be
+                    # a single expression. A trailing ``;`` -- a very common
+                    # habit, especially in LLM-written probes like
+                    # ``(()=>{...})();`` -- turns it into ``await (EXPR;)``,
+                    # which the browser silently evaluates to null. The caller
+                    # then sees EVERY probe "return null" with no error, which
+                    # is impossible to debug from the outside (it cost a whole
+                    # forensics run). Strip trailing semicolons + whitespace so
+                    # ``(()=>{...})();`` behaves like ``(()=>{...})()``.
+                    expr = expr.strip()
+                    while expr.endswith(";"):
+                        expr = expr[:-1].rstrip()
                     if not expr:
                         reply.status = "ERR: evaluate failed: empty expression"
                     else:
