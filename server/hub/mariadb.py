@@ -447,12 +447,23 @@ async def migrate_jobs(
         if progress:
             progress(min(i + BATCH, total), total)
 
+    # ---- Purge source data (Redis) after successful migration ----
+    purged = 0
+    if not errors:
+        for jid in job_ids:
+            try:
+                await store.delete_job(jid)
+                purged += 1
+            except Exception as e:
+                log.warning("purge job %s from source failed: %s", jid, e)
+
     return {
         "ok": True,
         "category": "jobs",
         "migrated": migrated,
         "skipped": skipped,
         "total": total,
+        "purged": purged,
         "errors": errors[:20],  # cap for response size
     }
 
@@ -532,12 +543,25 @@ async def migrate_hosts(
     if progress:
         progress(total, total)
 
+    # ---- Purge source data (JSON files) after successful migration ----
+    purged = 0
+    if not errors:
+        for rec in all_hosts:
+            host = getattr(rec, "host", None)
+            if host:
+                try:
+                    host_registry.delete(host)
+                    purged += 1
+                except Exception as e:
+                    log.warning("purge host %s from source failed: %s", host, e)
+
     return {
         "ok": True,
         "category": "hosts",
         "migrated": migrated,
         "skipped": skipped,
         "total": total,
+        "purged": purged,
         "errors": errors[:20],
     }
 
@@ -600,12 +624,25 @@ async def migrate_visited_urls(
     if progress:
         progress(total_hosts, total_hosts)
 
+    # ---- Purge source data (JSON files) after successful migration ----
+    purged = 0
+    if not errors:
+        for rec in all_hosts:
+            host = getattr(rec, "host", None)
+            if host:
+                try:
+                    visited_registry.delete_host(host)
+                    purged += 1
+                except Exception as e:
+                    log.warning("purge visited_urls for %s from source failed: %s", host, e)
+
     return {
         "ok": True,
         "category": "visited_urls",
         "migrated": migrated,
         "skipped": skipped,
         "total_hosts": total_hosts,
+        "purged": purged,
         "errors": errors[:20],
     }
 
@@ -666,12 +703,25 @@ async def migrate_skills(
                     errors.append({"slug": slug, "error": str(e)})
                     log.warning("migrate skill %s failed: %s", slug, e)
 
+    # ---- Purge source data (JSON files) after successful migration ----
+    purged = 0
+    if not errors:
+        for rec in all_skills:
+            slug = getattr(rec, "slug", None)
+            if slug:
+                try:
+                    skill_registry.delete(slug)
+                    purged += 1
+                except Exception as e:
+                    log.warning("purge skill %s from source failed: %s", slug, e)
+
     return {
         "ok": True,
         "category": "skills",
         "migrated": migrated,
         "skipped": skipped,
         "total": total,
+        "purged": purged,
         "errors": errors[:20],
     }
 
@@ -732,12 +782,25 @@ async def migrate_conventions(
                     errors.append({"slug": slug, "error": str(e)})
                     log.warning("migrate convention %s failed: %s", slug, e)
 
+    # ---- Purge source data (JSON files) after successful migration ----
+    purged = 0
+    if not errors:
+        for rec in all_convs:
+            slug = getattr(rec, "slug", None)
+            if slug:
+                try:
+                    convention_registry.delete(slug)
+                    purged += 1
+                except Exception as e:
+                    log.warning("purge convention %s from source failed: %s", slug, e)
+
     return {
         "ok": True,
         "category": "conventions",
         "migrated": migrated,
         "skipped": skipped,
         "total": total,
+        "purged": purged,
         "errors": errors[:20],
     }
 
@@ -805,12 +868,25 @@ async def migrate_engines(
                     errors.append({"slug": slug, "error": str(e)})
                     log.warning("migrate engine %s failed: %s", slug, e)
 
+    # ---- Purge source data (JSON files) after successful migration ----
+    purged = 0
+    if not errors:
+        for rec in all_engines:
+            slug = getattr(rec, "slug", None)
+            if slug:
+                try:
+                    engine_registry.delete(slug)
+                    purged += 1
+                except Exception as e:
+                    log.warning("purge engine %s from source failed: %s", slug, e)
+
     return {
         "ok": True,
         "category": "engines",
         "migrated": migrated,
         "skipped": skipped,
         "total": total,
+        "purged": purged,
         "errors": errors[:20],
     }
 
@@ -875,11 +951,24 @@ async def migrate_presets(
                     errors.append({"name": name, "error": str(e)})
                     log.warning("migrate preset %s failed: %s", name, e)
 
+    # ---- Purge source data (JSON files) after successful migration ----
+    purged = 0
+    if not errors:
+        for rec in all_presets:
+            n = getattr(rec, "name", None)
+            if n:
+                try:
+                    preset_registry.delete(n)
+                    purged += 1
+                except Exception as e:
+                    log.warning("purge preset %s from source failed: %s", n, e)
+
     return {
         "ok": True,
         "category": "presets",
         "migrated": migrated,
         "skipped": skipped,
         "total": total,
+        "purged": purged,
         "errors": errors[:20],
     }

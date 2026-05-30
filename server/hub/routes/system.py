@@ -2934,7 +2934,7 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
         データ移行
       </h4>
       <p style="margin:0 0 10px; color:#666; font-size:.85em;">
-        Redis / ファイルに保存されているデータを MariaDB にコピーします（元データはそのまま残ります）。
+        Redis / ファイルに保存されているデータを MariaDB に移行します（成功後、元データは削除されます）。
       </p>
 
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
