@@ -597,6 +597,22 @@
      accent on hover along with the label. */
   #liveJobPanel .ljp-actions-group .pill iconify-icon { font-size: 1.05em; }
 
+  /* noVNC per-session chrome bar (.ljp-vnc-head). Visual identity is
+     a 1:1 copy of #liveJobPanel h2 / .ljp-actions-group:
+       * same background gradient (= page bg via #liveJobPanel)
+       * same flex layout (gap:6px, wrap)
+       * same .pill rules below (transparent default + hover accent)
+     The only difference is the explicit border-bottom -- this bar sits
+     above a dark noVNC iframe so a hairline keeps the chrome / viewport
+     boundary clear (the LJP top bar floats on the page bg and doesn't
+     need one). */
+  .ljp-vnc-head {
+    background: linear-gradient(180deg, #fbfbfd 0%, #f3f3f8 100%);
+    padding: 10px 12px;
+    border-bottom: 1px solid #d8d8e2;
+    color: #222;
+    flex-wrap: wrap;
+  }
   /* noVNC per-session chrome bar (.ljp-vnc-head). Mirror EXACTLY the
      LJP top-header pill behaviour:
        * default: transparent fill, muted ink (looks light/clean)

@@ -5191,10 +5191,10 @@ function ljpMountVncFrame(key, s) {
   // behaviour -- per-button --la-bg accent applied at rest, gentle
   // lift on hover -- so the global .pill red-fill hover doesn't dominate.
   head.className = 'ljp-vnc-head';
-  // Bar height = padding 10px top/bottom. Same chrome (cream bg, thin
-  // bottom border) as before but slightly taller so the .pill buttons
-  // breathe like they do in the LJP top header.
-  head.style.cssText = 'background:#f3f0ec; color:#3a3a45; padding:10px 12px; display:flex; align-items:center; gap:6px; border-bottom:1px solid #d4cfca;';
+  // Inline styling kept minimal -- visual identity now lives in CSS
+  // (.ljp-vnc-head) so this bar matches #liveJobPanel h2 / .ljp-actions-group
+  // exactly (same background gradient, same pill rules).
+  head.style.cssText = 'display:flex; align-items:center; gap:6px;';
   // Operator control buttons (learn-from-operator Phase 1). Shown only
   // for real sessions (not the synthetic '__job__' fetch placeholder).
   // Each press is forwarded to /operator_action which executes it AND
