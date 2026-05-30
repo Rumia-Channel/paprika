@@ -1329,6 +1329,14 @@ async def job_assets_json(job_id: str) -> dict:
         for p in sorted(assets_dir.iterdir(), key=lambda p: p.name.lower()):
             if not p.is_file():
                 continue
+            # Skip "screenshot-*" entries -- those are intentional
+            # captures (manual Screenshot button) and live exclusively
+            # in the Screenshot tab via /jobs/{id}/screenshots.json.
+            # Operator preference: don't duplicate them into the asset
+            # gallery. Page-downloaded images (logo.png etc) without the
+            # prefix continue to show here.
+            if p.name.lower().startswith("screenshot-"):
+                continue
             ext = p.suffix.lower().lstrip(".")
             kind = "other"
             if ext in _IMG_EXTS:
@@ -1409,6 +1417,20 @@ async def job_screenshots_json(job_id: str) -> dict:
     await _soft_resolve_job(job_id, require_subdir="assets")
     assets_dir = get_storage_dir() / job_id / "assets"
     items: list[dict] = []
+    # Classify which image files are "screenshots" (taken intentionally
+    # by API / client / AI / operator) vs "page assets" (downloaded by
+    # the browser as part of the crawled page itself, e.g. logo.png,
+    # banner.gif). The latter belong in the asset gallery only.
+    #
+    # Heuristic:
+    #   * Top-level image whose name starts with "screenshot-" -- the
+    #     manual /screenshot endpoint's output. INCLUDE.
+    #   * Image in a SUBDIRECTORY of assets/ -- output of
+    #     ``page.capture(label="...")`` (saves <label>/<label>.png +
+    #     .html + .axtree.json) and per-attempt final_screenshot.jpg
+    #     under attempts/N/. INCLUDE.
+    #   * Other top-level images (no "screenshot-" prefix) -- assumed
+    #     page-downloaded asset. EXCLUDE.
     if assets_dir.exists():
         for p in assets_dir.rglob("*"):
             if not p.is_file():
@@ -1417,13 +1439,17 @@ async def job_screenshots_json(job_id: str) -> dict:
             if ext not in _IMG_EXTS:
                 continue
             try:
-                st = p.stat()
-            except Exception:
-                continue
-            try:
                 rel = p.relative_to(assets_dir).as_posix()
             except Exception:
                 rel = p.name
+            in_subdir = "/" in rel
+            is_named_screenshot = rel.lower().startswith("screenshot-")
+            if not (in_subdir or is_named_screenshot):
+                continue  # page-downloaded asset, not a screenshot
+            try:
+                st = p.stat()
+            except Exception:
+                continue
             label = rel.rsplit("/", 1)[0] if "/" in rel else ""
             items.append({
                 "name": p.name,
@@ -1471,6 +1497,10 @@ async def job_assets(job_id: str) -> str:
 
     buckets = {"images": [], "videos": [], "audios": [], "others": []}
     for p in files:
+        # Skip manual Capture-button outputs -- they belong to the
+        # Screenshot tab only (see assets_json filter above).
+        if p.name.lower().startswith("screenshot-"):
+            continue
         ext = p.suffix.lower().lstrip(".")
         info_d = {
             "name": p.name,
