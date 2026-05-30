@@ -601,6 +601,13 @@ def run_ytdlp(
     # ------------------------------------------------------------------
     adapter = _load_ytdlp_adapter()
     if adapter is not None:
+        # Check if curl_cffi is available for Cloudflare impersonation
+        _has_curl_cffi = False
+        try:
+            import curl_cffi  # noqa: F401
+            _has_curl_cffi = True
+        except ImportError:
+            pass
         kwargs: dict[str, Any] = dict(
             url=url,
             output_dir=str(output_dir),
@@ -609,14 +616,17 @@ def run_ytdlp(
             cookies_from_browser=cookies_from_browser,
             timeout=timeout,
             user_agent=_BROWSER_USER_AGENT,
+            impersonate="chrome" if _has_curl_cffi else None,
             _log_fn=log,
         )
         try:
             result = adapter.download(**kwargs)
         except TypeError:
-            # Older adapter without user_agent param (remote workers
-            # auto-update core/ but data/tools/ may lag behind).
+            # Older adapter without user_agent/impersonate params
+            # (remote workers auto-update core/ but data/tools/ may
+            # lag behind).
             kwargs.pop("user_agent", None)
+            kwargs.pop("impersonate", None)
             result = adapter.download(**kwargs)
         return result["ok"], result["message"]
 
@@ -638,6 +648,14 @@ def run_ytdlp(
         "--no-overwrites",
         "-o", output_template,
     ]
+    # Impersonate a real browser to bypass Cloudflare / anti-bot
+    # challenges.  Requires curl_cffi (pip install curl_cffi).
+    # yt-dlp auto-selects the best target; we just need to enable it.
+    try:
+        import curl_cffi  # noqa: F401
+        cmd += ["--impersonate", "chrome"]
+    except ImportError:
+        pass
     if referer:
         cmd += ["--referer", referer]
     if cookies_file:
