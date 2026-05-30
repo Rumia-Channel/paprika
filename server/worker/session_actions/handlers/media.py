@@ -983,21 +983,31 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
                 min_dur = float(action.get("min_duration_s"))
         except (TypeError, ValueError):
             min_dur = _MIN_VALID_VIDEO_S
+        # Probe every downloaded artefact (not just the uploaded ones) so
+        # a valid file whose UPLOAD failed is still visible, and a
+        # job-less SDK session (no asset_upload_base) can still report
+        # whether the bytes it fetched are real video.
+        uploaded_set = set(uploaded)
         validations: list[dict] = []
-        for name in uploaded:
+        for name in sorted(set(new_files_all)):
             v = await asyncio.to_thread(
                 _probe_media_sync, str(videos_dir / name), min_dur
             )
             v["name"] = name
+            v["uploaded"] = name in uploaded_set
             validations.append(v)
         valid_files = [v["name"] for v in validations if v.get("valid")]
+        valid_uploaded = [
+            v["name"] for v in validations if v.get("valid") and v.get("uploaded")
+        ]
         oracle_unavailable = any(
             v.get("reason") == "ffprobe_missing" for v in validations
         )
         if validations and not oracle_unavailable:
-            ok = len(valid_files) > 0
+            # Honest success = we PRESERVED (uploaded) a playable video.
+            ok = len(valid_uploaded) > 0
         else:
-            # No probe possible (no ffprobe, or nothing uploaded) -- keep
+            # No probe possible (no ffprobe, or nothing downloaded) -- keep
             # the legacy meaning so we don't regress on such workers.
             ok = bool(uploaded)
         _slog(
@@ -1006,7 +1016,7 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
             f"tried={tried_labels} "
             f"new_files={len(new_files_all)} "
             f"uploaded={len(uploaded)} "
-            f"valid={len(valid_files)}"
+            f"valid={len(valid_files)} valid_uploaded={len(valid_uploaded)}"
             + ("" if not oracle_unavailable else " (oracle:ffprobe_missing)")
         )
         reply.result = {
@@ -1015,12 +1025,15 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
             "message": msg,
             "files": uploaded,
             "file_count": len(uploaded),
-            # Media oracle: per-file ffprobe validation + the subset that
-            # passed. ``ok`` above is True iff ``valid_files`` is non-empty
-            # (or the oracle was unavailable). Lets the operator / codegen
-            # LLM tell "preserved real video" from "saved junk".
+            # Media oracle: per-file ffprobe validation. ``ok`` is True iff
+            # a valid video was PRESERVED (valid_uploaded non-empty), or the
+            # oracle was unavailable. ``valid_files`` lists every downloaded
+            # file that is real playable video (even if its upload failed),
+            # so the operator / codegen LLM can tell "preserved real video"
+            # from "saved junk" from "fetched real video but upload failed".
             "valid_files": valid_files,
             "valid_file_count": len(valid_files),
+            "valid_uploaded_count": len(valid_uploaded),
             "validations": validations,
             "oracle_available": (not oracle_unavailable) and bool(validations),
             # Diagnostic fields so the operator / codegen
