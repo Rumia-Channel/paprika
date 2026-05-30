@@ -139,6 +139,8 @@ const I18N_RESOURCES = {
     "extensions.empty":       "拡張機能なし — upload から追加",
     // Submit form
     "submit.heading":         "ジョブの実行",
+    "submit.subtab.form":     "ジョブの実行",
+    "submit.subtab.live":     "Live",
     "submit.btn":             "▶ 実行",
     "submit.clear":           "クリア",
     "submit.clear.title":     "URL / Goal / Code 入力欄をクリアする",
@@ -467,6 +469,8 @@ const I18N_RESOURCES = {
     "extensions.empty":       "no extensions yet — click upload to add one",
     // Submit form
     "submit.heading":         "Submit a job",
+    "submit.subtab.form":     "Submit",
+    "submit.subtab.live":     "Live",
     "submit.btn":             "▶ submit",
     "submit.clear":           "clear",
     "submit.clear.title":     "Clear URL / Goal / Code fields",

@@ -224,9 +224,9 @@ _ADMIN_HTML = r"""<!DOCTYPE html>
   <!-- Submit パネル内サブタブ: "ジョブの実行" (フォーム) と "Live" (進行中
        ジョブの監視) を切り替える。フォームは display:none で隠すだけなので
        投入後にサブタブを行き来しても入力値は保持される。 -->
-  <div class="submit-subtabs" role="tablist" style="display:flex; gap:6px; margin-bottom:12px;">
+  <div class="submit-subtabs" role="tablist">
     <button type="button" class="submit-subtab active" data-submit-subtab="form" role="tab" aria-selected="true"><iconify-icon icon="lucide:send-horizontal"></iconify-icon> <span data-i18n="submit.subtab.form">ジョブの実行</span></button>
-    <button type="button" class="submit-subtab" data-submit-subtab="live" role="tab" aria-selected="false"><span id="submitSubtabLiveDot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#bbb; margin-right:6px; vertical-align:middle;"></span><span data-i18n="submit.subtab.live">Live</span> <span id="submitSubtabLiveJobBadge" style="color:#888; font-family:ui-monospace,Consolas,monospace; font-size:.85em;"></span></button>
+    <button type="button" class="submit-subtab" data-submit-subtab="live" role="tab" aria-selected="false"><span id="submitSubtabLiveDot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#bbb;"></span><span data-i18n="submit.subtab.live">Live</span> <span id="submitSubtabLiveJobBadge" style="color:#888; font-family:ui-monospace,Consolas,monospace; font-size:.85em;"></span></button>
   </div>
   <div class="submit-subpane" data-submit-subpane="form">
   <section>
