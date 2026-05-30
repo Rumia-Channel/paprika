@@ -599,15 +599,15 @@ def run_ytdlp(
     # ------------------------------------------------------------------
     # Plugin-adapter path (preferred)
     # ------------------------------------------------------------------
+    _has_curl_cffi = False
+    try:
+        import curl_cffi  # noqa: F401
+        _has_curl_cffi = True
+    except ImportError:
+        pass
+
     adapter = _load_ytdlp_adapter()
     if adapter is not None:
-        # Check if curl_cffi is available for Cloudflare impersonation
-        _has_curl_cffi = False
-        try:
-            import curl_cffi  # noqa: F401
-            _has_curl_cffi = True
-        except ImportError:
-            pass
         kwargs: dict[str, Any] = dict(
             url=url,
             output_dir=str(output_dir),
@@ -628,12 +628,23 @@ def run_ytdlp(
             kwargs.pop("user_agent", None)
             kwargs.pop("impersonate", None)
             result = adapter.download(**kwargs)
-        return result["ok"], result["message"]
+        ok, msg = result["ok"], result["message"]
+        # If the adapter failed with a Cloudflare anti-bot error and
+        # curl_cffi is available, fall through to the inline path
+        # which passes --impersonate directly to the yt-dlp CLI.
+        # The adapter may not support the impersonate kwarg yet.
+        if ok or not _has_curl_cffi:
+            return ok, msg
+        if "cloudflare" not in msg.lower():
+            return ok, msg
+        log("  [ytdlp] adapter hit Cloudflare — retrying with "
+            "--impersonate via inline fallback")
 
     # ------------------------------------------------------------------
     # Inline fallback (no plugin adapter found)
     # ------------------------------------------------------------------
-    log("  [ytdlp] plugin adapter not found — using inline fallback")
+    if adapter is None:
+        log("  [ytdlp] plugin adapter not found — using inline fallback")
     ytdlp = shutil.which("yt-dlp")
     if not ytdlp:
         return False, "yt-dlp not found on PATH (try: pip install yt-dlp)"
