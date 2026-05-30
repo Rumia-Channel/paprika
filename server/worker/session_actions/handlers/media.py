@@ -2,6 +2,10 @@
 _SESSION_ACTIONS via the @_session_action decorator."""
 from __future__ import annotations
 import asyncio
+import json
+import os
+import shutil
+import subprocess
 from typing import Optional
 
 from server.worker.session_actions._registry import _session_action, _ActionCtx, _logger
@@ -18,6 +22,87 @@ from server.worker._browser_helpers import (
     _try_click_play_button,
     _try_click_play_button_in_frame,
 )
+
+# ---- media oracle (success-verification for download_video) ----
+# A downloaded file is only a "win" if it is actually playable media of
+# plausible length -- yt-dlp exiting 0 / a file appearing is NOT enough
+# (it can be an HTML error page saved as .mp4, a 0-byte stub, a truncated
+# segment, or a 6s ad). For an evidence-preservation mission a false
+# "success" is worse than a retry, so the oracle errs strict.
+_MIN_VALID_VIDEO_S = 1.0  # below this (with a known duration) = glitch/placeholder
+
+
+def _probe_media_sync(path: str, min_dur: float) -> dict:
+    """ffprobe one file -> media-validity facts. Pure/sync; run via
+    ``asyncio.to_thread``. Never raises -- failures become ``valid=False``
+    with a ``reason``. If ffprobe is absent the caller treats the result
+    as "oracle unavailable" and falls back to the legacy ok=uploaded."""
+    info = {
+        "valid": False, "has_video": False, "duration_s": 0.0,
+        "width": 0, "height": 0, "codec": "", "bytes": 0, "reason": "",
+    }
+    try:
+        info["bytes"] = os.path.getsize(path)
+    except OSError:
+        info["bytes"] = 0
+    if info["bytes"] <= 0:
+        info["reason"] = "empty"
+        return info
+    ffprobe = shutil.which("ffprobe") or "ffprobe"
+    try:
+        proc = subprocess.run(
+            [ffprobe, "-v", "error", "-print_format", "json",
+             "-show_format", "-show_streams", path],
+            capture_output=True, text=True, timeout=60,
+        )
+    except FileNotFoundError:
+        info["reason"] = "ffprobe_missing"
+        return info
+    except subprocess.TimeoutExpired:
+        info["reason"] = "probe_timeout"
+        return info
+    except Exception as e:  # pragma: no cover - defensive
+        info["reason"] = f"probe_error:{type(e).__name__}"
+        return info
+    if proc.returncode != 0:
+        info["reason"] = "not_media"
+        return info
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except Exception:
+        info["reason"] = "unparseable_probe"
+        return info
+    streams = data.get("streams") or []
+    vstreams = [s for s in streams if s.get("codec_type") == "video"]
+    if vstreams:
+        info["has_video"] = True
+        v0 = vstreams[0]
+        info["width"] = int(v0.get("width") or 0)
+        info["height"] = int(v0.get("height") or 0)
+        info["codec"] = v0.get("codec_name") or ""
+    dur = 0.0
+    try:
+        dur = float((data.get("format") or {}).get("duration") or 0.0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    if dur <= 0.0 and vstreams:
+        try:
+            dur = float(vstreams[0].get("duration") or 0.0)
+        except (TypeError, ValueError):
+            dur = 0.0
+    info["duration_s"] = round(dur, 2)
+    # A still-image "video" (mjpeg/png) or audio-only file is not a real
+    # video capture; require a real video stream. Only reject on a KNOWN
+    # short duration (dur>0) so containers that omit duration metadata
+    # aren't false-negatived.
+    if not info["has_video"]:
+        info["reason"] = "no_video_stream"
+    elif 0.0 < dur < min_dur:
+        info["reason"] = "too_short"
+    else:
+        info["valid"] = True
+        info["reason"] = "ok"
+    return info
 
 
 @_session_action("download_video", read_only=False)
@@ -885,13 +970,44 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
         # but they didn't ship".
         if upload_errors and ok:
             msg = msg + "\n[upload] " + "\n[upload] ".join(upload_errors)
+
+        # ---- media oracle (⑤): is what we preserved actually playable
+        # video of plausible length? yt-dlp exit 0 + a file appearing is
+        # NOT success on its own (HTML-as-mp4 / 0-byte / truncated / ad).
+        # We re-derive ``ok`` from ffprobe so the codegen-loop's
+        # success/selection signal can't be fooled. Degrades gracefully
+        # to the legacy ok=uploaded when ffprobe is unavailable.
+        min_dur = _MIN_VALID_VIDEO_S
+        try:
+            if action.get("min_duration_s") is not None:
+                min_dur = float(action.get("min_duration_s"))
+        except (TypeError, ValueError):
+            min_dur = _MIN_VALID_VIDEO_S
+        validations: list[dict] = []
+        for name in uploaded:
+            v = await asyncio.to_thread(
+                _probe_media_sync, str(videos_dir / name), min_dur
+            )
+            v["name"] = name
+            validations.append(v)
+        valid_files = [v["name"] for v in validations if v.get("valid")]
+        oracle_unavailable = any(
+            v.get("reason") == "ffprobe_missing" for v in validations
+        )
+        if validations and not oracle_unavailable:
+            ok = len(valid_files) > 0
+        else:
+            # No probe possible (no ffprobe, or nothing uploaded) -- keep
+            # the legacy meaning so we don't regress on such workers.
             ok = bool(uploaded)
         _slog(
             f"[download_video] done ok={ok} "
             f"candidates={len(candidates)} "
             f"tried={tried_labels} "
             f"new_files={len(new_files_all)} "
-            f"uploaded={len(uploaded)}"
+            f"uploaded={len(uploaded)} "
+            f"valid={len(valid_files)}"
+            + ("" if not oracle_unavailable else " (oracle:ffprobe_missing)")
         )
         reply.result = {
             "ok": ok,
@@ -899,6 +1015,14 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
             "message": msg,
             "files": uploaded,
             "file_count": len(uploaded),
+            # Media oracle: per-file ffprobe validation + the subset that
+            # passed. ``ok`` above is True iff ``valid_files`` is non-empty
+            # (or the oracle was unavailable). Lets the operator / codegen
+            # LLM tell "preserved real video" from "saved junk".
+            "valid_files": valid_files,
+            "valid_file_count": len(valid_files),
+            "validations": validations,
+            "oracle_available": (not oracle_unavailable) and bool(validations),
             # Diagnostic fields so the operator / codegen
             # LLM can see WHICH path produced the file
             # (or why it failed).
