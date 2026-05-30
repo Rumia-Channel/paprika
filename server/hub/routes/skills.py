@@ -40,9 +40,17 @@ def _skill_to_dict(rec, include_body: bool = True) -> dict:
         "extracted_from": list(rec.extracted_from or []),
         "tier": rec.tier,
         "use_count": rec.use_count,
+        "success_count": getattr(rec, "success_count", 0),
+        # Fitness ratio for the operator's curate/retire decisions:
+        # fraction of jobs this skill rode along on that were judged OK.
+        "success_rate": (
+            round(getattr(rec, "success_count", 0) / rec.use_count, 3)
+            if rec.use_count else None
+        ),
         "created_at": rec.created_at,
         "updated_at": rec.updated_at,
         "last_used_at": rec.last_used_at,
+        "last_success_at": getattr(rec, "last_success_at", None),
     }
     if include_body:
         d["code_template"] = rec.code_template

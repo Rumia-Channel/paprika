@@ -44,9 +44,17 @@ def _convention_to_dict(rec, include_body: bool = True) -> dict:
         "extracted_from": list(rec.extracted_from or []),
         "tier": rec.tier,
         "use_count": rec.use_count,
+        "success_count": getattr(rec, "success_count", 0),
+        # Fraction of jobs this rule rode along on that were judged OK --
+        # the operator's signal for which rules to keep vs. retire.
+        "success_rate": (
+            round(getattr(rec, "success_count", 0) / rec.use_count, 3)
+            if rec.use_count else None
+        ),
         "created_at": rec.created_at,
         "updated_at": rec.updated_at,
         "last_used_at": rec.last_used_at,
+        "last_success_at": getattr(rec, "last_success_at", None),
     }
     if include_body:
         d["bad_example"] = rec.bad_example
