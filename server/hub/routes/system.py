@@ -1825,24 +1825,28 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
   async function loadKnowledge() {
     const tbody = document.querySelector('#hkTable tbody');
     tbody.innerHTML = '<tr><td colspan=8 class="empty">loading…</td></tr>';
-    let list;
+    // Single aggregate fetch -- /host_knowledge_all returns ALL hosts'
+    // knowledge in one response. Replaces the previous N+1 pattern
+    // (1 list call + 1 per-host detail call) that hit DevTools as
+    // a flood of `knowledge` rows on every Knowledge-tab open AND
+    // every page load (for the badge-count seed). For a 25-host fleet
+    // that's 25 → 1 requests per load.
+    let entries;
     try {
-      const r = await fetch('/host_knowledge');
+      const r = await fetch('/host_knowledge_all');
+      if (!r.ok) {
+        tbody.innerHTML = '<tr><td colspan=8 class="empty">error: HTTP ' + r.status + '</td></tr>';
+        return;
+      }
       const j = await r.json();
-      list = j.hosts || [];
+      entries = j.entries || [];
     } catch (e) {
       tbody.innerHTML = '<tr><td colspan=8 class="empty">error: ' + e + '</td></tr>';
       return;
     }
-    const details = await Promise.all(list.map(async h => {
-      try {
-        const rr = await fetch('/hosts/' + encodeURIComponent(h) + '/knowledge');
-        if (!rr.ok) return null;
-        const k = await rr.json();
-        return { host: h, k };
-      } catch (e) { return null; }
-    }));
-    _hkData = details.filter(x => x);
+    _hkData = entries
+      .filter(x => x && x.host && x.knowledge)
+      .map(x => ({ host: x.host, k: x.knowledge }));
     renderTable();
     renderSummary();
     loadAiInsights();
@@ -2960,24 +2964,24 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
         </button>
         <span id="mdbMigrateVisitedStatus" style="font-size:.85em;"></span>
 
-        <hr style="border:0; border-top:1px dashed #dde; margin:10px 0;">
+        <hr style="border:0; border-top:1px dashed #dde; margin:4px 0; grid-column:1/-1;">
 
-        <button id="mdbMigrateSkillsBtn" class="pill" style="background:#f0f8e8; border-color:#7aab5c; color:#3a5a2a;">
+        <button id="mdbMigrateSkillsBtn" class="pill" style="background:#e8f0ff; border-color:#6a8ec7; color:#2a4a8a;">
           <iconify-icon icon="lucide:sparkles"></iconify-icon> Skills を移行
         </button>
         <span id="mdbMigrateSkillsStatus" style="font-size:.85em;"></span>
 
-        <button id="mdbMigrateConventionsBtn" class="pill" style="background:#f0f8e8; border-color:#7aab5c; color:#3a5a2a;">
+        <button id="mdbMigrateConventionsBtn" class="pill" style="background:#e8f0ff; border-color:#6a8ec7; color:#2a4a8a;">
           <iconify-icon icon="lucide:scroll-text"></iconify-icon> Conventions を移行
         </button>
         <span id="mdbMigrateConventionsStatus" style="font-size:.85em;"></span>
 
-        <button id="mdbMigrateEnginesBtn" class="pill" style="background:#f0f8e8; border-color:#7aab5c; color:#3a5a2a;">
+        <button id="mdbMigrateEnginesBtn" class="pill" style="background:#e8f0ff; border-color:#6a8ec7; color:#2a4a8a;">
           <iconify-icon icon="lucide:cpu"></iconify-icon> Engines を移行
         </button>
         <span id="mdbMigrateEnginesStatus" style="font-size:.85em;"></span>
 
-        <button id="mdbMigratePresetsBtn" class="pill" style="background:#f0f8e8; border-color:#7aab5c; color:#3a5a2a;">
+        <button id="mdbMigratePresetsBtn" class="pill" style="background:#e8f0ff; border-color:#6a8ec7; color:#2a4a8a;">
           <iconify-icon icon="lucide:bookmark"></iconify-icon> Presets を移行
         </button>
         <span id="mdbMigratePresetsStatus" style="font-size:.85em;"></span>
