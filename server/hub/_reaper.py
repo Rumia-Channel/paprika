@@ -221,13 +221,19 @@ _RETIRE_MAX_RATE = 0.15
 _RETIRE_IDLE_DAYS = 30
 
 
-def _retire_reason(rec) -> str | None:
+def _retire_reason(rec, *, allow_dud: bool) -> str | None:
     """Why this record should be retired, or None to keep it. Pure /
     tier-agnostic; the caller decides whether to ACT (auto) or just
-    suggest (curated)."""
+    suggest (curated).
+
+    ``allow_dud`` gates the success_rate-based "dud" verdict. It must be
+    False for conventions (they ride along on EVERY job, so their rate is
+    just the global job-success rate, not a per-rule signal) and during
+    cold start (no successes recorded yet -- every rate is a meaningless
+    0.0). The zombie verdict (never injected + old) is always safe."""
     uc = getattr(rec, "use_count", 0) or 0
     sc = getattr(rec, "success_count", 0) or 0
-    if uc >= _RETIRE_MIN_USE and (sc / uc) <= _RETIRE_MAX_RATE:
+    if allow_dud and uc >= _RETIRE_MIN_USE and (sc / uc) <= _RETIRE_MAX_RATE:
         return f"dud (use={uc} success={sc} rate={sc / uc:.2f})"
     if uc == 0:
         try:
@@ -275,8 +281,17 @@ async def _skill_convention_reaper_loop():
                 records = reg.list_all()
             except Exception:
                 continue
+            # The success_rate "dud" verdict is only meaningful for SKILLS
+            # (retrieved per-job, so the rate is per-skill) AND only once
+            # the registry has recorded at least one success (otherwise we
+            # are in cold start, every rate is a meaningless 0.0). For
+            # conventions (injected every job) the rate is just the global
+            # job-success rate, never a per-rule signal -- so only the
+            # zombie verdict applies to them.
+            total_success = sum(getattr(r, "success_count", 0) or 0 for r in records)
+            allow_dud = kind == "skill" and total_success > 0
             for rec in records:
-                reason = _retire_reason(rec)
+                reason = _retire_reason(rec, allow_dud=allow_dud)
                 if not reason:
                     continue
                 tier = getattr(rec, "tier", "auto")
