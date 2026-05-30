@@ -633,6 +633,56 @@ asyncio.run(main())"
     </form>
   </dialog>
 
+  <!-- Forensics 調査モーダル: POST /sessions/{sid}/forensics を叩き、
+       LLM が読み取り専用プローブを繰り返してレポートを生成する。
+       MUST live OUTSIDE the #submit form (same reason as recipeSaveModal). -->
+  <dialog id="forensicsModal" style="border:1px solid #ccc; border-radius:8px; padding:0; width:min(820px, 96vw); max-height:92vh; overflow:auto;">
+    <div style="padding:16px 20px;">
+      <h3 style="margin:0 0 12px; display:flex; align-items:center; gap:8px;">
+        <iconify-icon icon="lucide:microscope"></iconify-icon> Forensics 調査
+      </h3>
+      <div style="display:grid; gap:10px;">
+        <label style="display:grid; gap:4px;">
+          <span style="font-size:.85em; color:#666;">調査ゴール</span>
+          <textarea id="forensicsGoal" rows="3" placeholder="例: このページで動画プレーヤーが起動しない原因を調べて"
+            style="resize:vertical; font-family:inherit; padding:6px; border:1px solid #ccc; border-radius:4px;"></textarea>
+        </label>
+        <label style="display:grid; gap:4px; width:180px;">
+          <span style="font-size:.85em; color:#666;">最大ステップ数</span>
+          <input type="number" id="forensicsMaxSteps" value="18" min="1" max="60"
+            style="padding:4px 6px; border:1px solid #ccc; border-radius:4px;">
+        </label>
+        <div id="forensicsError" style="color:#c00; display:none; font-size:.9em;"></div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+        <button type="button" id="forensicsCancel">キャンセル</button>
+        <button type="button" id="forensicsRun" style="font-weight:600;">
+          <iconify-icon icon="lucide:play"></iconify-icon> 実行
+        </button>
+        <span id="forensicsSpinner" style="display:none; color:#888; font-size:.85em;">
+          <iconify-icon icon="lucide:loader-circle" class="spin"></iconify-icon> 実行中…
+        </span>
+      </div>
+      <!-- Results (hidden until a run completes) -->
+      <div id="forensicsResults" style="display:none; margin-top:16px; border-top:1px solid #ddd; padding-top:14px;">
+        <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:8px;">
+          <strong>レポート</strong>
+          <span id="forensicsResultMeta" style="font-size:.8em; color:#888;"></span>
+        </div>
+        <pre id="forensicsReport"
+          style="white-space:pre-wrap; word-break:break-word; background:#f7f7fc; padding:12px; border-radius:6px;
+                 max-height:320px; overflow:auto; font-size:.85em; margin:0 0 10px;"></pre>
+        <details id="forensicsTraceWrap" style="margin-top:6px;">
+          <summary style="cursor:pointer; font-weight:600; font-size:.88em;">
+            トレース (<span id="forensicsTraceCount">0</span> ステップ)
+          </summary>
+          <div id="forensicsTrace"
+            style="margin-top:6px; display:grid; gap:6px; max-height:380px; overflow:auto; font-size:.8em;"></div>
+        </details>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Live サブペイン: 進行中ジョブの監視 UI を含む。 サブタブ "Live" が
        選択されたときだけ表示される。inline display は submit-subpane
        wrapper が制御するので #liveJobPanel 自体の hidden は不要。 -->
@@ -671,6 +721,7 @@ asyncio.run(main())"
             <a id="ljpOpenLog" class="pill" href="#" target="_blank" style="--la-bg:#f0f0f6; --la-bd:#bbc; --la-fg:#333;"><iconify-icon icon="lucide:external-link"></iconify-icon> <span data-i18n="ljp.logtab">log tab</span></a>
             <hr>
             <button id="ljpSavePreset" class="pill" data-i18n-title="ljp.savepreset.title" title="このジョブを preset として保存" style="--la-bg:#eef8ee; --la-bd:#7ab68a; --la-fg:#196b2c;"><iconify-icon icon="lucide:bookmark"></iconify-icon> <span data-i18n="ljp.savepreset">save preset</span></button>
+            <button id="ljpForensics" class="pill" data-i18n-title="ljp.forensics.title" title="LLM 読み取り専用プローブでページを解析" style="--la-bg:#f3eeff; --la-bd:#b89fe0; --la-fg:#4a1f8a;"><iconify-icon icon="lucide:microscope"></iconify-icon> <span data-i18n="ljp.forensics">Forensics 調査</span></button>
           </div>
         </span>
         <button id="ljpClose" class="pill" style="--la-bg:#fee; --la-bd:#c88; --la-fg:#933;"><iconify-icon icon="lucide:x"></iconify-icon> <span data-i18n="ljp.close">close</span></button>
@@ -3233,6 +3284,8 @@ _SCREENSHOTS_HTML = r"""<!DOCTYPE html>
   .tile .badge.running .dot   { animation: paprikaSsPulse2 1.2s infinite; }
   .tile .badge.keepalive .dot { animation: paprikaSsPulse2 2.4s infinite; }
   @keyframes paprikaSsPulse2 { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .spin { animation: paprikaSpinCW 1s linear infinite; display:inline-block; }
+  @keyframes paprikaSpinCW { to { transform: rotate(360deg); } }
   /* Loading overlay: striped backdrop + spinner. Shown on first
      image load only (class is removed by JS in the 'load' / 'error'
      handlers below). Polling refreshes do not re-add the class so

@@ -255,6 +255,8 @@ const I18N_RESOURCES = {
     "ljp.logtab":             "ログ (別タブ)",
     "ljp.savepreset":         "プリセット保存",
     "ljp.savepreset.title":   "このジョブを preset として保存",
+    "ljp.forensics":          "Forensics 調査",
+    "ljp.forensics.title":    "LLM 読み取り専用プローブでページを解析する",
     "ljp.more":               "その他",
     "ljp.more.title":         "その他の操作",
     "ljp.close":              "閉じる",
@@ -599,6 +601,8 @@ const I18N_RESOURCES = {
     "ljp.logtab":             "log tab",
     "ljp.savepreset":         "save preset",
     "ljp.savepreset.title":   "Save this job as a preset",
+    "ljp.forensics":          "Forensics",
+    "ljp.forensics.title":    "Investigate this page with a read-only LLM probe loop",
     "ljp.more":               "more",
     "ljp.more.title":         "More actions",
     "ljp.close":              "close",
@@ -6671,6 +6675,150 @@ document.getElementById('ljpSavePreset').addEventListener('click', async () => {
   } catch (e) {
     alert(`Save failed: ${e}`);
   }
+});
+
+// --------------------------------------------------------------------------
+// Forensics 調査モーダル
+// POST /sessions/{sessionId}/forensics を呼び出し、LLM 読み取り専用プローブ
+// ループを実行してレポートを表示する。
+// --------------------------------------------------------------------------
+window.openForensicsModal = async function openForensicsModal(sessionId, hintUrl) {
+  const modal   = document.getElementById('forensicsModal');
+  const goalEl  = document.getElementById('forensicsGoal');
+  const stepsEl = document.getElementById('forensicsMaxSteps');
+  const errEl   = document.getElementById('forensicsError');
+  const runBtn  = document.getElementById('forensicsRun');
+  const spinner = document.getElementById('forensicsSpinner');
+  const results = document.getElementById('forensicsResults');
+  if (!modal) return;
+
+  // Reset state from any previous run.
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  spinner.style.display = 'none';
+  results.style.display = 'none';
+  runBtn.disabled = false;
+  goalEl.value = '';
+  stepsEl.value = '18';
+
+  // Stash the session ID on the modal so the run handler can read it.
+  modal.dataset.sessionId = sessionId || '';
+  modal.dataset.hintUrl   = hintUrl   || '';
+
+  modal.showModal();
+  goalEl.focus();
+};
+
+// Wire the run button (executes the actual API call).
+document.getElementById('forensicsRun').addEventListener('click', async () => {
+  const modal   = document.getElementById('forensicsModal');
+  const goalEl  = document.getElementById('forensicsGoal');
+  const stepsEl = document.getElementById('forensicsMaxSteps');
+  const errEl   = document.getElementById('forensicsError');
+  const runBtn  = document.getElementById('forensicsRun');
+  const spinner = document.getElementById('forensicsSpinner');
+  const results = document.getElementById('forensicsResults');
+  const reportEl    = document.getElementById('forensicsReport');
+  const metaEl      = document.getElementById('forensicsResultMeta');
+  const traceEl     = document.getElementById('forensicsTrace');
+  const traceCount  = document.getElementById('forensicsTraceCount');
+
+  const sessionId = modal.dataset.sessionId || '';
+  const goal      = (goalEl.value || '').trim();
+  if (!sessionId) { errEl.textContent = 'セッション ID が見つかりません'; errEl.style.display = ''; return; }
+  if (!goal)      { errEl.textContent = '調査ゴールを入力してください'; errEl.style.display = ''; return; }
+  errEl.style.display = 'none';
+
+  const maxSteps = parseInt(stepsEl.value, 10) || 18;
+
+  runBtn.disabled      = true;
+  spinner.style.display = '';
+  results.style.display = 'none';
+
+  try {
+    const r = await fetch('/sessions/' + encodeURIComponent(sessionId) + '/forensics', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        goal,
+        max_steps: maxSteps,
+        page_url:  modal.dataset.hintUrl || undefined,
+      }),
+    });
+    if (!r.ok) {
+      const txt = await r.text().catch(() => '');
+      throw new Error(`HTTP ${r.status}: ${txt}`);
+    }
+    const data = await r.json();
+
+    // ---- report ----------------------------------------------------------
+    reportEl.textContent = data.report || '(レポートなし)';
+
+    // ---- meta line -------------------------------------------------------
+    const secs  = ((data.elapsed_ms || 0) / 1000).toFixed(1);
+    const compl = data.completed ? '✅ 完了' : `⚠️ 未完了 (${data.steps_taken}/${data.max_steps} ステップ)`;
+    metaEl.textContent = `${compl} · ${data.steps_taken} ステップ · ${secs}s · ${data.model || ''}`;
+
+    // ---- trace -----------------------------------------------------------
+    const trace = data.trace || [];
+    traceCount.textContent = String(trace.length);
+    traceEl.innerHTML = trace.map(s => {
+      const ok   = !s.error;
+      const bg   = ok ? '#f3fff3' : '#fff3f3';
+      const bd   = ok ? '#b0d8b0' : '#d8b0b0';
+      const res  = s.result !== undefined && s.result !== null
+        ? JSON.stringify(s.result).slice(0, 300)
+        : '';
+      return `<div style="background:${bg}; border:1px solid ${bd}; border-radius:4px; padding:6px 8px;">
+        <div style="font-weight:600; margin-bottom:3px; color:#555;">#${s.n} &nbsp;
+          <code style="font-size:.95em; color:#333;">${esc(String(s.expression || '').slice(0, 80))}…</code>
+        </div>
+        ${s.thought ? `<div style="color:#666; margin-bottom:3px; white-space:pre-wrap;">${esc(s.thought.slice(0, 200))}</div>` : ''}
+        ${s.error ? `<div style="color:#b00;">⛔ ${esc(s.error)}</div>` : ''}
+        ${res ? `<code style="color:#006; display:block; white-space:pre-wrap;">${esc(res)}</code>` : ''}
+        <div style="color:#aaa; font-size:.8em; text-align:right;">${s.elapsed_ms || 0} ms</div>
+      </div>`;
+    }).join('');
+
+    results.style.display = '';
+  } catch (e) {
+    errEl.textContent = `エラー: ${e.message}`;
+    errEl.style.display = '';
+  } finally {
+    runBtn.disabled       = false;
+    spinner.style.display = 'none';
+  }
+});
+
+// キャンセルボタン
+document.getElementById('forensicsCancel').addEventListener('click', () => {
+  document.getElementById('forensicsModal').close();
+});
+
+// LJP More menu → Forensics ボタン:
+// セッション一覧を取得してからモーダルを開く。
+document.getElementById('ljpForensics').addEventListener('click', async () => {
+  const jid = LJP.jobId;
+  if (!jid) { alert('No job attached'); return; }
+
+  let sessionId = null;
+  let hintUrl   = '';
+  try {
+    const d = await fetch('/jobs/' + encodeURIComponent(jid) + '/sessions').then(r => r.json());
+    const ses = (d.sessions || [])[0];
+    if (ses) {
+      sessionId = ses.session_id;
+      hintUrl   = ses.initial_url || ses.url || '';
+    }
+  } catch (_) {}
+
+  if (!sessionId) {
+    // Job may have already finished; sessions are torn down.
+    alert('実行中のセッションが見つかりません。Forensics は実行中セッションにのみ使えます。');
+    return;
+  }
+
+  openForensicsModal(sessionId, hintUrl);
 });
 
 // NOTE: "save skill" handler removed alongside the Skills tab (v2 cleanup).
