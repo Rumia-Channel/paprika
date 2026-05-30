@@ -256,11 +256,13 @@ async def _run_codegen_loop_job(request: Request, info: JobInfo) -> None:
     # success diffs, so injecting all curated ones at once stays
     # well under context limits.
     convention_addendum_block: str | None = None
+    injected_convention_slugs: list[str] = []
     if state.conventions is not None:
         try:
             curated = state.conventions.list_curated()
             if curated:
                 convention_addendum_block = render_conventions_block(curated)
+                injected_convention_slugs = [c.slug for c in curated]
                 _log(
                     f"==> curated conventions: prepending {len(curated)} "
                     f"rule(s) to the system prompt"
@@ -476,6 +478,33 @@ async def _run_codegen_loop_job(request: Request, info: JobInfo) -> None:
     # 10 NG attempts that got marked completed by the pre-fix
     # judge-skip-on-last-attempt bug.)
     judge_ok = _final_attempt_judge_ok(job_id, len(outcome.attempts))
+
+    # Selection signal: credit the skills + conventions that were injected
+    # into THIS job iff it genuinely succeeded (same guard as distillation).
+    # ``use_count`` was bumped at injection (= attempts); bumping
+    # ``success_count`` here makes ``success_count / use_count`` a real
+    # fitness ratio -- the basis for preferring proven skills/conventions
+    # and retiring ones that ride along but never correlate with success.
+    if outcome.success and judge_ok:
+        if state.skills is not None:
+            for sl in picked_skill_slugs:
+                try:
+                    state.skills.bump_success(sl)
+                except Exception:
+                    pass
+        if state.conventions is not None:
+            for cs in injected_convention_slugs:
+                try:
+                    state.conventions.bump_success(cs)
+                except Exception:
+                    pass
+        if picked_skill_slugs or injected_convention_slugs:
+            _log(
+                "==> selection: credited success to "
+                f"{len(picked_skill_slugs)} skill(s) + "
+                f"{len(injected_convention_slugs)} convention(s)"
+            )
+
     skill_enabled = (
         state.settings.get("skill_auto_extract_enabled", SKILL_AUTO_EXTRACT_ENABLED)
         if state.settings is not None

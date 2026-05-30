@@ -82,10 +82,12 @@ class SkillRecord:
     auto_extracted: bool = True  # True for auto/, False for hand-written curated/
     extracted_from: list[str] = field(default_factory=list)  # job_ids
     tier: SkillTier = "auto"  # "auto" or "curated" (must match folder)
-    use_count: int = 0
+    use_count: int = 0  # times retrieved/injected into a codegen job (attempts)
+    success_count: int = 0  # of those, how many jobs were judged OK (fitness)
     created_at: str = ""
     updated_at: str = ""
     last_used_at: str | None = None
+    last_success_at: str | None = None
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -105,9 +107,11 @@ class SkillRecord:
             extracted_from=list(d.get("extracted_from") or []),
             tier=d.get("tier") or ("auto" if d.get("auto_extracted", True) else "curated"),
             use_count=int(d.get("use_count") or 0),
+            success_count=int(d.get("success_count") or 0),
             created_at=d.get("created_at") or "",
             updated_at=d.get("updated_at") or "",
             last_used_at=d.get("last_used_at"),
+            last_success_at=d.get("last_success_at"),
         )
 
 
@@ -242,5 +246,19 @@ class SkillRegistry(TieredJsonRecordRegistry[SkillRecord]):
             return None
         rec.use_count += 1
         rec.last_used_at = _utcnow_iso()
+        self._write(rec)
+        return rec
+
+    def bump_success(self, slug: str) -> SkillRecord | None:
+        """Increment ``success_count`` + set ``last_success_at``. Called
+        once per codegen-loop job that was judged OK, for each skill that
+        had been injected into it -- so ``success_count / use_count`` is a
+        real fitness signal the operator (and a future retire reaper) can
+        use to keep proven skills and drop ones that never help."""
+        rec = self.get(slug)
+        if rec is None:
+            return None
+        rec.success_count += 1
+        rec.last_success_at = _utcnow_iso()
         self._write(rec)
         return rec

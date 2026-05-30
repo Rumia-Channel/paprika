@@ -73,10 +73,12 @@ class ConventionRecord:
     tags: list[str] = field(default_factory=list)
     extracted_from: list[str] = field(default_factory=list)  # job_ids
     tier: ConventionTier = "auto"
-    use_count: int = 0
+    use_count: int = 0  # times injected into a codegen job (attempts)
+    success_count: int = 0  # of those, how many jobs were judged OK (fitness)
     created_at: str = ""
     updated_at: str = ""
     last_used_at: str | None = None
+    last_success_at: str | None = None
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -95,9 +97,11 @@ class ConventionRecord:
             extracted_from=list(d.get("extracted_from") or []),
             tier=d.get("tier") or "auto",
             use_count=int(d.get("use_count") or 0),
+            success_count=int(d.get("success_count") or 0),
             created_at=d.get("created_at") or "",
             updated_at=d.get("updated_at") or "",
             last_used_at=d.get("last_used_at"),
+            last_success_at=d.get("last_success_at"),
         )
 
     def render_for_prompt(self) -> str:
@@ -244,6 +248,19 @@ class ConventionRegistry(TieredJsonRecordRegistry[ConventionRecord]):
             return None
         rec.use_count += 1
         rec.last_used_at = _utcnow_iso()
+        self._write(rec)
+        return rec
+
+    def bump_success(self, slug: str) -> ConventionRecord | None:
+        """Increment ``success_count`` + set ``last_success_at``. Called
+        once per judged-OK codegen job for each convention that rode along
+        on it, so ``success_count / use_count`` reflects which rules
+        actually correlate with success (vs. zombie rules that never do)."""
+        rec = self.get(slug)
+        if rec is None:
+            return None
+        rec.success_count += 1
+        rec.last_success_at = _utcnow_iso()
         self._write(rec)
         return rec
 
