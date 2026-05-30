@@ -95,8 +95,51 @@ async def lifespan(app: FastAPI):
     if _sdir != config.data_dir:
         _sdir.mkdir(parents=True, exist_ok=True)
 
-    state.store, state.store_kind = await make_store(config.redis_url)
+    # ---- MariaDB: if configured, create pool for JobStore + restore ----
+    _mdb_pool = None
+    if state.settings is not None:
+        _mdb_host = state.settings.get("mariadb_host", "")
+        _mdb_user = state.settings.get("mariadb_username", "")
+        if _mdb_host and _mdb_user:
+            try:
+                from server.hub.mariadb import create_pool as _mdb_create_pool
+
+                _mdb_pool = await _mdb_create_pool(
+                    host=_mdb_host,
+                    port=int(state.settings.get("mariadb_port", 3306)),
+                    database=state.settings.get("mariadb_database", "paprika"),
+                    username=_mdb_user,
+                    password=state.settings.get("mariadb_password", ""),
+                )
+                state.mariadb_pool = _mdb_pool
+                log.info("MariaDB pool created (%s@%s)", _mdb_user, _mdb_host)
+            except Exception as e:
+                log.warning("MariaDB pool creation failed (%s); using Redis/in-memory", e)
+                _mdb_pool = None
+
+    state.store, state.store_kind = await make_store(
+        config.redis_url, mariadb_pool=_mdb_pool,
+    )
     state._local_sem = asyncio.Semaphore(config.max_concurrent_jobs)
+
+    # ---- Restore file-backed registries from MariaDB if empty ----
+    if _mdb_pool is not None:
+        try:
+            from server.hub.mariadb import restore_all_registries
+
+            restored = await restore_all_registries(
+                _mdb_pool,
+                host_registry=state.hosts,
+                visited_registry=state.host_visited,
+                skill_registry=state.skills,
+                convention_registry=state.conventions,
+                engine_registry=state.engines,
+                preset_registry=state.presets,
+            )
+            if restored:
+                log.info("MariaDB restore: %s", restored)
+        except Exception as e:
+            log.warning("MariaDB registry restore failed: %s", e)
 
     # WorkerJobLog batcher: when using Redis, buffer log lines and
     # flush in pipeline batches (50 lines or 100ms). Cuts Redis ops

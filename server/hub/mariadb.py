@@ -972,3 +972,328 @@ async def migrate_presets(
         "purged": purged,
         "errors": errors[:20],
     }
+
+
+# ---------------------------------------------------------------------------
+# Restore: MariaDB → file-backed registries (startup auto-populate)
+# ---------------------------------------------------------------------------
+# After migration + purge, the file-backed registries are empty. These
+# functions read from MariaDB and re-populate the registries so the hub
+# serves data from MariaDB even though registries are still file-backed.
+# Only called at startup when a registry is empty but MariaDB has rows.
+# ---------------------------------------------------------------------------
+
+async def restore_hosts(pool: Any, host_registry: Any) -> int:
+    """Restore HostRegistry from MariaDB ``hosts`` table.
+    Returns the number of records restored."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT host, cookies, notes, recrawl_patterns, "
+                "popup_policy, login_url, login_goal, login_check, "
+                "login_refresh_ttl_s, last_login_at, fetch_recipes, "
+                "created_at, updated_at, last_used_at "
+                "FROM hosts"
+            )
+            rows = await cur.fetchall()
+
+    restored = 0
+    for row in rows:
+        try:
+            host_registry.upsert(
+                host=row[0],
+                cookies=json.loads(row[1]) if row[1] else [],
+                notes=row[2],
+                recrawl_patterns=json.loads(row[3]) if row[3] else [],
+                popup_policy=row[4] or "kill",
+                login_url=row[5],
+                login_goal=row[6],
+                login_check=row[7],
+                login_refresh_ttl_s=row[8],
+                last_login_at=str(row[9]) if row[9] else None,
+                fetch_recipes=json.loads(row[10]) if row[10] else [],
+            )
+            restored += 1
+        except Exception as e:
+            log.warning("restore host %s failed: %s", row[0], e)
+    return restored
+
+
+async def restore_visited_urls(pool: Any, visited_registry: Any) -> int:
+    """Restore HostVisitedRegistry from MariaDB ``visited_urls`` table.
+    Returns the number of URLs restored."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT host, url FROM visited_urls ORDER BY host"
+            )
+            rows = await cur.fetchall()
+
+    if not rows:
+        return 0
+
+    # Group by host for batch insert
+    from collections import defaultdict
+    by_host: dict[str, list[str]] = defaultdict(list)
+    for host, url in rows:
+        by_host[host].append(url)
+
+    restored = 0
+    for host, urls in by_host.items():
+        try:
+            restored += visited_registry.add_many(host, urls)
+        except Exception as e:
+            log.warning("restore visited_urls for %s failed: %s", host, e)
+    return restored
+
+
+async def restore_skills(pool: Any, skill_registry: Any) -> int:
+    """Restore SkillRegistry from MariaDB ``skills`` table."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT slug, tier, name, description, "
+                "code_template, llm_instructions, "
+                "applicable_when, tags, auto_extracted, "
+                "extracted_from, use_count, "
+                "created_at, updated_at, last_used_at "
+                "FROM skills"
+            )
+            rows = await cur.fetchall()
+
+    restored = 0
+    for row in rows:
+        try:
+            skill_registry.upsert(
+                row[0],  # slug
+                name=row[2] or "",
+                description=row[3] or "",
+                code_template=row[4] or "",
+                llm_instructions=row[5] or "",
+                applicable_when=json.loads(row[6]) if row[6] else [],
+                tags=json.loads(row[7]) if row[7] else [],
+                auto_extracted=bool(row[8]),
+                extracted_from=json.loads(row[9]) if row[9] else [],
+                tier=row[1] or "auto",
+            )
+            restored += 1
+        except Exception as e:
+            log.warning("restore skill %s failed: %s", row[0], e)
+    return restored
+
+
+async def restore_conventions(pool: Any, convention_registry: Any) -> int:
+    """Restore ConventionRegistry from MariaDB ``conventions`` table."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT slug, tier, name, advice, rationale, "
+                "bad_example, good_example, "
+                "applicable_when, tags, extracted_from, "
+                "use_count, created_at, updated_at, last_used_at "
+                "FROM conventions"
+            )
+            rows = await cur.fetchall()
+
+    restored = 0
+    for row in rows:
+        try:
+            convention_registry.upsert(
+                row[0],  # slug
+                name=row[2] or "",
+                advice=row[3] or "",
+                rationale=row[4] or "",
+                bad_example=row[5] or "",
+                good_example=row[6] or "",
+                applicable_when=json.loads(row[7]) if row[7] else [],
+                tags=json.loads(row[8]) if row[8] else [],
+                extracted_from=json.loads(row[9]) if row[9] else [],
+                tier=row[1] or "auto",
+            )
+            restored += 1
+        except Exception as e:
+            log.warning("restore convention %s failed: %s", row[0], e)
+    return restored
+
+
+async def restore_engines(pool: Any, engine_registry: Any) -> int:
+    """Restore EngineRegistry from MariaDB ``engines`` table."""
+    from server.hub.engines import EngineRecord
+
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT slug, name, kind, protocol, endpoint, "
+                "model, api_key_env, api_key, headers, "
+                "timeout_s, promoted, supports_tools, "
+                "use_for_codegen, daily_token_budget, "
+                "daily_request_budget, notes, builtin, "
+                "created_at, updated_at "
+                "FROM engines"
+            )
+            rows = await cur.fetchall()
+
+    restored = 0
+    for row in rows:
+        try:
+            rec = EngineRecord(
+                slug=row[0],
+                name=row[1] or "",
+                kind=row[2] or "chat",
+                protocol=row[3] or "openai",
+                endpoint=row[4] or "",
+                model=row[5] or "",
+                api_key_env=row[6] or "",
+                api_key=row[7] or "",
+                headers=json.loads(row[8]) if row[8] else {},
+                timeout_s=row[9] or 120,
+                promoted=bool(row[10]),
+                supports_tools=bool(row[11]),
+                use_for_codegen=bool(row[12]),
+                daily_token_budget=row[13] or 0,
+                daily_request_budget=row[14] or 0,
+                notes=row[15] or "",
+                builtin=bool(row[16]),
+            )
+            engine_registry.upsert(rec)
+            restored += 1
+        except Exception as e:
+            log.warning("restore engine %s failed: %s", row[0], e)
+    return restored
+
+
+async def restore_presets(pool: Any, preset_registry: Any) -> int:
+    """Restore PresetRegistry from MariaDB ``presets`` table."""
+    from server.hub.presets import PresetRecord
+
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT name, category, description, ui_mode, "
+                "ai_engine, url, goal, simple_rows, "
+                "code_script, max_attempts, "
+                "attempt_timeout_s, attempt_timeout_simple_s, "
+                "host_dedup, options, "
+                "created_at, updated_at, last_used_at "
+                "FROM presets"
+            )
+            rows = await cur.fetchall()
+
+    restored = 0
+    for row in rows:
+        try:
+            rec = PresetRecord(
+                name=row[0],
+                category=row[1] or "",
+                description=row[2] or "",
+                ui_mode=row[3] or "fetch",
+                ai_engine=row[4] or "codegen",
+                url=row[5] or "",
+                goal=row[6] or "",
+                simple_rows=json.loads(row[7]) if row[7] else [],
+                code_script=row[8] or "",
+                max_attempts=row[9] or 3,
+                attempt_timeout_s=row[10] or 86400,
+                attempt_timeout_simple_s=row[11] or 600,
+                host_dedup=bool(row[12]),
+                options=json.loads(row[13]) if row[13] else {},
+            )
+            preset_registry.upsert(rec)
+            restored += 1
+        except Exception as e:
+            log.warning("restore preset %s failed: %s", row[0], e)
+    return restored
+
+
+async def restore_all_registries(
+    pool: Any,
+    *,
+    host_registry: Any = None,
+    visited_registry: Any = None,
+    skill_registry: Any = None,
+    convention_registry: Any = None,
+    engine_registry: Any = None,
+    preset_registry: Any = None,
+) -> dict[str, int]:
+    """Restore all registries from MariaDB if they are locally empty.
+
+    Only restores a registry when its ``list_all()`` (or equivalent)
+    returns 0 records but MariaDB has data. Returns a dict of
+    ``{category: count_restored}``.
+    """
+    results: dict[str, int] = {}
+
+    # Hosts
+    if host_registry is not None:
+        try:
+            if len(host_registry.list_all()) == 0:
+                n = await restore_hosts(pool, host_registry)
+                if n:
+                    results["hosts"] = n
+                    log.info("restore: %d hosts from MariaDB", n)
+        except Exception as e:
+            log.warning("restore hosts failed: %s", e)
+
+    # Visited URLs (check only if host_registry has entries now)
+    if visited_registry is not None and host_registry is not None:
+        try:
+            # Quick check: does any host have visited URLs locally?
+            has_local = False
+            for rec in host_registry.list_all()[:5]:
+                host = getattr(rec, "host", None)
+                if host and visited_registry.all_urls(host):
+                    has_local = True
+                    break
+            if not has_local:
+                n = await restore_visited_urls(pool, visited_registry)
+                if n:
+                    results["visited_urls"] = n
+                    log.info("restore: %d visited URLs from MariaDB", n)
+        except Exception as e:
+            log.warning("restore visited_urls failed: %s", e)
+
+    # Skills
+    if skill_registry is not None:
+        try:
+            if len(skill_registry.list_all()) == 0:
+                n = await restore_skills(pool, skill_registry)
+                if n:
+                    results["skills"] = n
+                    log.info("restore: %d skills from MariaDB", n)
+        except Exception as e:
+            log.warning("restore skills failed: %s", e)
+
+    # Conventions
+    if convention_registry is not None:
+        try:
+            if len(convention_registry.list_all()) == 0:
+                n = await restore_conventions(pool, convention_registry)
+                if n:
+                    results["conventions"] = n
+                    log.info("restore: %d conventions from MariaDB", n)
+        except Exception as e:
+            log.warning("restore conventions failed: %s", e)
+
+    # Engines
+    if engine_registry is not None:
+        try:
+            if len(engine_registry.list_all()) == 0:
+                n = await restore_engines(pool, engine_registry)
+                if n:
+                    results["engines"] = n
+                    log.info("restore: %d engines from MariaDB", n)
+        except Exception as e:
+            log.warning("restore engines failed: %s", e)
+
+    # Presets
+    if preset_registry is not None:
+        try:
+            if len(preset_registry.list_all()) == 0:
+                n = await restore_presets(pool, preset_registry)
+                if n:
+                    results["presets"] = n
+                    log.info("restore: %d presets from MariaDB", n)
+        except Exception as e:
+            log.warning("restore presets failed: %s", e)
+
+    return results

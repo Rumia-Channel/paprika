@@ -267,8 +267,33 @@ class RedisJobStore:
 # ----------------------------------------------------------------------------
 
 
-async def make_store(redis_url: str | None) -> tuple[JobStore, str]:
-    """Returns (store, kind). kind is 'redis' or 'in-memory'."""
+async def make_store(
+    redis_url: str | None,
+    *,
+    mariadb_pool: object | None = None,
+) -> tuple[JobStore, str]:
+    """Returns (store, kind). kind is 'mariadb', 'redis', or 'in-memory'.
+
+    When *mariadb_pool* is provided (an ``aiomysql.Pool``), the hub
+    persists jobs/results/logs in MariaDB.  Live log pub/sub still
+    goes through Redis if *redis_url* is set (MariaDB has no native
+    pub/sub).
+    """
+    # 1. MariaDB (preferred when pool is available)
+    if mariadb_pool is not None:
+        try:
+            from server.hub.mariadb_store import MariaDBJobStore
+
+            store = MariaDBJobStore(mariadb_pool, redis_url=redis_url)
+            await store.initialize()
+            return store, "mariadb"
+        except Exception as e:
+            log.warning(
+                "MariaDB store init failed (%s); trying Redis / in-memory.",
+                e,
+            )
+
+    # 2. Redis
     if redis_url:
         store = RedisJobStore(redis_url)
         try:
@@ -284,6 +309,8 @@ async def make_store(redis_url: str | None) -> tuple[JobStore, str]:
                 await store.close()
             except Exception:
                 pass
+
+    # 3. In-memory fallback
     mem = InMemoryJobStore()
     await mem.initialize()
     return mem, "in-memory"
