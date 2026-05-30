@@ -3712,6 +3712,151 @@ class WorkerAgent:
                         f"ERR: ext({cmd}): {out.get('error')}"
                     )
 
+    # ----- tab management (session-level) ----------------------------------
+    # session_level=True -> the router takes state.lock (not a page lock).
+    # These operate on ``ctx.state.pages`` directly, not ``ctx.tab``.
+
+    @_session_action("pages", read_only=True, session_level=True)
+    async def _act_pages(self, ctx: "_ActionCtx") -> None:
+        # List all tabs: {page_id, url, title, is_default}. URL / title
+        # are best-effort (a just-navigated tab may not have them yet).
+        items: list[dict] = []
+        for pid, t in list(ctx.state.pages.items()):
+            url = ""
+            title = ""
+            try:
+                url = await t.evaluate("document.location.href") or ""
+            except Exception:
+                pass
+            try:
+                title = await t.evaluate("document.title") or ""
+            except Exception:
+                pass
+            items.append(
+                {
+                    "page_id": pid,
+                    "url": url,
+                    "title": title,
+                    "is_default": pid == ctx.state.default_page_id,
+                }
+            )
+        ctx.reply.result = {
+            "count": len(items),
+            "default_page_id": ctx.state.default_page_id,
+            "pages": items,
+        }
+
+    @_session_action("new_page", read_only=False, session_level=True)
+    async def _act_new_page(self, ctx: "_ActionCtx") -> None:
+        # Open a new tab. ``url`` (default about:blank); ``switch`` flips
+        # default_page_id to it so un-keyed primitives target the new tab.
+        import uuid as _uuid
+
+        new_url = (ctx.action.get("url") or "about:blank").strip()
+        switch = bool(ctx.action.get("switch", False))
+        browser_handle = ctx.state.browser
+        if browser_handle is None:
+            ctx.reply.status = "ERR: session has no browser handle"
+        else:
+            try:
+                new_tab = await browser_handle.get(
+                    new_url,
+                    new_tab=True,
+                )
+            except Exception as e:
+                ctx.reply.status = f"ERR: new_page failed: {type(e).__name__}: {e}"
+            else:
+                # ``browser.get(url, new_tab=True)`` returns as soon as
+                # the target exists, NOT once Page.navigate ran. Poll
+                # briefly so a follow-up state()/reload() doesn't sample
+                # the tab while still on about:blank.
+                if new_url and not new_url.startswith("about:"):
+                    for _ in range(30):  # ~3s ceiling
+                        try:
+                            cur = await new_tab.evaluate(
+                                "document.location.href",
+                            )
+                        except Exception:
+                            cur = None
+                        if (
+                            isinstance(cur, str)
+                            and cur
+                            and not cur.startswith("about:")
+                        ):
+                            break
+                        await asyncio.sleep(0.1)
+                pid = "p_" + _uuid.uuid4().hex[:8]
+                ctx.state.pages[pid] = new_tab
+                ctx.state.page_locks[pid] = asyncio.Lock()
+                if switch or ctx.state.default_page_id is None:
+                    ctx.state.default_page_id = pid
+                ctx.slog(f"new_page: opened {pid} -> {new_url} (switch={switch})")
+                ctx.reply.result = {
+                    "page_id": pid,
+                    "url": new_url,
+                    "is_default": pid == ctx.state.default_page_id,
+                }
+
+    @_session_action("close_page", read_only=False, session_level=True)
+    async def _act_close_page(self, ctx: "_ActionCtx") -> None:
+        # Close one tab (``page_id`` required). Closing the default page
+        # is allowed iff another remains; default auto-moves to the
+        # most-recently-added page.
+        pid = ctx.action.get("page_id") or ""
+        if not pid:
+            ctx.reply.status = "ERR: close_page requires page_id"
+        elif pid not in ctx.state.pages:
+            ctx.reply.status = (
+                f"ERR: unknown page_id {pid!r} (known: {sorted(ctx.state.pages.keys())})"
+            )
+        elif len(ctx.state.pages) <= 1:
+            ctx.reply.status = (
+                f"ERR: cannot close the last remaining "
+                f"page ({pid}); end the session instead"
+            )
+        else:
+            t = ctx.state.pages.pop(pid)
+            ctx.state.page_locks.pop(pid, None)
+            if pid == ctx.state.default_page_id:
+                # Fall back to most-recently-added page.
+                ctx.state.default_page_id = next(reversed(list(ctx.state.pages.keys())))
+                ctx.slog(f"close_page: default moved to {ctx.state.default_page_id}")
+            try:
+                await t.close()
+            except Exception as e:
+                ctx.slog(
+                    f"close_page: tab.close raised "
+                    f"{type(e).__name__}: {e} (already gone?)"
+                )
+            ctx.slog(f"close_page: closed {pid}")
+            ctx.reply.result = {
+                "closed_page_id": pid,
+                "default_page_id": ctx.state.default_page_id,
+            }
+
+    @_session_action("switch_page", read_only=True, session_level=True)
+    async def _act_switch_page(self, ctx: "_ActionCtx") -> None:
+        # Change the default tab (where un-keyed primitives land).
+        pid = ctx.action.get("page_id") or ""
+        if not pid:
+            ctx.reply.status = "ERR: switch_page requires page_id"
+        elif pid not in ctx.state.pages:
+            ctx.reply.status = (
+                f"ERR: unknown page_id {pid!r} (known: {sorted(ctx.state.pages.keys())})"
+            )
+        else:
+            ctx.state.default_page_id = pid
+            # Best-effort: bring it to the visual front in noVNC.
+            try:
+                t = ctx.state.pages[pid]
+                if hasattr(t, "activate"):
+                    await t.activate()
+                elif hasattr(t, "bring_to_front"):
+                    await t.bring_to_front()
+            except Exception:
+                pass
+            ctx.reply.result = {"default_page_id": pid}
+
     async def _handle_session_action(self, msg: HubSessionAction) -> None:
         """Dispatch one action against a bound session via browser_ops."""
         sid = msg.session_id
@@ -5345,160 +5490,6 @@ class WorkerAgent:
                         "added": added,
                         "added_count": len(added),
                     }
-                # ---- tab management (session-level) ---------------------
-                elif kind == "pages":
-                    # List all tabs in this session.
-                    # Each entry: {page_id, url, title, is_default}.
-                    # URL / title are best-effort -- a tab that just
-                    # started navigating may not have either ready.
-                    items: list[dict] = []
-                    for pid, t in list(state.pages.items()):
-                        url = ""
-                        title = ""
-                        try:
-                            url = await t.evaluate("document.location.href") or ""
-                        except Exception:
-                            pass
-                        try:
-                            title = await t.evaluate("document.title") or ""
-                        except Exception:
-                            pass
-                        items.append(
-                            {
-                                "page_id": pid,
-                                "url": url,
-                                "title": title,
-                                "is_default": pid == state.default_page_id,
-                            }
-                        )
-                    reply.result = {
-                        "count": len(items),
-                        "default_page_id": state.default_page_id,
-                        "pages": items,
-                    }
-                elif kind == "new_page":
-                    # Open a new tab in this session. Body params:
-                    #   url:    initial URL (default about:blank)
-                    #   switch: if True, also flip default_page_id to
-                    #           the new tab so subsequent un-keyed
-                    #           primitives target it
-                    import uuid as _uuid
-
-                    new_url = (action.get("url") or "about:blank").strip()
-                    switch = bool(action.get("switch", False))
-                    browser_handle = state.browser
-                    if browser_handle is None:
-                        reply.status = "ERR: session has no browser handle"
-                    else:
-                        try:
-                            new_tab = await browser_handle.get(
-                                new_url,
-                                new_tab=True,
-                            )
-                        except Exception as e:
-                            reply.status = f"ERR: new_page failed: {type(e).__name__}: {e}"
-                        else:
-                            # Wait briefly for the navigation to
-                            # commit. ``browser.get(url, new_tab=True)``
-                            # returns as soon as the new target exists,
-                            # NOT once Page.navigate has run. Without
-                            # this poll, a subsequent state() / reload()
-                            # call samples the tab while it's still on
-                            # about:blank -- which is exactly what
-                            # broke the YouTube + Google sample (job
-                            # a26e4651d538): the new Google tab's
-                            # reload() round-tripped to about:blank,
-                            # leaving the foreground page unusable
-                            # for yt-dlp.
-                            if new_url and not new_url.startswith("about:"):
-                                for _ in range(30):  # ~3s ceiling
-                                    try:
-                                        cur = await new_tab.evaluate(
-                                            "document.location.href",
-                                        )
-                                    except Exception:
-                                        cur = None
-                                    if (
-                                        isinstance(cur, str)
-                                        and cur
-                                        and not cur.startswith("about:")
-                                    ):
-                                        break
-                                    await asyncio.sleep(0.1)
-                            pid = "p_" + _uuid.uuid4().hex[:8]
-                            state.pages[pid] = new_tab
-                            state.page_locks[pid] = asyncio.Lock()
-                            if switch or state.default_page_id is None:
-                                state.default_page_id = pid
-                            _slog(f"new_page: opened {pid} -> {new_url} (switch={switch})")
-                            reply.result = {
-                                "page_id": pid,
-                                "url": new_url,
-                                "is_default": pid == state.default_page_id,
-                            }
-                elif kind == "close_page":
-                    # Close one tab. Body params:
-                    #   page_id: which tab to close (required)
-                    # Closing the default page is allowed but only if
-                    # there's at least one other page to fall back to;
-                    # the default_page_id is auto-moved to a remaining
-                    # page (the most-recently-added one).
-                    pid = action.get("page_id") or ""
-                    if not pid:
-                        reply.status = "ERR: close_page requires page_id"
-                    elif pid not in state.pages:
-                        reply.status = (
-                            f"ERR: unknown page_id {pid!r} (known: {sorted(state.pages.keys())})"
-                        )
-                    elif len(state.pages) <= 1:
-                        reply.status = (
-                            f"ERR: cannot close the last remaining "
-                            f"page ({pid}); end the session instead"
-                        )
-                    else:
-                        t = state.pages.pop(pid)
-                        state.page_locks.pop(pid, None)
-                        if pid == state.default_page_id:
-                            # Fall back to most-recently-added page.
-                            state.default_page_id = next(reversed(list(state.pages.keys())))
-                            _slog(f"close_page: default moved to {state.default_page_id}")
-                        try:
-                            await t.close()
-                        except Exception as e:
-                            _slog(
-                                f"close_page: tab.close raised "
-                                f"{type(e).__name__}: {e} (already gone?)"
-                            )
-                        _slog(f"close_page: closed {pid}")
-                        reply.result = {
-                            "closed_page_id": pid,
-                            "default_page_id": state.default_page_id,
-                        }
-                elif kind == "switch_page":
-                    # Change the default tab (where un-keyed primitives
-                    # land). Body: {page_id}.
-                    pid = action.get("page_id") or ""
-                    if not pid:
-                        reply.status = "ERR: switch_page requires page_id"
-                    elif pid not in state.pages:
-                        reply.status = (
-                            f"ERR: unknown page_id {pid!r} (known: {sorted(state.pages.keys())})"
-                        )
-                    else:
-                        state.default_page_id = pid
-                        # Best-effort: bring it to the visual front in
-                        # noVNC so the operator can see what the script
-                        # is now operating on.
-                        try:
-                            t = state.pages[pid]
-                            if hasattr(t, "activate"):
-                                await t.activate()
-                            elif hasattr(t, "bring_to_front"):
-                                await t.bring_to_front()
-                        except Exception:
-                            pass
-                        reply.result = {"default_page_id": pid}
-
                 elif kind == "solve_cloudflare":
                     # Get past a Cloudflare "Just a moment..." challenge.
                     #
