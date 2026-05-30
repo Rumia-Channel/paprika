@@ -49,6 +49,35 @@ def _hub_version() -> str:
     return _v()
 
 
+def _static_asset_version() -> str:
+    """Cache-buster hash that covers BOTH .py source AND static assets.
+
+    ``_hub_version()`` only hashes .py files (it must match the
+    worker-side version for fleet handshake). For the ``?v=`` tag on
+    admin.js / admin.css we need a hash that also changes when those
+    static files change, otherwise the browser serves stale JS/CSS
+    after a JS-only edit + container restart.
+
+    Falls back to ``_hub_version()`` if the static dir is missing.
+    """
+    import hashlib
+    from pathlib import Path
+
+    base = _hub_version()
+    h = hashlib.sha256(base.encode())
+    static_dir = Path("/app/server/hub/static")
+    if static_dir.is_dir():
+        for p in sorted(static_dir.rglob("*")):
+            if p.is_file() and p.suffix in (".js", ".css"):
+                try:
+                    h.update(p.name.encode())
+                    h.update(b"\0")
+                    h.update(p.read_bytes())
+                except Exception:
+                    continue
+    return h.hexdigest()[:12]
+
+
 @router.get("/icon.svg")
 async def paprika_icon():
     """Serve the paprika logo SVG. Referenced by ``<link rel="icon">``
@@ -3036,7 +3065,7 @@ async def admin_ui() -> HTMLResponse:
     # without us having to fight ETags. The shell HTML itself is small
     # enough that no-cache on it is cheap and avoids stale-version-tag
     # foot-guns.
-    html = _ADMIN_HTML.replace("@@PAPRIKA_VERSION@@", _hub_version())
+    html = _ADMIN_HTML.replace("@@PAPRIKA_VERSION@@", _static_asset_version())
     return HTMLResponse(
         content=html,
         headers={
