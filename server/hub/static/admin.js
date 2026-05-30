@@ -5207,7 +5207,14 @@ function ljpMountVncFrame(key, s) {
   const empty = grid.querySelector('.empty');
   if (empty) empty.remove();
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'border:1px solid #ccc; border-radius:6px; overflow:hidden; background:#000;';
+  // No border / border-radius on the wrapper -- the only horizontal rule
+  // we want is `.ljp-vnc-head { border-bottom }` as the head/iframe seam.
+  // (Previously this wrapper had `border:1px solid #ccc; border-radius:6px`
+  // which produced rounded corners + a left/top/right outline around the
+  // head bar; operator feedback was that the side+top borders and the
+  // rounding looked out of place.) `overflow:hidden` is kept so any iframe
+  // scrollbar gutter doesn't poke past the wrapper edges.
+  wrap.style.cssText = 'overflow:hidden; background:#000;';
   const head = document.createElement('div');
   // Light Chrome-chrome bar: matches the LJP top-header pill aesthetic
   // (cream/beige .pill + --la-* accent) instead of the previous dark
