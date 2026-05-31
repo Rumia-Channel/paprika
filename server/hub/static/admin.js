@@ -4730,6 +4730,22 @@ async function ljpRefreshStatus() {
       try { ljpRenderRunConfig(info); LJP._runConfigRendered = true; }
       catch (e) { /* leave the placeholder; don't break the rest of the poll */ }
     }
+    // Also populate the LIVE Submit form on the "ジョブの実行" sub-tab
+    // with this job's options, so the operator can review (or tweak +
+    // re-submit) the exact settings that produced the job they're
+    // viewing. Only fires when the URL field is empty (= fresh load
+    // via #live/<id> hash), to avoid clobbering a draft the operator
+    // was composing.
+    if (!LJP._submitFormPopulated) {
+      try {
+        const urlEl = document.getElementById('urlInput');
+        const draftLooksEmpty = !urlEl || !(urlEl.value || '').trim();
+        if (draftLooksEmpty) {
+          ljpPopulateSubmitForm(info);
+        }
+        LJP._submitFormPopulated = true;
+      } catch (e) { /* don't break the rest of the poll */ }
+    }
     // Asset counter -- visible as soon as the first asset lands.
     const saved = (info.progress && info.progress.assets_saved) || 0;
     const failed = (info.progress && info.progress.assets_failed) || 0;
@@ -5594,6 +5610,113 @@ function ljpSetTab(name) {
   if (typeof ljpLinksOnTabChange === 'function') ljpLinksOnTabChange(name);
   // Network tab -- only poll while visible.
   if (typeof ljpNetOnTabChange === 'function') ljpNetOnTabChange(name);
+}
+
+// --- Submit form auto-populate from JobInfo ------------------------------
+// When ljpAttach fires (operator opened #live/<id> or clicked into a
+// job from the Jobs list), the "ジョブの実行" sub-tab still shows a
+// blank Submit form by default -- that surprised users who expected
+// to see "what was this job submitted with?" on the form itself.
+// This function pushes JobInfo.options into the same form fields that
+// ``presetApplyToForm`` writes to, so the form mirrors the job's
+// state and the operator can review (or tweak + resubmit) without
+// re-typing every value. Mirrors presetApplyToForm structure for
+// consistency.
+function ljpPopulateSubmitForm(info) {
+  const opts = info.options || {};
+  const mode = opts.mode || 'fetch';
+
+  // URL
+  const urlIn = document.getElementById('urlInput');
+  if (urlIn) urlIn.value = info.url || '';
+
+  // Top-level mode radio:
+  //   info.options.mode -> ui_mode for the form
+  //   - fetch                  -> "fetch"
+  //   - codegen-loop           -> "ai"   (aiEngine = codegen)
+  //   - vision-agent           -> "ai"   (aiEngine = simple)
+  //   - rerun                  -> "code" (script lives in info.options.code)
+  let uiMode = 'fetch';
+  if (mode === 'codegen-loop' || mode === 'vision-agent') uiMode = 'ai';
+  else if (mode === 'rerun') uiMode = 'code';
+  const modeRadio = document.querySelector(`input[name="mode"][value="${uiMode}"]`);
+  if (modeRadio) modeRadio.checked = true;
+
+  if (mode === 'vision-agent') {
+    const er = document.querySelector('input[name="aiEngine"][value="simple"]');
+    if (er) {
+      er.checked = true;
+      try { localStorage.setItem('paprika.submit.aiEngine', 'simple'); } catch (_) {}
+    }
+  } else if (mode === 'codegen-loop') {
+    const er = document.querySelector('input[name="aiEngine"][value="codegen"]');
+    if (er) {
+      er.checked = true;
+      try { localStorage.setItem('paprika.submit.aiEngine', 'codegen'); } catch (_) {}
+    }
+  }
+
+  // Fetch sub-mode (normal / recipe / ai_investigate)
+  const fs = opts.fetch_strategy;
+  if (fs) {
+    const fsRadio = document.querySelector(`input[name="fetchSubMode"][value="${fs}"]`);
+    if (fsRadio) fsRadio.checked = true;
+  }
+
+  // AI: goal / max_attempts / attempt_timeout / engine
+  const g = document.getElementById('goalInput');
+  if (g && opts.goal !== undefined && opts.goal !== null) g.value = opts.goal;
+  const ma = document.getElementById('maxAttempts');
+  if (ma && opts.max_codegen_attempts) ma.value = opts.max_codegen_attempts;
+  const at = document.getElementById('attemptTimeout');
+  if (at && opts.attempt_timeout_s) at.value = opts.attempt_timeout_s;
+  const ce = document.getElementById('codegenEngineSelect');
+  if (ce && opts.codegen_engine !== undefined && opts.codegen_engine !== null) {
+    ce.value = opts.codegen_engine;
+  }
+
+  // Code: paste the script body into the editor (rerun mode)
+  const codeEl = document.getElementById('codeInput');
+  if (codeEl && opts.code) codeEl.value = opts.code;
+
+  // Fetch options (checkboxes / numbers / texts) -- same fields as
+  // presetApplyToForm, plus referer / attach_to_job.
+  const setChk = (id, v, dflt) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.checked = (v === undefined || v === null) ? dflt : !!v;
+  };
+  const setNum = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && v !== undefined && v !== null) el.value = v;
+  };
+  const setTxt = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && v !== undefined && v !== null) el.value = String(v);
+  };
+  setChk('fetchScroll',         opts.scroll,          true);
+  setChk('fetchDownloadVideo',  opts.download_video,  false);
+  setChk('fetchHeadless',       opts.headless,        false);
+  setChk('fetchCaptureAssets',  opts.capture_assets,  true);
+  setChk('fetchKeepSession',    opts.keep_session,    false);
+  setNum('fetchWaitSec',         opts.wait_seconds);
+  setNum('fetchIdleSec',         opts.idle_seconds);
+  setNum('fetchMaxWaitSec',      opts.max_wait_seconds);
+  setNum('fetchScrollMax',       opts.scroll_max);
+  setNum('fetchPostClickSec',    opts.post_click_seconds);
+  setNum('fetchMinAssetBytes',   opts.min_asset_size_bytes);
+  setTxt('fetchReferer',         opts.referer || '');
+  setTxt('fetchAttachToJob',     opts.attach_to_job || '');
+
+  // Refresh derived UI state (visible sections / sub-mode badge / guard
+  // for "download_video implies capture_assets" etc.).
+  if (typeof syncSubmitMode === 'function') syncSubmitMode();
+  if (typeof syncFetchSubMode === 'function') {
+    try { syncFetchSubMode(); } catch (_) {}
+  }
+  if (typeof syncFetchDlGuard === 'function') {
+    try { syncFetchDlGuard(); } catch (_) {}
+  }
 }
 
 // --- "実行" (Run config) tab --------------------------------------------
@@ -6699,6 +6822,10 @@ function ljpReset() {
   // ljpRefreshStatus, but reset the placeholder eagerly so a stale
   // previous-job snapshot doesn't flash for one tick.
   LJP._runConfigRendered = false;
+  // Allow a fresh attach to re-populate the Submit form (gated by the
+  // URL-empty check). DO NOT wipe the form values here -- if the
+  // operator just closed a job view they may want to tweak + resubmit.
+  LJP._submitFormPopulated = false;
   try {
     const _rc = document.getElementById('ljpRunConfig');
     if (_rc) _rc.innerHTML = '<div style="color:#888; padding:20px; text-align:center;">読み込み中…</div>';
