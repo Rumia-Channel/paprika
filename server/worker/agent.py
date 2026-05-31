@@ -802,13 +802,25 @@ def _make_video_downloader(
 
         def _ytdlp_log(line: str) -> None:
             # Runs in asyncio.to_thread (a plain OS thread), so we
-            # cannot call log() directly -- it uses ensure_future
-            # which requires the calling thread to own the event loop.
-            # call_soon_threadsafe is the correct cross-thread bridge.
+            # cannot call log()/_both() directly -- they use
+            # ensure_future which requires the calling thread to own
+            # the event loop.  call_soon_threadsafe is the correct
+            # cross-thread bridge.
             last_progress[target_url] = time.time()
             _logger.info(f"[{job_id_for_logs} yt-dlp] {line}")
+            # ffmpeg emits a "frame=... time=... bitrate=..." line many
+            # times per second; flooding the LiveLog WS with those would
+            # drown out everything else.  Keep that spam in the worker
+            # container log only, but surface the OPERATOR-meaningful
+            # lines -- parallel-segment progress, download %, completion,
+            # errors -- to the Live panel via _both.
+            _spam = (
+                line.startswith("frame=")
+                or ("time=" in line and "bitrate=" in line)
+            )
+            sink = log if _spam else _both
             try:
-                _loop.call_soon_threadsafe(log, f"  [yt-dlp] {line}")
+                _loop.call_soon_threadsafe(sink, f"  [yt-dlp] {line}")
             except RuntimeError:
                 pass  # loop already stopped (job was cancelled)
 
