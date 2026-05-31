@@ -5785,13 +5785,47 @@ class WorkerAgent:
             dl_timeout = int(
                 _os.environ.get("PAPRIKA_VIDEO_DOWNLOAD_TIMEOUT_S", "7200")
             )
+            _loop = asyncio.get_running_loop()
+            # Current download identity for the Live panel progress bar
+            # (set before each target below).  run_ytdlp processes the
+            # targets sequentially, so a single holder is unambiguous.
+            _cur = {"key": None, "label": None}
+
+            def _emit_progress(line: str) -> None:
+                # Schedule a WorkerJobLog send from this worker THREAD.
+                # The hub treats JOB_PROGRESS_MARKER lines as ephemeral
+                # (broadcast to live viewers, never persisted), so this
+                # drives the Live panel's progress bars without flooding
+                # log.txt.
+                try:
+                    _loop.call_soon_threadsafe(
+                        lambda: asyncio.ensure_future(
+                            self._send(WorkerJobLog(job_id=job_id, line=line))
+                        )
+                    )
+                except RuntimeError:
+                    pass
 
             def _dl_log(line: str) -> None:
-                # Worker stderr only -- thread-safe (logging), and the
-                # phase badge already says "downloading". Streaming every
-                # progress line to the hub from this worker thread would
-                # need call_soon_threadsafe; not worth it.
+                # Worker stderr for the raw line; ALSO parse live progress
+                # and drive the Live panel's per-download progress bar via
+                # an ephemeral marker.  fetch / recipe mode has no
+                # _make_video_downloader, so this deferred path is where
+                # its progress bars come from.
                 _logger.info("[%s] [downloading] %s", job_id, line)
+                try:
+                    _prog = _parse_dl_progress(line.lstrip())
+                except Exception:
+                    _prog = None
+                if _prog is not None:
+                    if _prog.get("label"):
+                        _cur["label"] = _prog["label"]
+                    _payload = {
+                        "key": _cur["key"] or "video",
+                        "label": _cur["label"] or _cur["key"] or "video",
+                    }
+                    _payload.update(_prog)
+                    _emit_progress(JOB_PROGRESS_MARKER + json.dumps(_payload))
 
             added: list = []
             try:
@@ -5805,10 +5839,24 @@ class WorkerAgent:
                     ref = t.get("referer")
                     if not u:
                         continue
+                    _cur["key"] = u
+                    _cur["label"] = (
+                        u.split("?", 1)[0].rsplit("/", 1)[-1] or u
+                    )[:64]
                     ok, msg = await asyncio.to_thread(
                         run_ytdlp, u, tmp,
                         referer=ref, timeout=dl_timeout, log=_dl_log,
                     )
+                    # Resolve this target's progress bar (success or fail)
+                    # so it doesn't stick at the last %.
+                    try:
+                        await self._send(WorkerJobLog(
+                            job_id=job_id,
+                            line=JOB_PROGRESS_MARKER + json.dumps(
+                                {"key": u, "state": "done"}),
+                        ))
+                    except Exception:
+                        pass
                     if not ok:
                         await self._send(WorkerJobLog(
                             job_id=job_id,
