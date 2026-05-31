@@ -285,9 +285,35 @@ def download(
     )
     _is_hls = bool(re.search(r"\.m3u8($|\?)", url, re.I))
     if _is_hls and _looks_like_ext_blocked and not live_flags:
+        # First try the PARALLEL downloader: fetch all segments + key
+        # concurrently to local disk (ffmpeg-direct's single connection
+        # is rate-limited by the CDN to ~1x realtime; 16-way parallel
+        # measured 21x on streamsuperpro), then let ffmpeg decrypt +
+        # mux from local files.  This beats the CDN's per-connection
+        # rate cap AND finishes before short-lived segment tokens
+        # expire.  Falls back to ffmpeg-direct if anything goes wrong.
         _log(
             "  ↻ yt-dlp/ffmpeg rejected disguised segment extensions; "
-            "retrying with ffmpeg-direct (-allowed_extensions ALL)"
+            "trying parallel segment download + local decrypt"
+        )
+        _pd_timeout = max(60, int(deadline - time.monotonic()))
+        pd_result = _parallel_hls_to_mp4(
+            url=url,
+            out_dir=out_dir,
+            referer=referer,
+            user_agent=user_agent,
+            timeout=_pd_timeout,
+            log=_log,
+        )
+        if pd_result["ok"]:
+            return {
+                "ok": True,
+                "message": pd_result["message"],
+                "log_lines": lines,
+            }
+        _log(
+            f"  parallel downloader failed ({pd_result['message']}); "
+            f"falling back to ffmpeg-direct"
         )
         _ff_timeout = max(30, int(deadline - time.monotonic()))
         ff_result = _ffmpeg_direct_hls(
@@ -309,6 +335,222 @@ def download(
     err_tail = lines[-3:]
     msg = "\n".join(err_tail) if err_tail else f"exit={returncode}"
     return {"ok": False, "message": msg, "log_lines": lines}
+
+
+def _parallel_hls_to_mp4(
+    *,
+    url: str,
+    out_dir: Path,
+    referer: str | None,
+    user_agent: str | None,
+    timeout: int,
+    log: LogFn,
+    max_workers: int = 16,
+) -> dict:
+    """Download every HLS segment (and the AES key) CONCURRENTLY to a
+    local temp dir, rewrite the manifest to point at the local files,
+    then let ffmpeg decrypt + mux from disk.
+
+    Why: CDNs like streamsuperpro rate-limit each connection to ~1x
+    realtime, so ffmpeg's single-connection HLS read crawls (a 79-min
+    video takes ~79 min and often outlives the segment token).  A
+    16-way parallel fetch saturates the link instead of the per-stream
+    cap -- measured 21x on streamsuperpro -- so the whole stream lands
+    in a couple minutes, well inside the token TTL.  ffmpeg then muxes
+    from local files in seconds (no network), reusing its built-in
+    AES-128 + arbitrary-extension handling so we need no crypto lib.
+
+    Returns ``{ok, message}``.
+    """
+    import urllib.request as _ur
+    import concurrent.futures as _cf
+    import tempfile
+    from urllib.parse import urljoin, urlparse, unquote
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return {"ok": False, "message": "ffmpeg not found on PATH"}
+
+    hdrs: dict[str, str] = {
+        "User-Agent": user_agent or _FALLBACK_USER_AGENT,
+    }
+    if referer:
+        hdrs["Referer"] = referer
+
+    def _fetch(u: str, timeout_s: float = 20.0) -> bytes:
+        req = _ur.Request(u, headers=hdrs)
+        with _ur.urlopen(req, timeout=timeout_s) as r:
+            return r.read()
+
+    # 1. Fetch + parse the manifest.
+    try:
+        manifest = _fetch(url, 15.0).decode("utf-8", "replace")
+    except Exception as e:
+        return {"ok": False, "message": f"manifest fetch failed: {e}"}
+
+    if "#EXT-X-STREAM-INF" in manifest:
+        # Master playlist -- pick the highest-bandwidth variant and
+        # recurse once.  (Most disguised-HLS players hand us a media
+        # playlist directly, but handle the master case too.)
+        best_url = None
+        best_bw = -1
+        lines_m = manifest.splitlines()
+        for i, ln in enumerate(lines_m):
+            if ln.startswith("#EXT-X-STREAM-INF"):
+                mbw = re.search(r"BANDWIDTH=(\d+)", ln)
+                bw = int(mbw.group(1)) if mbw else 0
+                # next non-comment line is the variant URI
+                for j in range(i + 1, len(lines_m)):
+                    if lines_m[j].strip() and not lines_m[j].startswith("#"):
+                        if bw > best_bw:
+                            best_bw = bw
+                            best_url = urljoin(url, lines_m[j].strip())
+                        break
+        if not best_url:
+            return {"ok": False, "message": "master playlist had no variant"}
+        log(f"  [parallel-hls] master playlist -> variant @ {best_bw} bps")
+        return _parallel_hls_to_mp4(
+            url=best_url, out_dir=out_dir, referer=referer,
+            user_agent=user_agent, timeout=timeout, log=log,
+            max_workers=max_workers,
+        )
+
+    # Segment URIs (every non-comment line), resolved against the
+    # manifest URL so post-redirect subdomains are correct.
+    seg_uris = [
+        ln.strip() for ln in manifest.splitlines()
+        if ln.strip() and not ln.startswith("#")
+    ]
+    if not seg_uris:
+        return {"ok": False, "message": "no segments in manifest"}
+    seg_urls = [urljoin(url, s) for s in seg_uris]
+
+    # AES key (if any).  We download it once and rewrite the KEY line
+    # to a local file so ffmpeg reads the key from disk.
+    key_bytes: bytes | None = None
+    key_line_idx = -1
+    manifest_lines = manifest.splitlines()
+    for idx, ln in enumerate(manifest_lines):
+        if ln.startswith("#EXT-X-KEY") and "URI=" in ln:
+            m = re.search(r'URI="([^"]+)"', ln)
+            if m:
+                key_url = urljoin(url, m.group(1))
+                try:
+                    key_bytes = _fetch(key_url, 15.0)
+                    key_line_idx = idx
+                except Exception as e:
+                    return {"ok": False, "message": f"key fetch failed: {e}"}
+            break
+
+    # 2. Parallel-download all segments to a temp dir.
+    work = Path(tempfile.mkdtemp(prefix="paprika-phls-", dir=str(out_dir)))
+    deadline = time.monotonic() + timeout
+    n = len(seg_urls)
+    log(f"  [parallel-hls] {n} segments, {max_workers}-way parallel")
+
+    errors: list[str] = []
+
+    def _dl(i_u):
+        i, u = i_u
+        if time.monotonic() > deadline:
+            return (i, False, "deadline")
+        try:
+            data = _fetch(u, 30.0)
+            (work / f"seg_{i:05d}.ts").write_bytes(data)
+            return (i, True, None)
+        except Exception as e:
+            return (i, False, str(e)[:80])
+
+    done = 0
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for (i, ok_, err) in ex.map(_dl, list(enumerate(seg_urls))):
+                done += 1
+                if not ok_:
+                    errors.append(f"seg{i}:{err}")
+                if done % 200 == 0:
+                    log(f"  [parallel-hls] {done}/{n} segments")
+    except Exception as e:
+        return {"ok": False, "message": f"parallel fetch crashed: {e}"}
+
+    ok_count = n - len(errors)
+    if ok_count == 0:
+        return {"ok": False, "message": f"all {n} segments failed; e.g. {errors[:1]}"}
+    if errors:
+        log(f"  [parallel-hls] WARNING {len(errors)}/{n} segments failed "
+            f"(continuing with {ok_count})")
+
+    # 3. Write the local key + a rewritten manifest.
+    if key_bytes is not None and key_line_idx >= 0:
+        (work / "key.bin").write_bytes(key_bytes)
+        manifest_lines[key_line_idx] = re.sub(
+            r'URI="[^"]+"', 'URI="key.bin"', manifest_lines[key_line_idx]
+        )
+
+    out_lines: list[str] = []
+    seg_i = 0
+    for ln in manifest_lines:
+        if ln.strip() and not ln.startswith("#"):
+            # Only reference segments that actually downloaded.
+            local = work / f"seg_{seg_i:05d}.ts"
+            if local.exists():
+                out_lines.append(f"seg_{seg_i:05d}.ts")
+            seg_i += 1
+        else:
+            out_lines.append(ln)
+    local_manifest = work / "index.m3u8"
+    local_manifest.write_text("\n".join(out_lines), encoding="utf-8")
+
+    # 4. ffmpeg mux from local files (fast: no network).
+    from urllib.parse import urlparse, unquote
+    stem = "video"
+    try:
+        base = Path(unquote(urlparse(url).path)).stem or "video"
+        stem = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:80] or "video"
+    except Exception:
+        pass
+    out_path = out_dir / f"{stem} [parallel].mp4"
+
+    cmd = [
+        ffmpeg, "-y",
+        "-allowed_extensions", "ALL",
+        "-extension_picky", "0",
+        "-i", str(local_manifest),
+        "-c", "copy",
+        "-bsf:a", "aac_adtstoasc",
+        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+        str(out_path),
+    ]
+    log(f"  [parallel-hls] muxing {ok_count} local segments -> {out_path.name}")
+    try:
+        proc = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=max(30, int(deadline - time.monotonic())) + 120,
+        )
+        mux_ok = proc.returncode == 0
+        if not mux_ok:
+            tail = "\n".join(proc.stdout.splitlines()[-3:]) if proc.stdout else ""
+            log(f"  [parallel-hls] ffmpeg mux rc={proc.returncode}: {tail[:200]}")
+    except Exception as e:
+        return {"ok": False, "message": f"local mux failed: {e}"}
+    finally:
+        # Clean up the segment temp dir (keep only the final mp4).
+        try:
+            import shutil as _sh
+            _sh.rmtree(work, ignore_errors=True)
+        except Exception:
+            pass
+
+    if out_path.exists() and out_path.stat().st_size > 0:
+        sz = out_path.stat().st_size
+        partial = " (partial: some segments failed)" if errors else ""
+        return {
+            "ok": True,
+            "message": f"parallel-hls OK: {out_path.name} "
+                       f"({sz // 1024 // 1024} MB, {ok_count}/{n} segs){partial}",
+        }
+    return {"ok": False, "message": "mux produced no usable output"}
 
 
 def _ffmpeg_direct_hls(

@@ -780,10 +780,15 @@ def _make_video_downloader(
         except Exception:
             pass
 
+        # 3600s (1h) default.  The parallel HLS downloader (adapter)
+        # is ~21x realtime so most videos finish in minutes, but a
+        # genuinely huge file behind a slow CDN needs headroom; the
+        # old 1800s cut a 79-min stream off at 30 min when the
+        # single-connection ffmpeg path crawled at 1x.  Env-overridable.
         ytdlp_timeout = int(
             os.environ.get(
                 "VISION_YTDLP_TIMEOUT_S",
-                "1800",
+                "3600",
             )
         )
         log(f"  🎬 detected HLS/DASH URL, running yt-dlp (timeout={ytdlp_timeout}s)")
@@ -931,7 +936,7 @@ def _make_video_downloader(
         Tunables read from env:
           PAPRIKA_VIDEO_DRAIN_IDLE_S (default 45) -- give up after
             this many seconds of zero progress.
-          PAPRIKA_VIDEO_DRAIN_HARD_S (default 1800 = 30 min) -- hard
+          PAPRIKA_VIDEO_DRAIN_HARD_S (default 3600 = 60 min) -- hard
             wall-clock cap regardless of progress. Safety net only;
             the outer _teardown_session_state wraps drain() in
             another asyncio.wait_for at the same value.
@@ -942,7 +947,7 @@ def _make_video_downloader(
             os.environ.get("PAPRIKA_VIDEO_DRAIN_IDLE_S", "45.0")
         )
         hard_cap = float(
-            os.environ.get("PAPRIKA_VIDEO_DRAIN_HARD_S", "1800.0")
+            os.environ.get("PAPRIKA_VIDEO_DRAIN_HARD_S", "3600.0")
         )
         started = time.time()
         # Tracks the moment last_progress first became empty while
@@ -3455,7 +3460,7 @@ class WorkerAgent:
         # own deadline, this releases the lane.
         if state.video_drainer is not None:
             hard_cap = float(
-                os.environ.get("PAPRIKA_VIDEO_DRAIN_HARD_S", "1800.0")
+                os.environ.get("PAPRIKA_VIDEO_DRAIN_HARD_S", "3600.0")
             )
             try:
                 await asyncio.wait_for(
