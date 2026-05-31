@@ -67,13 +67,19 @@ FAILED=()
 for ip in "${HOSTS[@]}"; do
   echo
   echo "==> [$ip] rsync + restart worker"
+  # data/tools holds the yt-dlp / flare / proxy-fetch plugin adapters
+  # that run_ytdlp loads at runtime.  They were previously NOT synced,
+  # so adapter.py fixes (e.g. the ffmpeg-direct AES-128 fallback)
+  # silently never reached the worker fleet -- only server/ + core/
+  # rode the deploy.  --delete is safe here: the plugin tree is
+  # canonical from git, workers hold no local-only files under it.
   if rsync -az --delete \
         --exclude '__pycache__' --exclude '*.pyc' \
-        ./server ./core ./VERSION \
+        ./server ./core ./VERSION ./data/tools \
         "${SSH_USER}@${ip}:${REMOTE_ROOT}/" \
      && ssh -o ConnectTimeout=10 "${SSH_USER}@${ip}" \
         "cd ${REMOTE_ROOT} && \
-         find server core -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null; \
+         find server core data/tools -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null; \
          docker compose restart worker" ; then
     echo "    [$ip] OK"
   else
