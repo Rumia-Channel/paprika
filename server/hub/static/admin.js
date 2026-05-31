@@ -149,6 +149,13 @@ const I18N_RESOURCES = {
     "submit.mode.current":    "選択中:",
     "submit.mode.fetch":      "Fetch",
     "submit.mode.fetch.desc": "単発ページ取得 (scroll + 動画自動)。LLM 不使用、最速。",
+    // 3-card layout: Fetch / Script (= Code + Macro) / AI (= codegen-loop + vision-agent).
+    "submit.mode.script":      "Script",
+    "submit.mode.script.desc": "スクリプトを手で組んで実行 (Code 直書き / Macro UI ビルダー)。LLM 不使用。",
+    "submit.mode.ai":          "AI",
+    "submit.mode.ai.desc":     "Goal を LLM に渡してスクリプト自動生成 → sandbox 実行 → 失敗時 retry。",
+    // Legacy keys (Script / AI に統合される前の名前) -- 旧テンプレや
+    // 旧 docs から参照される可能性があるので暫定的に残す。
     "submit.mode.llm":        "LLM (コード生成)",
     "submit.mode.llm.desc":   "Goal を LLM に渡してスクリプト自動生成 → sandbox 実行 → 失敗時 retry。",
     "submit.mode.macro":      "Macro",
@@ -496,6 +503,11 @@ const I18N_RESOURCES = {
     "submit.mode.current":    "Selected:",
     "submit.mode.fetch":      "Fetch",
     "submit.mode.fetch.desc": "Single-page fetch (scroll + auto video). No LLM, fastest.",
+    "submit.mode.script":      "Script",
+    "submit.mode.script.desc": "Write a script by hand (Code paste / Macro UI builder). No LLM.",
+    "submit.mode.ai":          "AI",
+    "submit.mode.ai.desc":     "Give a Goal to the LLM → auto-generate script → sandbox run → retry on failure.",
+    // Legacy keys, kept for old templates / docs that may still reference them.
     "submit.mode.llm":        "LLM (codegen)",
     "submit.mode.llm.desc":   "Give a Goal to the LLM → auto-generate script → sandbox run → retry on failure.",
     "submit.mode.macro":      "Macro",
