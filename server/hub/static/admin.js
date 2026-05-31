@@ -4407,6 +4407,10 @@ asyncio.run(main())
 // --- inline live panel (log + noVNC) tied to the most-recently-submitted job
 // Replaces the old "open /jobs/{id}/log in a new tab" UX. The panel lives
 // in #liveJobPanel right under the Submit form.
+// Sentinel prefix (must match server.protocol.JOB_PROGRESS_MARKER) for
+// ephemeral per-download progress lines that drive the progress widget
+// instead of being appended to the scroll log.
+const LJP_PROGRESS_MARKER = '[[paprika:progress]] ';
 const LJP = {
   jobId: null,
   ws: null,
@@ -4425,6 +4429,9 @@ const LJP = {
   // Map session_id -> the iframe wrapper element we mounted, so we can
   // diff against /jobs/{id}/sessions and only add/remove what changed.
   vncIframes: new Map(),
+  // Map download-key -> {row, fill, stats, doneTimer} for the live
+  // per-download progress bars (driven by [[paprika:progress]] markers).
+  progress: new Map(),
   // -1 = not yet polled; only re-render the thumbnail strip when the
   // count actually changes (avoids flicker on each 2.5s poll).
   galleryLastCount: -1,
@@ -4462,6 +4469,17 @@ function ljpClassifyLine(text) {
   return null;
 }
 function ljpAppendLine(text, cls) {
+  // --- ephemeral per-download progress marker -----------------------
+  // These ride the log channel but are NOT log text: route them to the
+  // progress widget and return WITHOUT touching the scroll log or the
+  // seenLines cursor (the hub never persisted them, so they must not
+  // count toward the replay offset).
+  if (typeof text === 'string' && text.startsWith(LJP_PROGRESS_MARKER)) {
+    try { ljpUpdateProgress(JSON.parse(text.slice(LJP_PROGRESS_MARKER.length))); }
+    catch (_) { /* malformed marker -- ignore */ }
+    return;
+  }
+
   const el = document.getElementById('ljpLog');
 
   // --- collapse the paprika action result onto its call line ---------
@@ -4517,6 +4535,82 @@ function ljpAppendMeta(text) {
   line.textContent = text;
   el.appendChild(line);
   el.scrollTop = el.scrollHeight;
+}
+
+// Upsert one per-download progress bar from a parsed [[paprika:progress]]
+// marker payload: {key, label, state, pct?, speed?, eta?, size?, time?,
+// detail?}.  state = start | downloading | muxing | done.  Rows live in
+// #ljpProgress (above the panes) and auto-clear a few seconds after done.
+function ljpUpdateProgress(p) {
+  if (!p || !p.key) return;
+  const cont = document.getElementById('ljpProgress');
+  if (!cont) return;
+  let row = LJP.progress.get(p.key);
+  // A 'done' for a key we never opened a bar for -> nothing to show.
+  if (p.state === 'done' && !row) return;
+
+  if (!row) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin:4px 0;';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex; justify-content:space-between; gap:8px; font-size:11px; color:#cdd; font-family:monospace;';
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:58%;';
+    const stats = document.createElement('span');
+    stats.style.cssText = 'color:#9ab; white-space:nowrap;';
+    head.appendChild(lbl); head.appendChild(stats);
+    const track = document.createElement('div');
+    track.style.cssText = 'height:6px; background:#23233a; border-radius:3px; overflow:hidden; margin-top:2px;';
+    const fill = document.createElement('div');
+    fill.style.cssText = 'height:100%; width:0%; background:#4ea3ff; transition:width .3s ease;';
+    track.appendChild(fill);
+    wrap.appendChild(head); wrap.appendChild(track);
+    cont.appendChild(wrap);
+    row = { wrap, lbl, stats, fill, doneTimer: null };
+    LJP.progress.set(p.key, row);
+  }
+
+  if (p.label) row.lbl.textContent = p.label;
+  if (!row.lbl.textContent) row.lbl.textContent = p.key;
+  if (row.doneTimer) { clearTimeout(row.doneTimer); row.doneTimer = null; }
+
+  if (p.state === 'done') {
+    row.fill.style.width = '100%';
+    row.fill.style.background = '#3ec46d';
+    row.stats.textContent = '✓ 完了';
+    row.doneTimer = setTimeout(() => ljpRemoveProgress(p.key), 4000);
+  } else if (p.state === 'muxing') {
+    row.fill.style.width = '100%';
+    row.fill.style.background = '#7a6ad8';
+    let s = 'muxing';
+    if (p.time) s += ' ' + p.time;
+    if (p.speed) s += ' · ' + p.speed;
+    if (p.size) s += ' · ' + p.size;
+    row.stats.textContent = s;
+  } else { // start | downloading
+    if (typeof p.pct === 'number') {
+      row.fill.style.width = Math.max(0, Math.min(100, p.pct)) + '%';
+    }
+    row.fill.style.background = '#4ea3ff';
+    let s = '';
+    if (typeof p.pct === 'number') s += p.pct + '%';
+    if (p.detail) s += (s ? ' · ' : '') + p.detail;
+    if (p.speed) s += (s ? ' · ' : '') + p.speed;
+    if (p.eta) s += (s ? ' · ' : '') + 'ETA ' + p.eta;
+    row.stats.textContent = s || '開始…';
+  }
+
+  cont.style.display = LJP.progress.size ? '' : 'none';
+}
+
+function ljpRemoveProgress(key) {
+  const row = LJP.progress.get(key);
+  if (!row) return;
+  if (row.doneTimer) clearTimeout(row.doneTimer);
+  if (row.wrap && row.wrap.parentNode) row.wrap.parentNode.removeChild(row.wrap);
+  LJP.progress.delete(key);
+  const cont = document.getElementById('ljpProgress');
+  if (cont) cont.style.display = LJP.progress.size ? '' : 'none';
 }
 
 function ljpSetStatus(s, phase) {
@@ -6824,6 +6918,13 @@ function ljpReset() {
   LJP._terminalStopped = false;
   // Reset the saved-screenshots viewer so a fresh attach starts at
   // index 0 (no shots) and follow-latest defaults back to true.
+  // Clear the live per-download progress bars.
+  try {
+    LJP.progress.forEach((r) => { if (r.doneTimer) clearTimeout(r.doneTimer); });
+  } catch (_) {}
+  LJP.progress.clear();
+  const _progEl = document.getElementById('ljpProgress');
+  if (_progEl) { _progEl.innerHTML = ''; _progEl.style.display = 'none'; }
   LJP_SHOT.shots = [];
   LJP_SHOT.currentIndex = -1;
   LJP_SHOT.followLatest = true;

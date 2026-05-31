@@ -452,6 +452,21 @@ class WorkerJobAccepted(BaseModel):
     )
 
 
+# Sentinel prefix for EPHEMERAL per-download progress markers that ride
+# the WorkerJobLog channel.  The worker emits "JOB_PROGRESS_MARKER + json"
+# lines for live yt-dlp/ffmpeg download progress; the hub recognises the
+# prefix and BROADCASTS them to /events viewers WITHOUT persisting them to
+# the job log (otherwise per-second progress would flood log.txt).  The
+# admin Live panel intercepts these lines and renders per-download
+# progress bars instead of appending them as text.  See:
+#   * server/worker/agent.py  _ytdlp_log          (emit)
+#   * server/hub/routes/workers.py  WorkerJobLog   (ephemeral branch)
+#   * server/hub/static/admin.js  ljpAppendLine    (render)
+# Distinct from WorkerJobProgress below, which carries COARSE job-level
+# phase / asset counts and IS persisted.
+JOB_PROGRESS_MARKER = "[[paprika:progress]] "
+
+
 class WorkerJobProgress(BaseModel):
     type: Literal["progress"] = "progress"
     job_id: str

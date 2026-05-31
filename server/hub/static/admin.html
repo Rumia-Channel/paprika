@@ -613,6 +613,13 @@ asyncio.run(main())"
       <button class="ljp-tab" data-ljp-tab="run-config"><iconify-icon icon="lucide:sliders-horizontal"></iconify-icon> <span data-i18n="ljp.tab.runconfig">実行</span></button>
     </div>
 
+    <!-- Live per-download progress bars. Sits above the panes so it stays
+         visible on ANY tab (Log / noVNC / …) while yt-dlp / ffmpeg run.
+         Populated by ljpUpdateProgress() from ephemeral
+         "[[paprika:progress]]" markers; auto-hidden when nothing is
+         downloading. -->
+    <div id="ljpProgress" style="display:none; padding:6px 10px; background:#0f0f1a; border-bottom:1px solid #2a2a3a; max-height:160px; overflow:auto;"></div>
+
     <!-- Each pane has its body at height:720px so tab switches don't resize -->
     <div class="ljp-pane" data-ljp-pane="log">
       <pre id="ljpLog" class="ljp-pane-body" style="padding:10px; height:720px; overflow:auto; font-size:12px; line-height:1.45; white-space:pre-wrap; margin:0;"></pre>

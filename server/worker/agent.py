@@ -52,6 +52,7 @@ from server.protocol import (
     WorkerJobAccepted,
     WorkerJobComplete,
     WorkerJobFailed,
+    JOB_PROGRESS_MARKER,
     WorkerJobLog,
     WorkerJobProgress,
     WorkerRegister,
@@ -464,6 +465,67 @@ async def _apply_fetch_recipe(tab, recipe: dict, log) -> dict:
     return {"ran": ran, "ok": ok, "errors": errors}
 
 
+# --- download-progress parsing for the Live panel progress widget --------
+# Recognise the common live-progress shapes emitted by yt-dlp, ffmpeg, and
+# our parallel-HLS adapter, and normalise them into a small dict the admin
+# Live panel renders as a per-download progress bar.  Returns None for any
+# line that isn't a progress update.
+_DLP_DEST_RE = _re.compile(r"\[download\]\s+Destination:\s+(.+?)\s*$")
+_DLP_PCT_RE = _re.compile(r"\[download\]\s+([0-9.]+)%")
+_DLP_SPEED_RE = _re.compile(r"\bat\s+([0-9.]+\s*[KMGT]?i?B/s)")
+_DLP_ETA_RE = _re.compile(r"\bETA\s+([0-9:]+)")
+_DLP_PHLS_SEG_RE = _re.compile(r"\[parallel-hls\]\s+([0-9]+)/([0-9]+)\s+segments")
+_DLP_FF_TIME_RE = _re.compile(r"\btime=\s*([0-9:.]+)")
+_DLP_FF_SPEED_RE = _re.compile(r"\bspeed=\s*([0-9.]+x)")
+_DLP_FF_SIZE_RE = _re.compile(r"\bsize=\s*([0-9.]+\s*[KMGT]?i?B)")
+
+
+def _parse_dl_progress(line: str) -> dict | None:
+    """Normalise one yt-dlp/ffmpeg/parallel-hls progress line into
+    ``{state, pct?, speed?, eta?, size?, time?, detail?, label?}`` or
+    None.  ``state`` is one of: start | downloading | muxing | done."""
+    s = line
+    # yt-dlp: "[download] Destination: /path/file.mp4"  (download begins)
+    m = _DLP_DEST_RE.search(s)
+    if m:
+        name = m.group(1).strip().replace("\\", "/").rsplit("/", 1)[-1]
+        return {"state": "start", "label": name}
+    # parallel-hls adapter: "[parallel-hls] 400/950 segments"
+    m = _DLP_PHLS_SEG_RE.search(s)
+    if m:
+        done, total = int(m.group(1)), int(m.group(2))
+        pct = round(done * 100.0 / total, 1) if total else None
+        return {"state": "downloading", "pct": pct, "detail": f"{done}/{total} segs"}
+    # yt-dlp: "[download]  45.2% of 1.20GiB at 5.00MiB/s ETA 00:30"
+    m = _DLP_PCT_RE.search(s)
+    if m:
+        pct = float(m.group(1))
+        out: dict = {"state": "done" if pct >= 100.0 else "downloading", "pct": pct}
+        sp = _DLP_SPEED_RE.search(s)
+        if sp:
+            out["speed"] = sp.group(1).replace(" ", "")
+        eta = _DLP_ETA_RE.search(s)
+        if eta:
+            out["eta"] = eta.group(1)
+        return out
+    # ffmpeg: "frame= 6896 ... size=17920KiB time=00:03:49.99 ... speed=1.02x"
+    # (HLS muxing -- no overall %, so an indeterminate "muxing" state)
+    if s.startswith("frame=") or ("time=" in s and "speed=" in s):
+        t = _DLP_FF_TIME_RE.search(s)
+        sp = _DLP_FF_SPEED_RE.search(s)
+        if t or sp:
+            out = {"state": "muxing"}
+            if t:
+                out["time"] = t.group(1)
+            if sp:
+                out["speed"] = sp.group(1)
+            sz = _DLP_FF_SIZE_RE.search(s)
+            if sz:
+                out["size"] = sz.group(1).replace(" ", "")
+            return out
+    if "[parallel-hls] muxing" in s:
+        return {"state": "muxing"}
+    return None
 
 
 
@@ -800,6 +862,15 @@ def _make_video_downloader(
 
         _loop = asyncio.get_running_loop()
 
+        # Per-download identity for the Live panel progress widget.  The
+        # key is stable for this download's lifetime; the label starts as
+        # the URL basename and upgrades to the real output filename once
+        # yt-dlp logs its "Destination:" line.
+        _dl_key = target_url
+        _dl_label = [
+            (target_url.split("?", 1)[0].rsplit("/", 1)[-1] or target_url)[:64]
+        ]
+
         def _ytdlp_log(line: str) -> None:
             # Runs in asyncio.to_thread (a plain OS thread), so we
             # cannot call log()/_both() directly -- they use
@@ -817,6 +888,29 @@ def _make_video_downloader(
             # [ffmpeg-direct] status, download %, completion, errors --
             # to the Live panel via _both.
             _stripped = line.lstrip()
+            # Per-download progress widget.  Parse live progress and emit
+            # an EPHEMERAL marker the hub broadcasts (but never persists)
+            # and the Live panel renders as a progress bar.  The
+            # %/segment/muxing updates are widget-only -- returning here
+            # keeps them out of the scroll log -- while the "Destination:"
+            # start line falls through so the operator still sees which
+            # file began downloading.
+            if job_log is not None:
+                _prog = _parse_dl_progress(_stripped)
+                if _prog is not None:
+                    if _prog.get("label"):
+                        _dl_label[0] = _prog["label"]
+                    _payload = {"key": _dl_key, "label": _dl_label[0]}
+                    _payload.update(_prog)
+                    try:
+                        _loop.call_soon_threadsafe(
+                            job_log,
+                            JOB_PROGRESS_MARKER + json.dumps(_payload),
+                        )
+                    except RuntimeError:
+                        pass
+                    if _prog.get("state") in ("downloading", "muxing", "done"):
+                        return
             _spam = (
                 _stripped.startswith("frame=")
                 or ("time=" in line and "bitrate=" in line)
@@ -824,8 +918,15 @@ def _make_video_downloader(
                 or _stripped.startswith("[https @")
                 or _stripped.startswith("[tcp @")
                 or _stripped.startswith("[generic]")
+                # MP4 demuxer chatter, e.g. the per-segment
+                # "[mov,mp4,m4a,3gp,3g2,mj2 @ 0x..] Found duplicated MOOV
+                # Atom. Skipped it" notice on fMP4 HLS -- harmless ffmpeg
+                # info, worker-log only.
+                or _stripped.startswith("[mov,mp4")
                 or _stripped.startswith("Opening ")
-                or _stripped.startswith("[download] ")
+                # NB: "[download] ..." (Destination / progress % /
+                # completion) is intentionally NOT spam -- operator wants
+                # download progress visible in the LiveLog.
                 or "Skip ('#EXT" in line
                 or "#EXT-X-PROGRAM-DATE-TIME" in line
             )
@@ -948,7 +1049,22 @@ def _make_video_downloader(
         _both(
             f"  🎬 detected video URL ({'HLS/DASH' if is_stream else 'direct'}): {target_url[:100]}"
         )
-        pending.append(asyncio.create_task(_run(target_url, referer, is_stream)))
+        _dl_task = asyncio.create_task(_run(target_url, referer, is_stream))
+        # Resolve the Live panel progress bar when the download settles
+        # (success, failure, or cancel) so a row never sticks at 99%.
+        # The done-callback runs on the event loop, so job_log is safe to
+        # call directly here.
+        if job_log is not None:
+            def _emit_dl_done(_t, _u=target_url):
+                try:
+                    job_log(
+                        JOB_PROGRESS_MARKER
+                        + json.dumps({"key": _u, "state": "done"})
+                    )
+                except Exception:
+                    pass
+            _dl_task.add_done_callback(_emit_dl_done)
+        pending.append(_dl_task)
 
     async def drain() -> None:
         """Block until every pending download completes OR has been

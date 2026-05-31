@@ -517,6 +517,7 @@ from server.hub._state import config, get_storage_dir
 from server.hub.routes.profiles import _sync_all_profiles_to_worker
 from server.hub.sessions import SessionInfo
 from server.protocol import (
+    JOB_PROGRESS_MARKER,
     HubRegistered,
     JobResult,
     JobStatus,
@@ -1054,6 +1055,19 @@ async def _handle_worker_message(worker, msg) -> None:
         return
 
     if isinstance(msg, WorkerJobLog):
+        # EPHEMERAL per-download progress markers: broadcast to live
+        # /events viewers (so the Live panel's progress bars update) but
+        # do NOT persist them -- a per-second progress JSON would flood
+        # log.txt and the per-worker ring buffer, re-creating the very
+        # noise we filter out elsewhere.  publish_log (no append_log_line,
+        # no ring mirror) is broadcast-only; markers are never replayed on
+        # reconnect because they're not in the stored log.
+        if msg.line.startswith(JOB_PROGRESS_MARKER):
+            try:
+                await state.store.publish_log(msg.job_id, msg.line)
+            except Exception:
+                pass
+            return
         # When the LogBatcher is active (Redis store), buffer the line
         # and let it flush in pipeline batches (50 lines or 100ms).
         # This cuts Redis ops from ~10 000/sec to ~200/sec at scale.
