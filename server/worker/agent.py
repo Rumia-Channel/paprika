@@ -2455,15 +2455,22 @@ class WorkerAgent:
     # set of protected names (the persistent profile cache, the
     # extensions cache) is hard-coded out of scope.
 
-    # Two prefixes the worker uses for transient scratch:
-    #   paprika-ses-<sid>-<rand>            (assets_dir parent, _handle_session_start)
-    #   paprika-profile-<scratch_key>-<rand> (extracted profile,  _fetch_to_temp)
-    #   paprika-profile-sync-<name>-<rand>  (sub-pattern of the above for HubProfileSync)
-    # scratch_key is one of: the sid (session profile install), the
-    # job_id (per-job profile install), or "sync-<profile_name>" (cache
-    # prefetch). Sessions/jobs we know about live in self._sessions; for
-    # everything else we rely on the age threshold to avoid racing a
-    # mid-flight extract.
+    # Transient-scratch prefixes the worker creates under /tmp:
+    #   paprika-ses-<sid>-<rand>             assets_dir parent  (_handle_session_start)
+    #   paprika-profile-<scratch_key>-<rand> extracted profile  (_fetch_to_temp)
+    #     where scratch_key ∈ {sid, job_id, "sync-<profile_name>"}
+    #   paprika-vid-<job_id>-<rand>          deferred yt-dlp tmp (_spawn_deferred_video_download)
+    #   paprika-<job_id>-<rand>              legacy job workdir
+    #
+    # The age threshold catches mid-flight EXTRACTS (which finish in
+    # seconds), but DEFERRED VIDEO DOWNLOADS run up to PAPRIKA_VIDEO_
+    # DOWNLOAD_TIMEOUT_S (default 7200s = 2h) AFTER the lane / session
+    # are gone -- and a long single-file mp4 stream doesn't bump the
+    # tmp dir's mtime (only file mtime is touched on append). Without
+    # an explicit live-job set, the sweeper would race and rmtree a
+    # paprika-vid-<jobid>-* dir out from under the active yt-dlp.
+    # _bg_video_tasks (dict[task,job_id]) is the source of truth for
+    # "still downloading"; its .values() feeds the keep-set below.
     _TMP_SWEEP_PROTECTED = {
         "paprika-profile-cache",     # canonical sync cache root
         "paprika-extensions",        # CRX cache, populated on register
@@ -2471,6 +2478,7 @@ class WorkerAgent:
     _TMP_SWEEP_PREFIXES = (
         "paprika-ses-",
         "paprika-profile-",
+        "paprika-vid-",
         "paprika-",                  # legacy / job tmpdirs (paprika-<jobid>-<rand>)
     )
 
@@ -2526,6 +2534,19 @@ class WorkerAgent:
         # min_age_s threshold (default 30 min) is the belt to the
         # active-set's suspenders.
         live_sids: set[str] = set(self._sessions.keys())
+        # Job IDs whose deferred yt-dlp download is STILL RUNNING (lane
+        # is freed, session is gone from self._sessions, but the bg
+        # task is appending bytes to paprika-vid-<jobid>-*/). Without
+        # this, a long single-file mp4 download with the 7200s timeout
+        # would be swept out from under the live yt-dlp around the 30
+        # min mark. See _TMP_SWEEP_PREFIXES comment.
+        bg_tasks = getattr(self, "_bg_video_tasks", None) or {}
+        live_jobs: set[str] = (
+            set(bg_tasks.values()) if isinstance(bg_tasks, dict) else set()
+        )
+        # Combined keep-set: any tmpdir whose name contains one of
+        # these strings is preserved this pass.
+        keep_tokens: set[str] = {x for x in (live_sids | live_jobs) if x}
         now = _t.time()
         removed = 0
         freed = 0
@@ -2547,17 +2568,14 @@ class WorkerAgent:
                 continue
             if age < min_age_s:
                 continue
-            # If the dir name embeds a live session id, keep it. Names
-            # follow paprika-ses-<sid>-<rand> / paprika-profile-<key>-<rand>.
-            # We strip the trailing -<rand> by treating everything up to
-            # the last "-" as the key. Loose but safe: false-positives
-            # only KEEP a stale dir an extra cycle, never delete a live one.
-            keep = False
-            for sid in live_sids:
-                if sid and sid in name:
-                    keep = True
-                    break
-            if keep:
+            # If the dir name embeds a live session id OR an in-flight
+            # background-download job id, keep it. Names follow
+            # paprika-ses-<sid>-<rand> / paprika-profile-<key>-<rand> /
+            # paprika-vid-<jobid>-<rand> / paprika-<jobid>-<rand>. The
+            # substring match is loose but safe-direction: false
+            # positives only KEEP a stale dir an extra cycle; the
+            # protection NEVER deletes a live dir.
+            if any(tok in name for tok in keep_tokens):
                 continue
             try:
                 # Best-effort directory size for the log line, capped so
@@ -5663,10 +5681,21 @@ class WorkerAgent:
                     pass
 
         task = asyncio.create_task(_run())
-        if not hasattr(self, "_bg_video_tasks"):
-            self._bg_video_tasks = set()
-        self._bg_video_tasks.add(task)
-        task.add_done_callback(lambda t: self._bg_video_tasks.discard(t))
+        # Track {task: job_id} so two consumers can find the in-flight
+        # downloads:
+        #   * the worker shutdown path can await them,
+        #   * _disk_cleanup_loop can keep paprika-vid-<jobid>-* dirs
+        #     alive for as long as the download is running (the lane
+        #     is already released and the session is gone from
+        #     self._sessions, so without this protection a long single-
+        #     file mp4 -- 2h cap, no per-segment dir-mtime bump -- could
+        #     get swept out from under the live yt-dlp process).
+        if not hasattr(self, "_bg_video_tasks") or not isinstance(
+            getattr(self, "_bg_video_tasks", None), dict
+        ):
+            self._bg_video_tasks = {}
+        self._bg_video_tasks[task] = job_id
+        task.add_done_callback(lambda t: self._bg_video_tasks.pop(t, None))
 
     def _make_cookie_save_callback(self, assign, save_host: str, log):
         """Return an async callable suitable for FetchOptions.on_complete_dump_cookies.
