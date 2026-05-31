@@ -1791,9 +1791,7 @@ async def fetch(opts: FetchOptions) -> FetchResult:
             _hook_total = [0]
 
             async def _fetch_url_capture_poller():
-                log(f"  [url-capture] DEBUG: poller body started, sleeping 2s")
                 await asyncio.sleep(2.0)
-                log(f"  [url-capture] DEBUG: poller entering loop")
                 while True:
                     try:
                         captured = await _read_url_capture(tab)
@@ -1853,13 +1851,11 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                         return
 
             _fetch_url_capture_task = None
-            log(f"  [url-capture] DEBUG: _read_url_capture is None? {_read_url_capture is None}")
             if _read_url_capture is not None:
                 try:
                     _fetch_url_capture_task = asyncio.create_task(
                         _fetch_url_capture_poller()
                     )
-                    log(f"  [url-capture] DEBUG: poller task created: {_fetch_url_capture_task}")
                 except Exception as e:
                     log(f"  !! url-capture poller spawn failed: {e}")
             if referer:

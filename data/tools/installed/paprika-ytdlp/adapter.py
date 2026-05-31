@@ -262,6 +262,146 @@ def download(
         last = lines[-1] if lines else "(ok)"
         return {"ok": True, "message": last, "log_lines": lines}
 
+    # ------------------------------------------------------------------
+    # ffmpeg-direct fallback for "extension-disguised AES-128 HLS".
+    #
+    # Some video hosts (e.g. 7mmtv.sx → streamsuperpro.com) serve an
+    # HLS manifest whose segments use a ``.js`` extension AND are
+    # AES-128 encrypted.  yt-dlp delegates such streams to ffmpeg,
+    # which by default rejects non-media segment extensions:
+    #
+    #   URL .../segment_000.js is not in allowed_segment_extensions
+    #   ffmpeg exited with code 183
+    #
+    # The fix is to call ffmpeg directly with the segment-extension
+    # whitelist disabled and the Referer header injected so the AES
+    # key + segments fetch succeeds.  ffmpeg's ``crypto+https://``
+    # protocol then transparently decrypts the AES-128 stream.
+    # Proven on streamsuperpro: produces a clean h264/aac MP4.
+    _looks_like_ext_blocked = any(
+        "allowed_segment_extensions" in ln
+        or "Invalid data found when processing input" in ln
+        for ln in lines
+    )
+    _is_hls = bool(re.search(r"\.m3u8($|\?)", url, re.I))
+    if _is_hls and _looks_like_ext_blocked and not live_flags:
+        _log(
+            "  ↻ yt-dlp/ffmpeg rejected disguised segment extensions; "
+            "retrying with ffmpeg-direct (-allowed_extensions ALL)"
+        )
+        _ff_timeout = max(30, int(deadline - time.monotonic()))
+        ff_result = _ffmpeg_direct_hls(
+            url=url,
+            out_dir=out_dir,
+            referer=referer,
+            user_agent=user_agent,
+            timeout=_ff_timeout,
+            log=_log,
+        )
+        if ff_result["ok"]:
+            return {
+                "ok": True,
+                "message": ff_result["message"],
+                "log_lines": lines,
+            }
+        _log(f"  ffmpeg-direct fallback also failed: {ff_result['message']}")
+
     err_tail = lines[-3:]
     msg = "\n".join(err_tail) if err_tail else f"exit={returncode}"
     return {"ok": False, "message": msg, "log_lines": lines}
+
+
+def _ffmpeg_direct_hls(
+    *,
+    url: str,
+    out_dir: Path,
+    referer: str | None,
+    user_agent: str | None,
+    timeout: int,
+    log: LogFn,
+) -> dict:
+    """Download an HLS stream by invoking ffmpeg directly.
+
+    Handles two anti-scraping tricks yt-dlp's ffmpeg delegation can't:
+      * segments with disguised extensions (.js, .png, ...) -- via
+        ``-allowed_extensions ALL``
+      * AES-128 encryption needing a Referer to fetch the key -- via
+        ``-headers "Referer: ...\\r\\n"`` (ffmpeg's crypto+https
+        protocol then decrypts transparently)
+
+    Output filename: ``<m3u8-stem> [ffdirect].mp4`` in ``out_dir``.
+    Returns ``{ok, message}``.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return {"ok": False, "message": "ffmpeg not found on PATH"}
+
+    # Derive a stable output name from the manifest path.
+    from urllib.parse import urlparse, unquote
+    stem = "video"
+    try:
+        p = unquote(urlparse(url).path)
+        base = Path(p).stem or "video"
+        stem = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:80] or "video"
+    except Exception:
+        pass
+    out_path = out_dir / f"{stem} [ffdirect].mp4"
+
+    cmd: list[str] = [ffmpeg, "-y"]
+    # Input-side options (MUST precede -i).
+    hdrs = []
+    if referer:
+        hdrs.append(f"Referer: {referer}")
+    if user_agent:
+        hdrs.append(f"User-Agent: {user_agent}")
+    if hdrs:
+        cmd += ["-headers", "".join(h + "\r\n" for h in hdrs)]
+    cmd += [
+        "-allowed_extensions", "ALL",
+        "-extension_picky", "0",
+        "-i", url,
+        "-c", "copy",
+        "-bsf:a", "aac_adtstoasc",
+        str(out_path),
+    ]
+    log(f"  $ ffmpeg-direct -> {out_path.name}")
+
+    deadline = time.monotonic() + timeout
+    try:
+        with subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        ) as proc:
+            assert proc.stdout is not None
+            last_progress = ""
+            for raw in proc.stdout:
+                line = raw.rstrip("\r\n")
+                # ffmpeg progress is very chatty (one line per frame
+                # batch); only surface periodic progress + errors.
+                if line.startswith("frame=") or "time=" in line:
+                    last_progress = line
+                    continue
+                if line and ("error" in line.lower() or "Opening" in line):
+                    log(f"    [ffmpeg] {line[:160]}")
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    return {"ok": False, "message": f"ffmpeg timeout after {timeout}s"}
+            proc.wait()
+            rc = proc.returncode
+            if last_progress:
+                log(f"    [ffmpeg] {last_progress[:120]}")
+    except Exception as exc:
+        return {"ok": False, "message": f"ffmpeg spawn failed: {exc}"}
+
+    if rc == 0 and out_path.exists() and out_path.stat().st_size > 0:
+        sz = out_path.stat().st_size
+        return {
+            "ok": True,
+            "message": f"ffmpeg-direct OK: {out_path.name} ({sz // 1024} KB)",
+        }
+    return {"ok": False, "message": f"ffmpeg exited {rc}, no usable output"}
