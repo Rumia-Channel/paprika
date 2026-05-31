@@ -2221,24 +2221,38 @@ async def read_url_capture(tab) -> list[dict]:
     try:
         # Splice the array to empty and return what was there.  Done
         # in one expression so we don't race with the page hook
-        # appending between read + reset.
+        # appending between read + reset.  Returns a JSON STRING so
+        # tab.evaluate (which only returns Runtime.evaluate result.value
+        # in nodriver, not return_by_value) gives us a parseable
+        # string regardless of whether the bucket itself is JSON-safe.
         result = await tab.evaluate(
-            "JSON.stringify(("
-            "window.__paprika_url_capture && "
-            "window.__paprika_url_capture.splice(0)"
-            ") || [])",
-            return_by_value=True,
+            "JSON.stringify("
+            "(window.__paprika_url_capture && "
+            "window.__paprika_url_capture.splice(0))"
+            " || [])"
         )
         import json as _json
-        # nodriver's evaluate returns the raw value when return_by_value
-        # is True.  Different versions return either the string directly
-        # or a (value, exception) tuple; handle both shapes.
-        if isinstance(result, tuple):
-            result = result[0]
         if isinstance(result, str):
-            return _json.loads(result)
+            try:
+                parsed = _json.loads(result)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                return []
         if isinstance(result, list):
             return result
+        # Tuple form: (value, exception) on some nodriver versions
+        if isinstance(result, tuple) and result:
+            inner = result[0]
+            if isinstance(inner, str):
+                try:
+                    parsed = _json.loads(inner)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    pass
+            if isinstance(inner, list):
+                return inner
         return []
     except Exception:
         return []
@@ -2555,6 +2569,8 @@ async def install_session_asset_capture(
     # Stops itself when the tab closes (evaluate throws); the outer
     # session teardown also cancels the asyncio task.
     _hook_seen: set = set()
+    _hook_poll_n = [0]
+    _hook_total_captured = [0]
 
     async def _url_capture_poller():
         # Stagger the first poll so the page has time to load + the
@@ -2563,10 +2579,28 @@ async def install_session_asset_capture(
         while True:
             try:
                 captured = await read_url_capture(tab)
-            except Exception:
-                # Tab closed or eval error -- bail out, the session
-                # cleanup will handle the rest.
+            except Exception as _e:
+                if log:
+                    log(f"  [url-capture] poller exiting (eval error): {_e}")
                 return
+            _hook_poll_n[0] += 1
+            if captured:
+                _hook_total_captured[0] += len(captured)
+                if log:
+                    log(
+                        f"  [url-capture] poll #{_hook_poll_n[0]}: "
+                        f"{len(captured)} new URL(s) "
+                        f"(total captured so far: {_hook_total_captured[0]})"
+                    )
+            elif _hook_poll_n[0] in (5, 20, 60):
+                # Heartbeat at ~7.5 s / 30 s / 90 s so the operator
+                # sees that the poller is alive even when no XHRs
+                # have been observed yet.
+                if log:
+                    log(
+                        f"  [url-capture] poll #{_hook_poll_n[0]}: "
+                        f"alive, bucket empty"
+                    )
             for entry in captured:
                 url = entry.get("url") or ""
                 if not url or url in _hook_seen:
