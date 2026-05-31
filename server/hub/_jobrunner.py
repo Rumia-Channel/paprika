@@ -124,6 +124,14 @@ async def _run_codegen_loop_job(request: Request, info: JobInfo) -> None:
 
     # Each line: persist on disk, broadcast to live viewers, keep the
     # "last seen" snippet on JobInfo for the Recent Jobs row.
+    #
+    # Python 3.12+ only keeps weak references to fire-and-forget tasks
+    # created by asyncio.create_task().  Without a strong reference the
+    # task can be garbage-collected before it finishes, silently dropping
+    # the Redis RPUSH / PUBLISH.  ``_bg_tasks`` holds each task until
+    # its done-callback removes it.
+    _bg_tasks: set[asyncio.Task] = set()
+
     def _log(line: str) -> None:
         if not isinstance(line, str):
             line = str(line)
@@ -133,8 +141,12 @@ async def _run_codegen_loop_job(request: Request, info: JobInfo) -> None:
         except Exception:
             pass
         try:
-            asyncio.create_task(state.store.append_log_line(job_id, line))
-            asyncio.create_task(state.store.publish_log(job_id, line))
+            t1 = asyncio.create_task(state.store.append_log_line(job_id, line))
+            _bg_tasks.add(t1)
+            t1.add_done_callback(_bg_tasks.discard)
+            t2 = asyncio.create_task(state.store.publish_log(job_id, line))
+            _bg_tasks.add(t2)
+            t2.add_done_callback(_bg_tasks.discard)
         except Exception:
             # Logging must not break the run.
             pass
@@ -950,6 +962,8 @@ async def _run_rerun_loop_job(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fp = open(log_path, "a", encoding="utf-8", buffering=1)
 
+    _bg_tasks: set[asyncio.Task] = set()
+
     def _log(line: str) -> None:
         if not isinstance(line, str):
             line = str(line)
@@ -959,8 +973,12 @@ async def _run_rerun_loop_job(
         except Exception:
             pass
         try:
-            asyncio.create_task(state.store.append_log_line(job_id, line))
-            asyncio.create_task(state.store.publish_log(job_id, line))
+            t1 = asyncio.create_task(state.store.append_log_line(job_id, line))
+            _bg_tasks.add(t1)
+            t1.add_done_callback(_bg_tasks.discard)
+            t2 = asyncio.create_task(state.store.publish_log(job_id, line))
+            _bg_tasks.add(t2)
+            t2.add_done_callback(_bg_tasks.discard)
         except Exception:
             pass
 
