@@ -1764,6 +1764,75 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                     f"  !! iframe deep-trace install failed "
                     f"(non-fatal): {type(e).__name__}: {e}"
                 )
+            # Same-origin iframe fetch/XHR hook -- complements the CDP
+            # deep-trace above for cross-origin iframes.  Some sites
+            # (e.g. 7mmtv.sx → play.php iframe with hls.js) hide their
+            # HLS manifest fetch inside a same-origin iframe whose XHR
+            # doesn't surface in Network.responseReceived. The hook
+            # captures every fetch/XHR URL into a global bucket which
+            # the poller below reads + feeds into _net_log so the
+            # Live-panel Network tab shows them.
+            try:
+                from server.worker.browser_ops import (
+                    install_url_capture_hook as _install_url_capture_hook,
+                    read_url_capture as _read_url_capture,
+                )
+                await _install_url_capture_hook(tab, log=log)
+            except Exception as e:
+                log(
+                    f"  !! url-capture hook install failed "
+                    f"(non-fatal): {type(e).__name__}: {e}"
+                )
+                _read_url_capture = None  # type: ignore
+            # Background poller -- mirrors the session-mode poller in
+            # browser_ops.install_session_asset_capture.
+            _hook_seen_urls: set = set()
+
+            async def _fetch_url_capture_poller():
+                await asyncio.sleep(2.0)
+                while True:
+                    try:
+                        captured = await _read_url_capture(tab)
+                    except Exception:
+                        return
+                    for entry in captured:
+                        u = entry.get("url") or ""
+                        if not u or u in _hook_seen_urls:
+                            continue
+                        _hook_seen_urls.add(u)
+                        # Record to network_log so the Live panel
+                        # shows the URL (mirrors on_response).
+                        if u not in _net_logged_urls:
+                            _net_logged_urls.add(u)
+                            _net_log.append({
+                                "url": u,
+                                "mime": "",
+                                "size": None,
+                                "saved": False,
+                                "document_url": "",
+                                "source": "iframe_xhr_hook",
+                                "timestamp": time.time(),
+                            })
+                        # Track video URLs the same way on_response does
+                        # so download_video heuristics can use them.
+                        if re.search(
+                            r"\.(mp4|webm|m3u8|mpd|mov|m4v|ts)(\?|$)", u, re.I,
+                        ):
+                            if u not in result.video_urls_seen:
+                                result.video_urls_seen.append(u)
+                    try:
+                        await asyncio.sleep(1.5)
+                    except asyncio.CancelledError:
+                        return
+
+            _fetch_url_capture_task = None
+            if _read_url_capture is not None:
+                try:
+                    _fetch_url_capture_task = asyncio.create_task(
+                        _fetch_url_capture_poller()
+                    )
+                except Exception as e:
+                    log(f"  !! url-capture poller spawn failed: {e}")
             if referer:
                 await tab.send(cdp.network.set_extra_http_headers(
                     cdp.network.Headers({"Referer": referer})
@@ -2285,6 +2354,14 @@ async def fetch(opts: FetchOptions) -> FetchResult:
 
         return result
     finally:
+        # Cancel the URL-capture poller if it was started.  Otherwise
+        # it keeps looping on a torn-down tab and logs benign errors.
+        try:
+            t = locals().get("_fetch_url_capture_task")
+            if t is not None and not t.done():
+                t.cancel()
+        except Exception:
+            pass
         # Last chance to unregister any inspectable-session bookkeeping
         # the caller put on this fetch -- MUST run before browser.stop()
         # so subsequent /sessions/{id}/* requests get a clean 404 and
