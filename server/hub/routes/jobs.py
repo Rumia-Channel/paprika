@@ -1151,6 +1151,14 @@ async def download_video_for_job(
         action["url"] = url
     if referer:
         action["referer"] = referer
+    # Forward candidate-discovery + media-oracle controls (iframe_walk,
+    # min/expected duration, perceptual-hash reference) to the worker.
+    for _k in (
+        "iframe_walk", "min_duration_s", "expected_duration_s",
+        "duration_tolerance", "reference_phash", "phash_max_distance",
+    ):
+        if body.get(_k) is not None:
+            action[_k] = body[_k]
     # Route to a specific tab if the caller asked. Without this the
     # worker dispatcher uses state.default_page_id, which is whatever
     # the last switch_page targeted -- NOT necessarily what the

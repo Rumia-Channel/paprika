@@ -2172,6 +2172,20 @@ async def session_download_video(session_id: str, body: dict) -> dict:
         action["url"] = url
     if referer:
         action["referer"] = referer
+    # Forward the candidate-discovery + media-oracle controls to the worker
+    # when supplied (otherwise the worker applies its defaults):
+    #   iframe_walk          -- Tier-4 iframe-walk on/off
+    #   min_duration_s       -- L1 minimum playable length
+    #   expected_duration_s  -- L2 expected length (reject wrong-length clips)
+    #   duration_tolerance   -- L2 +/- fraction
+    #   reference_phash      -- L3 target perceptual hash
+    #   phash_max_distance   -- L3 max Hamming distance for "same video"
+    for _k in (
+        "iframe_walk", "min_duration_s", "expected_duration_s",
+        "duration_tolerance", "reference_phash", "phash_max_distance",
+    ):
+        if body.get(_k) is not None:
+            action[_k] = body[_k]
     action = _route_to_page(action, body)
     return await _send_session_action(
         session_id,
