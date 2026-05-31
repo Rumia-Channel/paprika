@@ -50,6 +50,7 @@
       <button class="tab" data-tab="extensions" role="menuitem"><iconify-icon icon="lucide:puzzle"></iconify-icon> <span data-i18n="tab.extensions">Extensions</span> <span class="count" id="cntExtensions">0</span></button>
       <button class="tab" data-tab="engines" role="menuitem"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> <span data-i18n="tab.engines">AI Engines</span> <span class="count" id="cntEngines">0</span></button>
       <button class="tab" data-tab="knowledge" role="menuitem"><iconify-icon icon="lucide:brain"></iconify-icon> <span data-i18n="tab.knowledge">Knowledge</span> <span class="count" id="cntKnowledge">0</span></button>
+      <button class="tab" data-tab="ai" role="menuitem"><iconify-icon icon="lucide:sparkles"></iconify-icon> <span>AI</span></button>
       <button class="tab" data-tab="plugins" role="menuitem"><iconify-icon icon="lucide:plug"></iconify-icon> <span data-i18n="tab.plugins">Plugins</span> <span class="count" id="cntPlugins">0</span></button>
       <button class="tab" data-tab="settings" role="menuitem"><iconify-icon icon="lucide:settings"></iconify-icon> <span data-i18n="tab.settings">Settings</span></button>
       <!-- v2: Recipes / Skills / Conventions tabs removed.
@@ -1718,38 +1719,35 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
       </tr></thead>
       <tbody><tr><td colspan=8 class="empty" data-i18n="knowledge.empty">no HostKnowledge yet — submit a job to start learning</td></tr></tbody>
     </table>
+  </section>
+</div>
 
-    <!-- ===== AI self-improvement loop: reusable skills & conventions ===== -->
-    <h3 style="margin-top:30px; display:flex; align-items:baseline; gap:8px;">
-      <iconify-icon icon="lucide:sparkles"></iconify-icon> Skills &amp; Conventions
-      <span style="font-size:0.65em; color:#888; font-weight:normal;">
-        codegen-loop が学習した横断パターン。<code>success_rate = success / use</code>
-        ＝ 実ジョブでどれだけ成功に寄与したか（選別シグナル）。
+<!-- AI self-improvement loop (skills / conventions / …) -->
+<div class="panel" data-panel="ai">
+  <section style="padding-top:4px;">
+    <h2 style="margin:0 0 10px;"><iconify-icon icon="lucide:sparkles"></iconify-icon> AI 学習ループ
+      <span style="font-size:0.58em; color:#888; font-weight:normal; margin-left:8px;">
+        codegen-loop が学習した横断パターン。<code>success_rate = success / use</code> ＝ 実ジョブでの成功寄与（選別シグナル）。
       </span>
-    </h3>
-    <div style="display:grid; grid-template-columns:1fr; gap:18px;">
-      <div>
-        <div style="font-weight:600; margin:4px 0;">Skills <span class="count" id="cntSkills">0</span></div>
-        <table id="skTable" class="aitbl" style="width:100%;">
-          <thead><tr>
-            <th>slug</th><th>tier</th><th class="num">use</th><th class="num">success</th>
-            <th>success_rate</th><th style="width:150px;">actions</th>
-          </tr></thead>
-          <tbody><tr><td colspan=6 class="empty">loading…</td></tr></tbody>
-        </table>
-      </div>
-      <div>
-        <div style="font-weight:600; margin:4px 0;">Conventions <span class="count" id="cntConventions">0</span>
-          <span style="font-size:0.8em; color:#999; font-weight:normal;">（毎ジョブ注入されるため rate は全体成功率＝個別の優劣ではない）</span>
-        </div>
-        <table id="cvTable" class="aitbl" style="width:100%;">
-          <thead><tr>
-            <th>slug</th><th>tier</th><th class="num">use</th><th class="num">success</th>
-            <th>success_rate</th><th style="width:150px;">actions</th>
-          </tr></thead>
-          <tbody><tr><td colspan=6 class="empty">loading…</td></tr></tbody>
-        </table>
-      </div>
+    </h2>
+    <div class="ai-subtabs" role="tablist">
+      <button type="button" class="ai-subtab active" data-ai-subtab="skills" role="tab" aria-selected="true"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> Skills <span class="count" id="cntSkills">0</span></button>
+      <button type="button" class="ai-subtab" data-ai-subtab="conventions" role="tab" aria-selected="false"><iconify-icon icon="lucide:scroll-text"></iconify-icon> Conventions <span class="count" id="cntConventions">0</span></button>
+    </div>
+    <div class="ai-subpane" data-ai-subpane="skills">
+      <table id="skTable" class="aitbl" style="width:100%;">
+        <thead><tr><th>slug</th><th>tier</th><th class="num">use</th><th class="num">success</th><th>success_rate</th><th style="width:150px;">actions</th></tr></thead>
+        <tbody><tr><td colspan=6 class="empty">loading…</td></tr></tbody>
+      </table>
+      <div class="ai-pager" id="pager-skills"></div>
+    </div>
+    <div class="ai-subpane" data-ai-subpane="conventions" style="display:none;">
+      <p style="font-size:0.85em; color:#999; margin:0 0 8px;">※ convention は毎ジョブ注入されるため success_rate は全体成功率＝個別の優劣ではありません。</p>
+      <table id="cvTable" class="aitbl" style="width:100%;">
+        <thead><tr><th>slug</th><th>tier</th><th class="num">use</th><th class="num">success</th><th>success_rate</th><th style="width:150px;">actions</th></tr></thead>
+        <tbody><tr><td colspan=6 class="empty">loading…</td></tr></tbody>
+      </table>
+      <div class="ai-pager" id="pager-conventions"></div>
     </div>
   </section>
 </div>
@@ -1868,7 +1866,6 @@ table.aitbl code { font-size:0.95em; }
     renderTable();
     renderSummary();
     loadAiInsights();
-    loadSkillsConventions();
     // tab counter
     const cnt = document.getElementById('cntKnowledge');
     if (cnt) cnt.textContent = _hkData.length;
@@ -1905,14 +1902,21 @@ table.aitbl code { font-size:0.95em; }
       recent.length > 0 ? 'in last 24h' : 'no R1 updates in last 24h';
   }
 
-  // ---- AI self-improvement loop: skills & conventions tables ----
+  // ---- AI self-improvement loop: skills & conventions (paged) ----
+  const _AI_PAGE = 15;
+  const _aiState = {
+    skills:      { items: [], page: 0, tableId: 'skTable', cntId: 'cntSkills' },
+    conventions: { items: [], page: 0, tableId: 'cvTable', cntId: 'cntConventions' },
+  };
+
   async function loadSkillsConventions() {
-    await _loadAiTable('/skills', 'skills', 'skTable', 'cntSkills');
-    await _loadAiTable('/conventions', 'conventions', 'cvTable', 'cntConventions');
+    await _loadAiTable('/skills', 'skills');
+    await _loadAiTable('/conventions', 'conventions');
   }
 
-  async function _loadAiTable(url, kind, tableId, cntId) {
-    const tbody = document.querySelector('#' + tableId + ' tbody');
+  async function _loadAiTable(url, kind) {
+    const st = _aiState[kind];
+    const tbody = document.querySelector('#' + st.tableId + ' tbody');
     let items;
     try {
       const r = await fetch(url);
@@ -1922,8 +1926,6 @@ table.aitbl code { font-size:0.95em; }
     } catch (e) {
       tbody.innerHTML = '<tr><td colspan=6 class="empty">error: ' + e + '</td></tr>'; return;
     }
-    const cnt = document.getElementById(cntId); if (cnt) cnt.textContent = items.length;
-    if (!items.length) { tbody.innerHTML = '<tr><td colspan=6 class="empty">none yet</td></tr>'; return; }
     // Proven first: success_rate desc (untried/null last), then use_count desc.
     items.sort((a, b) => {
       const ra = a.success_rate, rb = b.success_rate;
@@ -1932,7 +1934,55 @@ table.aitbl code { font-size:0.95em; }
       if (rb == null) return -1;
       return (rb - ra) || ((b.use_count || 0) - (a.use_count || 0));
     });
-    tbody.innerHTML = items.map(x => _aiRow(x, kind)).join('');
+    st.items = items;
+    st.page = 0;
+    _renderAiPage(kind);
+  }
+
+  function _renderAiPage(kind) {
+    const st = _aiState[kind];
+    const tbody = document.querySelector('#' + st.tableId + ' tbody');
+    const cnt = document.getElementById(st.cntId); if (cnt) cnt.textContent = st.items.length;
+    if (!st.items.length) { tbody.innerHTML = '<tr><td colspan=6 class="empty">none yet</td></tr>'; _renderAiPager(kind); return; }
+    const pages = Math.max(1, Math.ceil(st.items.length / _AI_PAGE));
+    if (st.page >= pages) st.page = pages - 1;
+    if (st.page < 0) st.page = 0;
+    const start = st.page * _AI_PAGE;
+    tbody.innerHTML = st.items.slice(start, start + _AI_PAGE).map(x => _aiRow(x, kind)).join('');
+    _renderAiPager(kind);
+  }
+
+  function _renderAiPager(kind) {
+    const st = _aiState[kind];
+    const el = document.getElementById('pager-' + kind);
+    if (!el) return;
+    const n = st.items.length;
+    if (n <= _AI_PAGE) { el.innerHTML = ''; return; }
+    const pages = Math.ceil(n / _AI_PAGE);
+    const from = st.page * _AI_PAGE + 1;
+    const to = Math.min(n, (st.page + 1) * _AI_PAGE);
+    el.innerHTML =
+      '<button class="aipg" data-aipg="prev" data-kind="' + kind + '"' + (st.page <= 0 ? ' disabled' : '') + '>‹ prev</button>' +
+      '<span class="aipg-info">' + from + '–' + to + ' / ' + n + '（' + (st.page + 1) + ' / ' + pages + '）</span>' +
+      '<button class="aipg" data-aipg="next" data-kind="' + kind + '"' + (st.page >= pages - 1 ? ' disabled' : '') + '>next ›</button>';
+  }
+
+  function _aiPagerClick(kind, dir) {
+    const st = _aiState[kind];
+    if (!st) return;
+    st.page += (dir === 'next' ? 1 : -1);
+    _renderAiPage(kind);
+  }
+
+  function setAiSubtab(name) {
+    document.querySelectorAll('.ai-subtab').forEach(t => {
+      const on = t.dataset.aiSubtab === name;
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('.ai-subpane').forEach(p => {
+      p.style.display = (p.dataset.aiSubpane === name) ? '' : 'none';
+    });
   }
 
   function _esc(s) { return (s == null ? '' : ('' + s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
@@ -2130,6 +2180,23 @@ table.aitbl code { font-size:0.95em; }
         const b = ev.target.closest('button.aibtn');
         if (!b) return;
         aiAction(b.dataset.kind, b.dataset.slug, b.dataset.act);
+      });
+    });
+    // AI tab: load on activation (mirrors the Knowledge tab pattern).
+    document.querySelectorAll('[data-tab="ai"]').forEach(btn => {
+      btn.addEventListener('click', () => { loadSkillsConventions(); });
+    });
+    // AI sub-tabs (Skills / Conventions) -- same design as the Submit tab.
+    document.querySelectorAll('.ai-subtab').forEach(btn => {
+      btn.addEventListener('click', () => setAiSubtab(btn.dataset.aiSubtab));
+    });
+    // Pager prev/next (delegated, per feature).
+    ['pager-skills', 'pager-conventions'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('click', (ev) => {
+        const b = ev.target.closest('button.aipg');
+        if (!b || b.disabled) return;
+        _aiPagerClick(b.dataset.kind, b.dataset.aipg);
       });
     });
     document.getElementById('hkModalClose').addEventListener('click', () => {
