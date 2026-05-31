@@ -167,26 +167,26 @@
         <!-- Fetch sub-mode (Phase 2a). 3-way radio sits ABOVE the
              collapsible options so it's always visible -- this is a
              primary execution choice, not a tuning knob.
-              * そのまま       : ignore any registered recipe (skip HostRegistry.pick_recipe)
-              * AI学習済みを使う : default, apply matched recipe (Phase 1 behavior)
-              * AI調査         : submit as codegen-loop (paid LLM) using the inline goal -->
+              * そのまま開く     : ignore any registered recipe (skip HostRegistry.pick_recipe)
+              * 解析済レシピを使う: default, apply matched recipe (Phase 1 behavior)
+              * AI で解析する     : submit as codegen-loop (paid LLM) using the inline goal -->
         <div id="fetchSubMode" class="fetch-submode">
           <span class="fo-submode-title">取得方法:</span>
-          <label title="レシピを使わず、そのまま素の Fetch を実行 (比較・検証用)">
-            <input type="radio" name="fetchSubMode" value="normal" id="fetchSubModeNormal"> そのまま
+          <label title="レシピを使わず、素の Fetch を実行 (比較・検証用)">
+            <input type="radio" name="fetchSubMode" value="normal" id="fetchSubModeNormal"> そのまま開く
           </label>
-          <label title="AI調査などで学習・登録済みのレシピがあれば適用 (既定)">
-            <input type="radio" name="fetchSubMode" value="recipe" id="fetchSubModeRecipe" checked> AI学習済みを使う
+          <label title="このホスト用に保存済みの解析レシピがあれば適用 (既定。安く速い)">
+            <input type="radio" name="fetchSubMode" value="recipe" id="fetchSubModeRecipe" checked> 解析済レシピを使う
           </label>
-          <label title="課金 LLM (codegen-loop) で攻略手順を生成・学習">
-            <input type="radio" name="fetchSubMode" value="ai_investigate" id="fetchSubModeAi"> AI調査
+          <label title="LLM (codegen-loop) でページを解析して手順を生成 (課金あり)">
+            <input type="radio" name="fetchSubMode" value="ai_investigate" id="fetchSubModeAi"> AI で解析する
           </label>
           <span id="fetchSubModeBadge" style="color:#888; font-size:.85em; margin-left:auto;"></span>
         </div>
-        <!-- AI調査 only: inline goal textarea + sensible defaults. -->
+        <!-- "AI で解析する" only: inline goal textarea + sensible defaults. -->
         <div id="fetchInvestigateArea" class="fetch-investigate-area" style="display:none;">
           <label style="display:block; font-weight:600; margin-bottom:4px;">
-            <iconify-icon icon="lucide:bot"></iconify-icon> AI調査の目標
+            <iconify-icon icon="lucide:bot"></iconify-icon> 解析の目標
           </label>
           <textarea id="fetchInvestigateGoal"
             style="width:100%; min-height:64px; box-sizing:border-box;"
@@ -199,7 +199,7 @@
                  use_for_codegen). Empty selection = hub uses
                  CODEGEN_LLM_URL + CODEGEN_MODEL_NAME env defaults.
                  Filled in at runtime by populateCodegenEngineSelect(). -->
-            <label title="AI調査 (codegen-loop) で planner / coder / judge に使う LLM。空 = hub のデフォルト (env)。">
+            <label title="AI 解析 (codegen-loop) で planner / coder / judge に使う LLM。空 = hub のデフォルト (env)。">
               <span style="font-weight:600;">コード生成 LLM:</span>
               <select id="fetchInvestigateEngineSelect" style="padding:3px 6px; font-size:.9em;">
                 <option value="">(default — env)</option>

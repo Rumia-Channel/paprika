@@ -5784,9 +5784,9 @@ function ljpRenderRunConfig(info) {
   })[mode] || { ico: 'lucide:help-circle', color: '#666', bg: '#eee', label: mode };
 
   const subModeLabel = ({
-    'normal':         '通常 (recipe を無視)',
-    'recipe':         '登録 (recipe 適用)',
-    'ai_investigate': 'AI調査',
+    'normal':         'そのまま開く (レシピ無視)',
+    'recipe':         '解析済レシピを使う',
+    'ai_investigate': 'AI で解析する',
   })[opts.fetch_strategy] || (opts.fetch_strategy || '');
 
   // ---- assemble HTML in document order ----
@@ -7817,7 +7817,7 @@ document.getElementById('submit').addEventListener('submit', async e => {
     if (_sub === 'ai_investigate') {
       const _goal = (document.getElementById('fetchInvestigateGoal').value || '').trim();
       if (!_goal) {
-        alert('AI調査モードは目標 (goal) が必須です。テキストエリアに記入してください。');
+        alert('「AI で解析する」を選んだ場合は解析の目標 (goal) が必須です。テキストエリアに記入してください。');
         _restoreSubmitBtn();
         return;
       }
