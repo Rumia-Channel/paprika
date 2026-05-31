@@ -30,9 +30,63 @@ from server.worker._browser_helpers import (
 # segment, or a 6s ad). For an evidence-preservation mission a false
 # "success" is worse than a retry, so the oracle errs strict.
 _MIN_VALID_VIDEO_S = 1.0  # below this (with a known duration) = glitch/placeholder
+# L2: how far the downloaded duration may stray from an expected one (±frac).
+_DURATION_TOL = 0.20
+# L3: max Hamming distance between 64-bit dHashes for "same video". Frames of
+# one clip sit ~1-8 apart; a different video is typically 20+.
+_PHASH_MAX_DIST = 12
 
 
-def _probe_media_sync(path: str, min_dur: float) -> dict:
+def _dhash_from_gray(b: bytes, w: int = 9, h: int = 8) -> int:
+    """64-bit perceptual dHash from a ``w*h`` grayscale buffer (row-major):
+    per row, set a bit where ``px[c] < px[c+1]``. The 9-wide / 8-tall grid
+    yields 8 comparisons per row * 8 rows = 64 bits."""
+    if len(b) < w * h:
+        return 0
+    bits = 0
+    for r in range(h):
+        base = r * w
+        for c in range(w - 1):
+            bits = (bits << 1) | (1 if b[base + c] < b[base + c + 1] else 0)
+    return bits
+
+
+def _video_phash_sync(path: str, at_s: float) -> str:
+    """Perceptual hash (dHash, 16-hex-char) of one frame at ``at_s`` seconds,
+    extracted as a 9x8 grayscale via ffmpeg raw-video output -- no PIL/numpy.
+    Returns '' on any failure (ffmpeg absent, decode error, short read)."""
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    try:
+        p = subprocess.run(
+            [ffmpeg, "-v", "error", "-ss", f"{max(at_s, 0.0):.3f}", "-i", path,
+             "-frames:v", "1", "-vf", "scale=9:8", "-pix_fmt", "gray",
+             "-f", "rawvideo", "-"],
+            capture_output=True, timeout=30,
+        )
+    except Exception:
+        return ""
+    if p.returncode != 0 or len(p.stdout) < 72:
+        return ""
+    return "%016x" % _dhash_from_gray(p.stdout)
+
+
+def _phash_distance(a: str, b: str) -> int:
+    """Hamming distance between two 16-hex-char dHashes (max 64 on parse fail)."""
+    try:
+        return bin(int(a, 16) ^ int(b, 16)).count("1")
+    except (TypeError, ValueError):
+        return 64
+
+
+def _probe_media_sync(
+    path: str,
+    min_dur: float,
+    *,
+    expected_duration_s: float | None = None,
+    duration_tol: float = _DURATION_TOL,
+    reference_phash: str | None = None,
+    phash_max_dist: int = _PHASH_MAX_DIST,
+) -> dict:
     """ffprobe one file -> media-validity facts. Pure/sync; run via
     ``asyncio.to_thread``. Never raises -- failures become ``valid=False``
     with a ``reason``. If ffprobe is absent the caller treats the result
@@ -40,6 +94,7 @@ def _probe_media_sync(path: str, min_dur: float) -> dict:
     info = {
         "valid": False, "has_video": False, "duration_s": 0.0,
         "width": 0, "height": 0, "codec": "", "bytes": 0, "reason": "",
+        "phash": "",
     }
     try:
         info["bytes"] = os.path.getsize(path)
@@ -91,17 +146,48 @@ def _probe_media_sync(path: str, min_dur: float) -> dict:
         except (TypeError, ValueError):
             dur = 0.0
     info["duration_s"] = round(dur, 2)
+    # ---- L1: is it real playable video of plausible length? ----
     # A still-image "video" (mjpeg/png) or audio-only file is not a real
     # video capture; require a real video stream. Only reject on a KNOWN
     # short duration (dur>0) so containers that omit duration metadata
     # aren't false-negatived.
     if not info["has_video"]:
         info["reason"] = "no_video_stream"
-    elif 0.0 < dur < min_dur:
+        return info
+    if 0.0 < dur < min_dur:
         info["reason"] = "too_short"
-    else:
-        info["valid"] = True
-        info["reason"] = "ok"
+        return info
+
+    # Perceptual fingerprint of a mid-clip frame (frame 0 is often a black
+    # intro). Always recorded for evidence dedup / later matching, and used
+    # for L3 when a reference is supplied.
+    info["phash"] = _video_phash_sync(path, (dur / 2.0) if dur > 0 else 1.0)
+
+    # ---- L2: does the duration match an expected one? ----
+    # A valid-but-wrong-length file (a 30s preview / a different clip) must
+    # not count as the target. Only checked when the caller supplies an
+    # expectation and we have a known duration.
+    if expected_duration_s and expected_duration_s > 0 and dur > 0:
+        diff = abs(dur - expected_duration_s) / expected_duration_s
+        info["duration_match"] = diff <= duration_tol
+        if not info["duration_match"]:
+            info["reason"] = "duration_mismatch"
+            return info
+
+    # ---- L3: is it THE target video (perceptual identity)? ----
+    # Compare the frame fingerprint to a caller-supplied reference dHash
+    # (e.g. the page poster / a known target). Catches "downloaded a
+    # different video than the one we wanted" -- critical for evidence.
+    if reference_phash and info["phash"]:
+        dist = _phash_distance(info["phash"], reference_phash)
+        info["phash_distance"] = dist
+        info["identity_match"] = dist <= phash_max_dist
+        if not info["identity_match"]:
+            info["reason"] = "identity_mismatch"
+            return info
+
+    info["valid"] = True
+    info["reason"] = "ok"
     return info
 
 
@@ -303,6 +389,23 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
                 min_dur = float(action.get("min_duration_s"))
         except (TypeError, ValueError):
             min_dur = _MIN_VALID_VIDEO_S
+        # L2 (expected duration) + L3 (reference perceptual hash) oracle
+        # inputs. All optional -- omitted ones degrade to the L1 check, so
+        # callers that don't know the target's length / fingerprint behave
+        # exactly as before.
+        def _optf(key):
+            try:
+                v = action.get(key)
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+        expected_duration_s = _optf("expected_duration_s")
+        duration_tol = _optf("duration_tolerance") or _DURATION_TOL
+        reference_phash = (action.get("reference_phash") or "").strip() or None
+        try:
+            phash_max_dist = int(action.get("phash_max_distance") or _PHASH_MAX_DIST)
+        except (TypeError, ValueError):
+            phash_max_dist = _PHASH_MAX_DIST
 
         async def _ingest(cand_new, source_url, page_url):
             """Upload + ffprobe-validate each freshly-downloaded file and
@@ -346,7 +449,13 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
                 # there is no parent job; only a valid + preserved file lets
                 # the search stop.
                 v = await asyncio.to_thread(
-                    _probe_media_sync, str(path), min_dur
+                    lambda p=path: _probe_media_sync(
+                        str(p), min_dur,
+                        expected_duration_s=expected_duration_s,
+                        duration_tol=duration_tol,
+                        reference_phash=reference_phash,
+                        phash_max_dist=phash_max_dist,
+                    )
                 )
                 v["name"] = name
                 v["uploaded"] = up_ok
