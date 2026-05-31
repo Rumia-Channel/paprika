@@ -2210,22 +2210,51 @@ async def install_url_capture_hook(tab, log: LogFn | None = None) -> bool:
         # 2. Also inject into the CURRENT document NOW so we don't
         #    miss the first navigation's fetches.  The hook script's
         #    `if (window.__paprika_url_hook) return;` guard makes it
-        #    safe to run twice.  Without this immediate injection
-        #    the very first page-load (which fetches the HLS manifest)
-        #    finishes BEFORE the addScriptToEvaluateOnNewDocument
-        #    script gets a chance to apply -- observed in 7mmtv.sx
-        #    fetch jobs where hook_installs stayed at 0 despite the
-        #    CDP call succeeding.
+        #    safe to run twice.
         try:
             await tab.evaluate(_URL_CAPTURE_HOOK_JS)
         except Exception as _e:
             if log:
                 log(f"  [url-capture] immediate inject failed: {_e}")
+        # 3. Re-inject on EVERY main-frame navigation. Empirically
+        #    addScriptToEvaluateOnNewDocument doesn't always apply to
+        #    the next navigation when the registration happens while
+        #    the tab is on about:blank (observed on this codebase).
+        #    Hooking Page.frameNavigated and re-running the script
+        #    via Runtime.evaluate guarantees the hook IS present in
+        #    every document we end up on.
+        async def _on_frame_navigated(event):
+            try:
+                # Only top frame: iframe sub-frame events are handled
+                # by addScriptToEvaluateOnNewDocument's own iframe
+                # support (cross-origin ones via install_iframe_deep_trace).
+                frame = getattr(event, "frame", None)
+                if frame is None:
+                    return
+                parent_id = getattr(frame, "parent_id", None) or getattr(frame, "parentId", None)
+                if parent_id:
+                    return  # iframe, skip (covered by addScript registration)
+                try:
+                    await tab.evaluate(_URL_CAPTURE_HOOK_JS)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        try:
+            tab.handlers.setdefault(
+                cdp.page.FrameNavigated, []
+            ).append(_on_frame_navigated)
+            # Page domain must be enabled for FrameNavigated to fire.
+            await tab.send(cdp.page.enable())
+        except Exception as _e:
+            if log:
+                log(f"  [url-capture] frameNavigated hook failed: {_e}")
         setattr(tab, "_paprika_url_capture_hook_on", True)
         if log:
             log(
                 "  [url-capture] fetch+XHR hook installed "
-                "(addScriptToEvaluateOnNewDocument + immediate inject)"
+                "(addScript + immediate inject + frameNavigated reinject)"
             )
         return True
     except Exception as e:
