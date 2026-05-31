@@ -1807,10 +1807,14 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                             f"  [url-capture] poll #{_hook_poll_n[0]}: "
                             f"+{len(captured)} URL(s) (total: {_hook_total[0]})"
                         )
-                    elif _hook_poll_n[0] in (5, 20):
+                    elif _hook_poll_n[0] in (5, 20, 40):
+                        installs = getattr(
+                            _read_url_capture, "_last_installs", "?"
+                        )
                         log(
                             f"  [url-capture] poll #{_hook_poll_n[0]}: "
-                            f"alive, bucket empty"
+                            f"alive, bucket empty "
+                            f"(hook_installs in page: {installs})"
                         )
                     for entry in captured:
                         u = entry.get("url") or ""

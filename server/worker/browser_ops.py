@@ -2127,6 +2127,16 @@ _URL_CAPTURE_HOOK_JS = r"""
 (function() {
   if (window.__paprika_url_hook) return;
   window.__paprika_url_hook = true;
+  // Per-frame install counter so the worker-side poller can see proof
+  // that this hook actually executed in SOME context (useful when
+  // bucket is unexpectedly empty -- if hook_installs is 0 the script
+  // never ran; if > 0 the page just doesn't make fetch/XHR calls).
+  try {
+    var t = window.top;
+    t.__paprika_hook_installs = (t.__paprika_hook_installs || 0) + 1;
+  } catch (e) {
+    window.__paprika_hook_installs = (window.__paprika_hook_installs || 0) + 1;
+  }
   function _bucket() {
     try {
       var t = window.top;
@@ -2225,34 +2235,46 @@ async def read_url_capture(tab) -> list[dict]:
         # tab.evaluate (which only returns Runtime.evaluate result.value
         # in nodriver, not return_by_value) gives us a parseable
         # string regardless of whether the bucket itself is JSON-safe.
+        # Also includes __paprika_hook_installs so the caller can see
+        # in worker logs whether the hook script actually ran in any
+        # frame (helps distinguish "hook never executed" from "hook
+        # executed but page makes no fetch/XHR").
         result = await tab.evaluate(
-            "JSON.stringify("
-            "(window.__paprika_url_capture && "
-            "window.__paprika_url_capture.splice(0))"
-            " || [])"
+            "JSON.stringify({"
+            "u: (window.__paprika_url_capture && "
+            "window.__paprika_url_capture.splice(0)) || [], "
+            "i: window.__paprika_hook_installs || 0"
+            "})"
         )
         import json as _json
+        parsed = None
         if isinstance(result, str):
             try:
                 parsed = _json.loads(result)
-                if isinstance(parsed, list):
-                    return parsed
             except Exception:
-                return []
-        if isinstance(result, list):
-            return result
-        # Tuple form: (value, exception) on some nodriver versions
-        if isinstance(result, tuple) and result:
+                parsed = None
+        elif isinstance(result, dict):
+            parsed = result
+        elif isinstance(result, tuple) and result:
             inner = result[0]
             if isinstance(inner, str):
                 try:
                     parsed = _json.loads(inner)
-                    if isinstance(parsed, list):
-                        return parsed
                 except Exception:
-                    pass
-            if isinstance(inner, list):
-                return inner
+                    parsed = None
+            elif isinstance(inner, dict):
+                parsed = inner
+        if isinstance(parsed, dict):
+            urls = parsed.get("u", [])
+            installs = parsed.get("i", 0)
+            if isinstance(urls, list):
+                # Stash the install count on the function as a side
+                # channel for the poller to surface in heartbeat logs.
+                read_url_capture._last_installs = installs  # type: ignore[attr-defined]
+                return urls
+        # Old shape (list only): treat as URL list directly.
+        if isinstance(parsed, list):
+            return parsed
         return []
     except Exception:
         return []
