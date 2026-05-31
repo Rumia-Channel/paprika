@@ -454,12 +454,17 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
                             size_b = path.stat().st_size
                         except Exception:
                             pass
+                        # Diagnose WHY the upload returned False.
+                        if state.asset_upload_base is None:
+                            reason = "asset_upload_base is None (session has no parent job?)"
+                        elif name in state.uploaded_assets:
+                            reason = "already uploaded (duplicate)"
+                        else:
+                            reason = "HTTP / timeout error -- see worker stderr"
                         upload_errors.append(
-                            f"{name} ({size_b // 1024} KB): upload did not "
-                            f"complete (asset_upload_base missing, "
-                            f"already-uploaded, or HTTP / timeout error -- "
-                            f"see worker stderr)"
+                            f"{name} ({size_b // 1024} KB): {reason}"
                         )
+                        _slog(f"[download_video] upload skip: {name}: {reason}")
                 except Exception as e:
                     upload_errors.append(f"{name}: {type(e).__name__}: {e}")
                     _slog(f"[download_video] upload {name} failed: {e}")
