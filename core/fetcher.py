@@ -1787,14 +1787,29 @@ async def fetch(opts: FetchOptions) -> FetchResult:
             # Background poller -- mirrors the session-mode poller in
             # browser_ops.install_session_asset_capture.
             _hook_seen_urls: set = set()
+            _hook_poll_n = [0]
+            _hook_total = [0]
 
             async def _fetch_url_capture_poller():
                 await asyncio.sleep(2.0)
                 while True:
                     try:
                         captured = await _read_url_capture(tab)
-                    except Exception:
+                    except Exception as _e:
+                        log(f"  [url-capture] poller exiting: {_e}")
                         return
+                    _hook_poll_n[0] += 1
+                    if captured:
+                        _hook_total[0] += len(captured)
+                        log(
+                            f"  [url-capture] poll #{_hook_poll_n[0]}: "
+                            f"+{len(captured)} URL(s) (total: {_hook_total[0]})"
+                        )
+                    elif _hook_poll_n[0] in (5, 20):
+                        log(
+                            f"  [url-capture] poll #{_hook_poll_n[0]}: "
+                            f"alive, bucket empty"
+                        )
                     for entry in captured:
                         u = entry.get("url") or ""
                         if not u or u in _hook_seen_urls:
