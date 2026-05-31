@@ -509,7 +509,7 @@ def _parallel_hls_to_mp4(
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:80] or "video"
     except Exception:
         pass
-    out_path = out_dir / f"{stem} [parallel].mp4"
+    out_path = out_dir / f"{stem}_parallel.mp4"
 
     cmd = [
         ffmpeg, "-y",
@@ -518,7 +518,15 @@ def _parallel_hls_to_mp4(
         "-i", str(local_manifest),
         "-c", "copy",
         "-bsf:a", "aac_adtstoasc",
-        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+        # Progressive MP4 with the moov moved to the FRONT (+faststart).
+        # All segments are already on local disk here, so the mux always
+        # completes -- no truncation risk -- which means we do NOT need
+        # the fragmented (empty_moov) layout.  A fragmented MP4 has only
+        # a tiny empty moov + moof/mdat fragments; ffprobe/VLC read it,
+        # but Chrome's progressive (non-MSE) player can't play it via a
+        # direct <video src> / tab navigation.  +faststart produces a
+        # standard sample-table moov at the front that plays everywhere.
+        "-movflags", "+faststart",
         str(out_path),
     ]
     log(f"  [parallel-hls] muxing {ok_count} local segments -> {out_path.name}")
@@ -587,7 +595,7 @@ def _ffmpeg_direct_hls(
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:80] or "video"
     except Exception:
         pass
-    out_path = out_dir / f"{stem} [ffdirect].mp4"
+    out_path = out_dir / f"{stem}_ffdirect.mp4"
 
     cmd: list[str] = [ffmpeg, "-y"]
     # Input-side options (MUST precede -i).
