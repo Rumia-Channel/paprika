@@ -1718,6 +1718,39 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
       </tr></thead>
       <tbody><tr><td colspan=8 class="empty" data-i18n="knowledge.empty">no HostKnowledge yet — submit a job to start learning</td></tr></tbody>
     </table>
+
+    <!-- ===== AI self-improvement loop: reusable skills & conventions ===== -->
+    <h3 style="margin-top:30px; display:flex; align-items:baseline; gap:8px;">
+      <iconify-icon icon="lucide:sparkles"></iconify-icon> Skills &amp; Conventions
+      <span style="font-size:0.65em; color:#888; font-weight:normal;">
+        codegen-loop が学習した横断パターン。<code>success_rate = success / use</code>
+        ＝ 実ジョブでどれだけ成功に寄与したか（選別シグナル）。
+      </span>
+    </h3>
+    <div style="display:grid; grid-template-columns:1fr; gap:18px;">
+      <div>
+        <div style="font-weight:600; margin:4px 0;">Skills <span class="count" id="cntSkills">0</span></div>
+        <table id="skTable" class="aitbl" style="width:100%;">
+          <thead><tr>
+            <th>slug</th><th>tier</th><th class="num">use</th><th class="num">success</th>
+            <th>success_rate</th><th style="width:150px;">actions</th>
+          </tr></thead>
+          <tbody><tr><td colspan=6 class="empty">loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div>
+        <div style="font-weight:600; margin:4px 0;">Conventions <span class="count" id="cntConventions">0</span>
+          <span style="font-size:0.8em; color:#999; font-weight:normal;">（毎ジョブ注入されるため rate は全体成功率＝個別の優劣ではない）</span>
+        </div>
+        <table id="cvTable" class="aitbl" style="width:100%;">
+          <thead><tr>
+            <th>slug</th><th>tier</th><th class="num">use</th><th class="num">success</th>
+            <th>success_rate</th><th style="width:150px;">actions</th>
+          </tr></thead>
+          <tbody><tr><td colspan=6 class="empty">loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
   </section>
 </div>
 
@@ -1756,6 +1789,23 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
 #hkTable td { padding:6px 10px; border-bottom:1px solid #eee; vertical-align:top; }
 #hkTable tr:hover { background:#fafafa; cursor:pointer; }
 #hkTable .num { text-align:right; font-variant-numeric:tabular-nums; }
+/* AI skills/conventions tables */
+table.aitbl { border-collapse:collapse; font-size:0.88em; }
+table.aitbl th { text-align:left; padding:5px 10px; border-bottom:2px solid #e1e4e8; color:#59636e; font-weight:600; }
+table.aitbl td { padding:5px 10px; border-bottom:1px solid #eee; vertical-align:middle; }
+table.aitbl td.num { text-align:right; font-variant-numeric:tabular-nums; }
+table.aitbl tr:hover { background:#fafbfc; }
+table.aitbl code { font-size:0.95em; }
+.aibadge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:0.82em; font-weight:600; border:1px solid; }
+.aibadge.tier-cur  { background:#eef8ee; color:#196b2c; border-color:#7ab68a; }
+.aibadge.tier-auto { background:#f5f5fa; color:#566;   border-color:#ccd; }
+.airate { position:relative; background:#eef0f2; border-radius:4px; height:16px; min-width:130px; overflow:hidden; }
+.airate-fill { position:absolute; left:0; top:0; bottom:0; }
+.airate span { position:relative; display:block; text-align:center; font-size:0.78em; line-height:16px; color:#222; font-variant-numeric:tabular-nums; }
+.aibtn { font-size:0.78em; padding:2px 8px; margin-right:4px; border:1px solid #ccd; background:#fff; border-radius:5px; cursor:pointer; color:#446; }
+.aibtn:hover { background:#eef4fa; }
+.aibtn.del { color:#933; border-color:#e8b4b0; }
+.aibtn.del:hover { background:#fdecea; }
 .ai-tile { background:#fff; border:1px solid #e8ecf0; border-radius:8px; padding:10px 14px; }
 .ai-tile-label { font-size:0.78em; color:#666; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px; }
 .ai-tile-value { font-size:1.6em; font-weight:700; color:#1f2328; font-variant-numeric:tabular-nums; line-height:1.1; }
@@ -1818,6 +1868,7 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
     renderTable();
     renderSummary();
     loadAiInsights();
+    loadSkillsConventions();
     // tab counter
     const cnt = document.getElementById('cntKnowledge');
     if (cnt) cnt.textContent = _hkData.length;
@@ -1852,6 +1903,69 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
     document.getElementById('aiDistilled').textContent = recent.length;
     document.getElementById('aiDistilledSub').textContent =
       recent.length > 0 ? 'in last 24h' : 'no R1 updates in last 24h';
+  }
+
+  // ---- AI self-improvement loop: skills & conventions tables ----
+  async function loadSkillsConventions() {
+    await _loadAiTable('/skills', 'skills', 'skTable', 'cntSkills');
+    await _loadAiTable('/conventions', 'conventions', 'cvTable', 'cntConventions');
+  }
+
+  async function _loadAiTable(url, kind, tableId, cntId) {
+    const tbody = document.querySelector('#' + tableId + ' tbody');
+    let items;
+    try {
+      const r = await fetch(url);
+      if (!r.ok) { tbody.innerHTML = '<tr><td colspan=6 class="empty">error: HTTP ' + r.status + '</td></tr>'; return; }
+      const j = await r.json();
+      items = j.skills || j.conventions || j.items || (Array.isArray(j) ? j : []);
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan=6 class="empty">error: ' + e + '</td></tr>'; return;
+    }
+    const cnt = document.getElementById(cntId); if (cnt) cnt.textContent = items.length;
+    if (!items.length) { tbody.innerHTML = '<tr><td colspan=6 class="empty">none yet</td></tr>'; return; }
+    // Proven first: success_rate desc (untried/null last), then use_count desc.
+    items.sort((a, b) => {
+      const ra = a.success_rate, rb = b.success_rate;
+      if (ra == null && rb == null) return (b.use_count || 0) - (a.use_count || 0);
+      if (ra == null) return 1;
+      if (rb == null) return -1;
+      return (rb - ra) || ((b.use_count || 0) - (a.use_count || 0));
+    });
+    tbody.innerHTML = items.map(x => _aiRow(x, kind)).join('');
+  }
+
+  function _esc(s) { return (s == null ? '' : ('' + s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+  function _aiRow(x, kind) {
+    const pct = x.success_rate == null ? null : Math.round(x.success_rate * 100);
+    const bar = pct == null
+      ? '<span style="color:#aaa;">— untried</span>'
+      : '<div class="airate"><div class="airate-fill" style="width:' + pct + '%; background:' +
+        (pct >= 50 ? '#4a9d6a' : (pct >= 20 ? '#d6a13a' : '#d65a5a')) + ';"></div><span>' +
+        pct + '% (' + (x.success_count || 0) + '/' + (x.use_count || 0) + ')</span></div>';
+    const tierBadge = '<span class="aibadge ' + (x.tier === 'curated' ? 'tier-cur' : 'tier-auto') + '">' + _esc(x.tier || 'auto') + '</span>';
+    const slug = _esc(x.slug);
+    const desc = _esc((x.description || x.advice || '').slice(0, 100));
+    const tierBtn = x.tier === 'curated'
+      ? '<button class="aibtn" data-act="demote" data-kind="' + kind + '" data-slug="' + slug + '">demote</button>'
+      : '<button class="aibtn" data-act="promote" data-kind="' + kind + '" data-slug="' + slug + '">promote</button>';
+    const delBtn = '<button class="aibtn del" data-act="delete" data-kind="' + kind + '" data-slug="' + slug + '">delete</button>';
+    return '<tr title="' + desc + '"><td><code>' + slug + '</code></td><td>' + tierBadge + '</td>' +
+      '<td class="num">' + (x.use_count || 0) + '</td><td class="num">' + (x.success_count || 0) + '</td>' +
+      '<td>' + bar + '</td><td>' + tierBtn + delBtn + '</td></tr>';
+  }
+
+  async function aiAction(kind, slug, act) {
+    if (act === 'delete' && !confirm('Delete ' + kind + ' "' + slug + '"?')) return;
+    const enc = encodeURIComponent(slug);
+    const method = act === 'delete' ? 'DELETE' : 'POST';
+    const path = act === 'delete' ? '/' + kind + '/' + enc : '/' + kind + '/' + enc + '/' + act;
+    try {
+      const r = await fetch(path, { method });
+      if (!r.ok) { alert(act + ' failed: HTTP ' + r.status); return; }
+    } catch (e) { alert(act + ' failed: ' + e); return; }
+    loadSkillsConventions();
   }
 
   function renderSummary() {
@@ -2008,6 +2122,16 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
     ref.addEventListener('click', loadKnowledge);
     document.getElementById('hkSearch').addEventListener('input', renderTable);
     document.getElementById('hkTierFilter').addEventListener('change', renderTable);
+    // Delegated handler for the skills/conventions action buttons (works
+    // regardless of script scope -- no global onclick needed).
+    ['skTable', 'cvTable'].forEach(id => {
+      const t = document.getElementById(id);
+      if (t) t.addEventListener('click', (ev) => {
+        const b = ev.target.closest('button.aibtn');
+        if (!b) return;
+        aiAction(b.dataset.kind, b.dataset.slug, b.dataset.act);
+      });
+    });
     document.getElementById('hkModalClose').addEventListener('click', () => {
       document.getElementById('hkModal').style.display = 'none';
     });
