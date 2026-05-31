@@ -153,12 +153,50 @@ def download(
         return {"ok": False, "message": msg, "log_lines": lines}
 
     out_dir = Path(output_dir)
-    output_template = str(out_dir / "%(title).80s [%(id)s].%(ext)s")
+
+    # ------------------------------------------------------------------
+    # Live HLS detection FIRST so output template + remux flags reflect
+    # the real container we're going to produce.  --hls-use-mpegts
+    # forces a TS stream; saving it with a .mp4 extension produces
+    # files that browsers / QuickTime cannot play even though ffprobe
+    # reads them (operator confusion in c057912fa777 / 9bfce06f1553).
+    # ------------------------------------------------------------------
+    is_live = _hls_is_live(url, referer, user_agent=user_agent)
+    live_flags: list[str] = []
+    if is_live is True:
+        rec_s = live_record_s
+        if rec_s is None:
+            rec_s = int(os.environ.get("PAPRIKA_LIVE_HLS_RECORD_S", str(_DEFAULT_LIVE_RECORD_S)))
+        if rec_s <= 0:
+            msg = "live stream skipped"
+            _log(
+                "  ⏭ live HLS stream detected (no #EXT-X-ENDLIST) — "
+                "skipping yt-dlp (PAPRIKA_LIVE_HLS_RECORD_S=0)"
+            )
+            return {"ok": False, "message": msg, "log_lines": lines}
+        _log(
+            f"  🔴 live HLS stream detected — recording first "
+            f"{rec_s}s (PAPRIKA_LIVE_HLS_RECORD_S={rec_s}, container=.ts)"
+        )
+        live_flags = [
+            "--no-live-from-start",
+            "--download-sections", f"*0-{rec_s}",
+            "--hls-use-mpegts",
+        ]
+
+    # Output extension: ``.ts`` for live (matches --hls-use-mpegts),
+    # ``.mp4`` for VOD (yt-dlp will remux/merge into ISO BMFF).
+    if live_flags:
+        output_template = str(out_dir / "%(title).80s [%(id)s].ts")
+        merge_format = "mpegts"
+    else:
+        output_template = str(out_dir / "%(title).80s [%(id)s].%(ext)s")
+        merge_format = "mp4"
 
     cmd: list[str] = [
         ytdlp,
         "-f", "bv*+ba/b",
-        "--merge-output-format", "mp4",
+        "--merge-output-format", merge_format,
         "--no-playlist",
         "--no-warnings",
         "--no-overwrites",
@@ -184,33 +222,8 @@ def download(
     extra_str = f" ({', '.join(extras)})" if extras else ""
     _log(f"  $ yt-dlp ... {url}{extra_str}")
 
-    # ------------------------------------------------------------------
-    # Live HLS detection
-    # ------------------------------------------------------------------
-    is_live = _hls_is_live(url, referer, user_agent=user_agent)
-    if is_live is True:
-        rec_s = live_record_s
-        if rec_s is None:
-            rec_s = int(os.environ.get("PAPRIKA_LIVE_HLS_RECORD_S", str(_DEFAULT_LIVE_RECORD_S)))
-        if rec_s <= 0:
-            msg = "live stream skipped"
-            _log(
-                "  ⏭ live HLS stream detected (no #EXT-X-ENDLIST) — "
-                "skipping yt-dlp (PAPRIKA_LIVE_HLS_RECORD_S=0)"
-            )
-            return {"ok": False, "message": msg, "log_lines": lines}
-        _log(
-            f"  🔴 live HLS stream detected — recording first "
-            f"{rec_s}s (PAPRIKA_LIVE_HLS_RECORD_S={rec_s})"
-        )
-        # Insert live flags BEFORE the URL.
-        # --hls-use-mpegts: reliable container for live recording;
-        # avoids seeking issues mid-stream.
-        cmd += [
-            "--no-live-from-start",
-            "--download-sections", f"*0-{rec_s}",
-            "--hls-use-mpegts",
-        ]
+    if live_flags:
+        cmd += live_flags
 
     cmd.append(url)
 

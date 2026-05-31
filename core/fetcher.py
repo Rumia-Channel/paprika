@@ -650,11 +650,41 @@ def run_ytdlp(
     if not ytdlp:
         return False, "yt-dlp not found on PATH (try: pip install yt-dlp)"
 
-    output_template = str(output_dir / "%(title).80s [%(id)s].%(ext)s")
+    # Detect live HLS streams first so the output template + merge
+    # format match what yt-dlp will actually produce.  --hls-use-mpegts
+    # forces a TS stream; saving as .mp4 produces files browsers can't
+    # play.
+    _live = _hls_is_live(url, referer)
+    _live_flags: list[str] = []
+    if _live is True:
+        _live_record_s = int(os.environ.get("PAPRIKA_LIVE_HLS_RECORD_S", "30"))
+        if _live_record_s <= 0:
+            log(
+                "  ⏭ live HLS stream detected (no #EXT-X-ENDLIST) — "
+                "skipping yt-dlp (PAPRIKA_LIVE_HLS_RECORD_S=0)"
+            )
+            return False, "live stream skipped"
+        log(
+            f"  🔴 live HLS stream detected — recording first "
+            f"{_live_record_s}s (PAPRIKA_LIVE_HLS_RECORD_S={_live_record_s}, container=.ts)"
+        )
+        _live_flags = [
+            "--no-live-from-start",
+            "--download-sections", f"*0-{_live_record_s}",
+            "--hls-use-mpegts",
+        ]
+
+    if _live_flags:
+        output_template = str(output_dir / "%(title).80s [%(id)s].ts")
+        merge_format = "mpegts"
+    else:
+        output_template = str(output_dir / "%(title).80s [%(id)s].%(ext)s")
+        merge_format = "mp4"
+
     cmd = [
         ytdlp,
         "-f", "bv*+ba/b",
-        "--merge-output-format", "mp4",
+        "--merge-output-format", merge_format,
         "--no-playlist",
         "--no-warnings",
         "--no-overwrites",
@@ -683,25 +713,8 @@ def run_ytdlp(
         extras.append(f"cookies-from-browser={cookies_from_browser}")
     extra_log = f" ({', '.join(extras)})" if extras else ""
     log(f"  $ yt-dlp ... {url}{extra_log}")
-    # Detect live HLS streams before spawning yt-dlp.
-    _live = _hls_is_live(url, referer)
-    if _live is True:
-        _live_record_s = int(os.environ.get("PAPRIKA_LIVE_HLS_RECORD_S", "30"))
-        if _live_record_s <= 0:
-            log(
-                "  ⏭ live HLS stream detected (no #EXT-X-ENDLIST) — "
-                "skipping yt-dlp (PAPRIKA_LIVE_HLS_RECORD_S=0)"
-            )
-            return False, "live stream skipped"
-        log(
-            f"  🔴 live HLS stream detected — recording first "
-            f"{_live_record_s}s (PAPRIKA_LIVE_HLS_RECORD_S={_live_record_s})"
-        )
-        cmd += [
-            "--no-live-from-start",
-            "--download-sections", f"*0-{_live_record_s}",
-            "--hls-use-mpegts",
-        ]
+    if _live_flags:
+        cmd += _live_flags
     # Append the URL LAST, behind a ``--`` option terminator so a URL
     # beginning with ``-`` can never be misread by yt-dlp as a flag
     # (e.g. ``--exec`` = arbitrary shell command). url_safety already

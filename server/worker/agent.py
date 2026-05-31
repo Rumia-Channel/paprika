@@ -757,7 +757,28 @@ def _make_video_downloader(
         _both(f"  📤 video uploaded to gallery: {target_path.name}")
 
     async def _download_stream(target_url: str, referer: str) -> None:
-        from core.fetcher import run_ytdlp
+        from core.fetcher import run_ytdlp, _hls_is_live
+
+        # Passive sniffer skips live HLS streams.  Many AV preview
+        # sites (7mmtv -> saawsedge, similar) deliver short looping
+        # CMAF/HLS live previews that are NOT the actual video the
+        # operator wants.  If we record one, yt-dlp adds
+        # --hls-use-mpegts so the file is a TS stream saved with a
+        # .mp4 extension -- not playable in browsers, confusing in
+        # the gallery, and 30 s of irrelevant preview footage.
+        # User-initiated page.download_video() takes the regular
+        # path (action handler in session_actions/handlers/media.py),
+        # which still allows live recording when explicitly asked.
+        try:
+            if _hls_is_live(target_url, referer) is True:
+                _both(
+                    f"  ⏭ skipping live HLS preview "
+                    f"(passive sniffer, not a real video): {target_url[:90]}"
+                )
+                downloaded_urls.add(target_url)
+                return
+        except Exception:
+            pass
 
         ytdlp_timeout = int(
             os.environ.get(
