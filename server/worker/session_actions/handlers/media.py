@@ -198,7 +198,26 @@ async def _act_download_video(agent, ctx: "_ActionCtx") -> None:
     state = ctx.state
     reply = ctx.reply
     action = ctx.action
-    _slog = ctx.slog
+    _slog_raw = ctx.slog
+
+    # Extend _slog to also send lines to the LiveLog panel when this
+    # session belongs to a parent job (codegen-loop / rerun).  Without
+    # this, yt-dlp progress (``[download] 8.5% ...``) only appears in
+    # the worker container's stderr — invisible to the operator
+    # watching the Live panel.
+    from server.protocol import WorkerJobLog as _WJL
+
+    _parent_jid = getattr(state, "job_id", None)
+
+    def _slog(line: str) -> None:
+        _slog_raw(line)
+        if _parent_jid:
+            try:
+                asyncio.ensure_future(
+                    agent._send(_WJL(job_id=_parent_jid, line=line))
+                )
+            except Exception:
+                pass
     # Late-enable iframe + nested-iframe deep network
     # trace, if the session was opened with
     # download_video=False. Cross-origin video players
