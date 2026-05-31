@@ -995,8 +995,14 @@ async def migrate_presets(
 # ---------------------------------------------------------------------------
 
 async def restore_hosts(pool: Any, host_registry: Any) -> int:
-    """Restore HostRegistry from MariaDB ``hosts`` table.
-    Returns the number of records restored."""
+    """Mirror MariaDB ``hosts`` table to the file-backed HostRegistry.
+    Returns the number of records restored.
+
+    MariaDB is the source of truth: any host present on disk but
+    missing from MariaDB is removed from disk. See ``restore_engines``
+    for the original rationale (phpMyAdmin / direct-SQL deletions
+    need to survive a hub restart instead of being undone by the
+    file mirror)."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -1007,6 +1013,22 @@ async def restore_hosts(pool: Any, host_registry: Any) -> int:
                 "FROM hosts"
             )
             rows = await cur.fetchall()
+
+    # Deletion reconciliation (runs BEFORE upsert pass so a row
+    # dropped from MariaDB doesn't survive on disk).
+    mariadb_hosts = {row[0] for row in rows if row[0]}
+    for existing in list(host_registry.list_all()):
+        if existing.host not in mariadb_hosts:
+            try:
+                if host_registry.delete(existing.host):
+                    log.info(
+                        "restore: removed host %s (no longer in MariaDB)",
+                        existing.host,
+                    )
+            except Exception as e:
+                log.warning(
+                    "restore: removing host %s failed: %s", existing.host, e,
+                )
 
     restored = 0
     for row in rows:
@@ -1031,8 +1053,19 @@ async def restore_hosts(pool: Any, host_registry: Any) -> int:
 
 
 async def restore_visited_urls(pool: Any, visited_registry: Any) -> int:
-    """Restore HostVisitedRegistry from MariaDB ``visited_urls`` table.
-    Returns the number of URLs restored."""
+    """Mirror MariaDB ``visited_urls`` table to HostVisitedRegistry.
+
+    MariaDB is source of truth. Per-host reconciliation:
+      * a host present on disk but missing from MariaDB     -> file deleted
+      * a host present in both                              -> on-disk URLs
+        that aren't in MariaDB are removed; missing URLs are added
+    Empty MariaDB (rows == []) still triggers reconciliation -- which
+    means hosts with zero visited URLs will be wiped from disk. That's
+    only an issue if MariaDB hasn't been populated yet; the caller
+    (``restore_all_registries``) guards this with ``_mdb_count > 0``.
+    """
+    from pathlib import Path as _Path
+
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -1040,26 +1073,68 @@ async def restore_visited_urls(pool: Any, visited_registry: Any) -> int:
             )
             rows = await cur.fetchall()
 
-    if not rows:
-        return 0
-
-    # Group by host for batch insert
+    # Group MariaDB rows by host -> set(urls) for O(1) membership checks.
     from collections import defaultdict
-    by_host: dict[str, list[str]] = defaultdict(list)
+    mariadb_by_host: dict[str, set[str]] = defaultdict(set)
     for host, url in rows:
-        by_host[host].append(url)
+        if host:
+            mariadb_by_host[host].add(url)
 
+    # Enumerate hosts that have a file on disk. HostVisitedRegistry
+    # doesn't expose a list_hosts() helper, so we glob its data dir
+    # and read each file's ``host`` field. Tolerate unreadable files
+    # (skip) rather than failing the whole restore.
+    file_hosts: set[str] = set()
+    try:
+        for p in _Path(visited_registry.dir).glob("*.json"):
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+                h = d.get("host")
+                if h:
+                    file_hosts.add(h)
+            except Exception:
+                continue
+    except Exception as e:
+        log.warning("restore: could not enumerate visited dir: %s", e)
+
+    # Drop hosts that no longer appear in MariaDB.
+    for h in file_hosts:
+        if h not in mariadb_by_host:
+            try:
+                if visited_registry.delete_host(h):
+                    log.info(
+                        "restore: removed visited %s (no longer in MariaDB)",
+                        h,
+                    )
+            except Exception as e:
+                log.warning(
+                    "restore: removing visited %s failed: %s", h, e,
+                )
+
+    # For each MariaDB host, remove file-only URLs then add the rest.
     restored = 0
-    for host, urls in by_host.items():
+    for host, mdb_urls in mariadb_by_host.items():
         try:
-            restored += visited_registry.add_many(host, urls)
+            file_urls = set(visited_registry.all_urls(host))
+            for stale in file_urls - mdb_urls:
+                try:
+                    visited_registry.remove(host, stale)
+                except Exception as e:
+                    log.warning(
+                        "restore: drop stale url %s for %s failed: %s",
+                        stale, host, e,
+                    )
+            restored += visited_registry.add_many(host, list(mdb_urls))
         except Exception as e:
             log.warning("restore visited_urls for %s failed: %s", host, e)
     return restored
 
 
 async def restore_skills(pool: Any, skill_registry: Any) -> int:
-    """Restore SkillRegistry from MariaDB ``skills`` table."""
+    """Mirror MariaDB ``skills`` table to the file-backed SkillRegistry.
+    Skills are tiered (curated / auto) so the reconciliation key is
+    (tier, slug), not just slug -- a curated entry must NOT shadow-
+    delete an auto entry with the same slug."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -1071,6 +1146,24 @@ async def restore_skills(pool: Any, skill_registry: Any) -> int:
                 "FROM skills"
             )
             rows = await cur.fetchall()
+
+    # Deletion reconciliation: drop any file-side (tier, slug) pair
+    # missing from MariaDB.
+    mariadb_keys = {(row[1] or "auto", row[0]) for row in rows if row[0]}
+    for existing in list(skill_registry.list_all()):
+        key = (existing.tier, existing.slug)
+        if key not in mariadb_keys:
+            try:
+                if skill_registry.delete(existing.slug, tier=existing.tier):
+                    log.info(
+                        "restore: removed skill %s/%s (no longer in MariaDB)",
+                        existing.tier, existing.slug,
+                    )
+            except Exception as e:
+                log.warning(
+                    "restore: removing skill %s/%s failed: %s",
+                    existing.tier, existing.slug, e,
+                )
 
     restored = 0
     for row in rows:
@@ -1094,7 +1187,9 @@ async def restore_skills(pool: Any, skill_registry: Any) -> int:
 
 
 async def restore_conventions(pool: Any, convention_registry: Any) -> int:
-    """Restore ConventionRegistry from MariaDB ``conventions`` table."""
+    """Mirror MariaDB ``conventions`` table. Same (tier, slug) keying
+    as ``restore_skills`` -- conventions live in the same TieredJson
+    layout (curated / auto)."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -1105,6 +1200,22 @@ async def restore_conventions(pool: Any, convention_registry: Any) -> int:
                 "FROM conventions"
             )
             rows = await cur.fetchall()
+
+    mariadb_keys = {(row[1] or "auto", row[0]) for row in rows if row[0]}
+    for existing in list(convention_registry.list_all()):
+        key = (existing.tier, existing.slug)
+        if key not in mariadb_keys:
+            try:
+                if convention_registry.delete(existing.slug, tier=existing.tier):
+                    log.info(
+                        "restore: removed convention %s/%s (no longer in MariaDB)",
+                        existing.tier, existing.slug,
+                    )
+            except Exception as e:
+                log.warning(
+                    "restore: removing convention %s/%s failed: %s",
+                    existing.tier, existing.slug, e,
+                )
 
     restored = 0
     for row in rows:
@@ -1273,7 +1384,8 @@ async def delete_engine_row(pool: Any, slug: str) -> None:
 
 
 async def restore_presets(pool: Any, preset_registry: Any) -> int:
-    """Restore PresetRegistry from MariaDB ``presets`` table."""
+    """Mirror MariaDB ``presets`` table to the file-backed
+    PresetRegistry. Presets are keyed by ``name`` only (no tier)."""
     from server.hub.presets import PresetRecord
 
     async with pool.acquire() as conn:
@@ -1288,6 +1400,21 @@ async def restore_presets(pool: Any, preset_registry: Any) -> int:
                 "FROM presets"
             )
             rows = await cur.fetchall()
+
+    mariadb_names = {row[0] for row in rows if row[0]}
+    for existing in list(preset_registry.list_all()):
+        if existing.name not in mariadb_names:
+            try:
+                if preset_registry.delete(existing.name):
+                    log.info(
+                        "restore: removed preset %s (no longer in MariaDB)",
+                        existing.name,
+                    )
+            except Exception as e:
+                log.warning(
+                    "restore: removing preset %s failed: %s",
+                    existing.name, e,
+                )
 
     restored = 0
     for row in rows:
