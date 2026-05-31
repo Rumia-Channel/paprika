@@ -2448,7 +2448,11 @@ async def install_session_asset_capture(
             # Cloudflare-fronted WordPress AVIF (server returns no
             # Content-Type) -- see job 4b9aff01bc6f post-mortem.
             mime = _session_effective_mime(server_mime, url)
-            if log and os.environ.get("SESSION_ASSETS_DEBUG"):
+            # NB: compose passes SESSION_ASSETS_DEBUG=0 by default, and
+            # the string "0" is truthy in Python -- so a bare
+            # os.environ.get() check fired the debug log on every
+            # response even when "disabled".  Treat 0/false/no/"" as off.
+            if log and os.environ.get("SESSION_ASSETS_DEBUG", "").lower() not in ("", "0", "false", "no"):
                 log(
                     f"  [session-assets DEBUG] resp server_mime="
                     f"{server_mime!r} effective={mime!r} url={url[:120]}"

@@ -808,15 +808,26 @@ def _make_video_downloader(
             # cross-thread bridge.
             last_progress[target_url] = time.time()
             _logger.info(f"[{job_id_for_logs} yt-dlp] {line}")
-            # ffmpeg emits a "frame=... time=... bitrate=..." line many
-            # times per second; flooding the LiveLog WS with those would
-            # drown out everything else.  Keep that spam in the worker
-            # container log only, but surface the OPERATOR-meaningful
-            # lines -- parallel-segment progress, download %, completion,
-            # errors -- to the Live panel via _both.
+            # ffmpeg/yt-dlp emit a torrent of low-level demuxer chatter
+            # (per-frame progress, per-segment "Opening ..." / "[hls]
+            # Skip ..." / "[https @ 0x..]" lines).  On a live HLS this
+            # never stops, drowning the LiveLog WS.  Keep ALL of that in
+            # the worker container log only; surface ONLY the
+            # operator-meaningful lines -- our own [parallel-hls] /
+            # [ffmpeg-direct] status, download %, completion, errors --
+            # to the Live panel via _both.
+            _stripped = line.lstrip()
             _spam = (
-                line.startswith("frame=")
+                _stripped.startswith("frame=")
                 or ("time=" in line and "bitrate=" in line)
+                or _stripped.startswith("[hls @")
+                or _stripped.startswith("[https @")
+                or _stripped.startswith("[tcp @")
+                or _stripped.startswith("[generic]")
+                or _stripped.startswith("Opening ")
+                or _stripped.startswith("[download] ")
+                or "Skip ('#EXT" in line
+                or "#EXT-X-PROGRAM-DATE-TIME" in line
             )
             sink = log if _spam else _both
             try:

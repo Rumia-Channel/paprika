@@ -230,7 +230,19 @@ def download(
     # ------------------------------------------------------------------
     # Run yt-dlp, streaming output line by line
     # ------------------------------------------------------------------
-    deadline = time.monotonic() + timeout
+    # Hard cap for LIVE recording.  --download-sections is a VOD-only
+    # seek and is silently ignored on a live HLS sliding-window
+    # playlist, so yt-dlp/ffmpeg would keep recording until the full
+    # `timeout` (default 3600s) -- an hour of an ad-preview live stream,
+    # flooding the log.  When we injected live_flags, clamp the
+    # subprocess deadline to the intended record window + a small
+    # margin so the recording actually stops near rec_s.
+    eff_timeout = timeout
+    if live_flags:
+        _rec = int(os.environ.get(
+            "PAPRIKA_LIVE_HLS_RECORD_S", str(_DEFAULT_LIVE_RECORD_S)))
+        eff_timeout = min(timeout, max(15, _rec) + 45)
+    deadline = time.monotonic() + eff_timeout
     returncode = -1
     try:
         with subprocess.Popen(
