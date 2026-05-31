@@ -2196,17 +2196,36 @@ async def install_url_capture_hook(tab, log: LogFn | None = None) -> bool:
     if getattr(tab, "_paprika_url_capture_hook_on", False):
         return False
     try:
-        await tab.send(
+        # 1. Register for FUTURE document loads (including iframes
+        #    created after this call).  addScriptToEvaluateOnNewDocument
+        #    by itself does NOT inject into the current document --
+        #    only documents created AFTER registration get the script.
+        _script_id = await tab.send(
             cdp.page.add_script_to_evaluate_on_new_document(
                 source=_URL_CAPTURE_HOOK_JS,
             )
         )
+        if log:
+            log(f"  [url-capture] addScriptToEvaluateOnNewDocument id={_script_id}")
+        # 2. Also inject into the CURRENT document NOW so we don't
+        #    miss the first navigation's fetches.  The hook script's
+        #    `if (window.__paprika_url_hook) return;` guard makes it
+        #    safe to run twice.  Without this immediate injection
+        #    the very first page-load (which fetches the HLS manifest)
+        #    finishes BEFORE the addScriptToEvaluateOnNewDocument
+        #    script gets a chance to apply -- observed in 7mmtv.sx
+        #    fetch jobs where hook_installs stayed at 0 despite the
+        #    CDP call succeeding.
+        try:
+            await tab.evaluate(_URL_CAPTURE_HOOK_JS)
+        except Exception as _e:
+            if log:
+                log(f"  [url-capture] immediate inject failed: {_e}")
         setattr(tab, "_paprika_url_capture_hook_on", True)
         if log:
             log(
                 "  [url-capture] fetch+XHR hook installed "
-                "(catches same-origin iframe XHRs the CDP Network "
-                "domain misses)"
+                "(addScriptToEvaluateOnNewDocument + immediate inject)"
             )
         return True
     except Exception as e:
