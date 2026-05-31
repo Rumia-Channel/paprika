@@ -71,6 +71,14 @@ def _hls_is_live(
             content = resp.read(8192).decode("utf-8", errors="replace")
     except Exception:
         return None
+    # Master playlists (multi-variant) list sub-streams via
+    # EXT-X-STREAM-INF but never contain EXT-X-ENDLIST.  They are
+    # NOT live -- yt-dlp resolves variants itself.  Returning True
+    # here would inject --hls-use-mpegts / --download-sections flags
+    # that break ffmpeg on CDNs with JPEG thumbnails in the variant
+    # manifest (e.g. surrit.com).
+    if "#EXT-X-STREAM-INF" in content:
+        return None
     if "#EXT-X-ENDLIST" in content:
         return False
     if "#EXT-X-PLAYLIST-TYPE:VOD" in content:

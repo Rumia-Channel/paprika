@@ -473,10 +473,14 @@ async def main():
 
             # -- Agent fallback for unknown / dynamic UI --------------
             # Hand control to a vision/LLM agent for a few turns when
-            # the script can't predict what's on the page (age gates,
-            # popups, login dialogs, "click the third video thumbnail
-            # on this grid", "find the play button on whatever video
-            # widget this site uses").
+            # the script can't predict what's on the page ("click the
+            # third video thumbnail on this grid", complex login forms,
+            # CAPTCHA follow-up).
+            #
+            # WARNING: page.agent() is SLOW (2-3 min per call) and
+            # often TIMES OUT.  NEVER use it for age gates, consent
+            # dialogs, play buttons, or popup dismissal — use JS
+            # snippets via page.evaluate() instead (< 1 s).
             #
             # SIGNATURE -- READ CAREFULLY:
             #     page.agent(
@@ -495,11 +499,7 @@ async def main():
             #
             # JP/CN goals are auto-translated to English on the worker
             # side, so writing the goal in Japanese or Chinese works.
-            result = await page.agent(
-                "If an age verification dialog appears, accept it. "
-                "Otherwise return done immediately.",
-                max_steps=3,
-            )
+            #
             # Click an image thumbnail by visual position:
             await page.agent(
                 "Click the third video thumbnail in the trending grid.",
@@ -631,38 +631,35 @@ Rules
 
     * ``page.evaluate()`` / ``page.click()`` / ``page.get_by_text()``
       for clicks (play buttons, age gates, consent dialogs, etc.)
-    * ``page.agent()`` ONLY as a WRAPPED FALLBACK when the deterministic
-      approach fails. ALWAYS wrap ``page.agent()`` in try/except.
+    * **NEVER** use ``page.agent()`` for age gates, consent dialogs,
+      or play buttons.  The JS snippet below handles all known sites.
+    * ``page.agent()`` ONLY for truly unpredictable multi-step flows
+      (e.g. complex login forms with CAPTCHA).  ALWAYS wrap in
+      try/except.
 
-    AGE GATE -- JS first, agent fallback::
+    AGE GATE -- JS only, NO agent::
 
-        # Try common age-gate buttons by text (fast, <1s)
-        try:
-            clicked = await page.evaluate(
-                "(() => {"
-                "  const texts = ['enter', 'i am 18', '18', 'yes', 'agree',"
-                "    '入場', '18歳以上', '同意'];"
-                "  for (const el of document.querySelectorAll("
-                "    'button, a, [role=button], input[type=button], input[type=submit]'"
-                "  )) {"
-                "    const t = (el.textContent || el.value || '').toLowerCase().trim();"
-                "    if (texts.some(x => t.includes(x))) {"
-                "      el.click(); return true;"
-                "    }"
-                "  }"
-                "  return false;"
-                "})()"
-            )
-        except Exception:
-            clicked = False
-        if not clicked:
-            try:
-                await page.agent(
-                    "Accept the age gate or consent dialog.",
-                    max_steps=3,
-                )
-            except Exception as e:
-                print(f"age gate agent failed (non-fatal): {e}", file=sys.stderr)
+        # JS click covers all common age-gate patterns (<1 s).
+        # DO NOT add a page.agent() fallback — it takes 180 s to
+        # timeout and often navigates the browser away from the
+        # target page, breaking subsequent steps.
+        await page.evaluate(
+            "(() => {"
+            "  const texts = ['enter', 'i am 18', '18', 'yes', 'agree',"
+            "    '入場', '18歳以上', '同意', 'accept', 'over 18',"
+            "    'i am over 18', 'continue', '進む'];"
+            "  for (const el of document.querySelectorAll("
+            "    'button, a, [role=button], input[type=button], input[type=submit]'"
+            "  )) {"
+            "    const t = (el.textContent || el.value || '').toLowerCase().trim();"
+            "    if (texts.some(x => t.includes(x))) {"
+            "      el.click(); return true;"
+            "    }"
+            "  }"
+            "  return false;"
+            "})()"
+        )
+        await asyncio.sleep(2)
 
     PLAY BUTTON -- JS only, NO agent::
 
@@ -676,9 +673,13 @@ Rules
         )
 
     Reserve ``page.agent()`` for truly unpredictable multi-step flows
-    (login forms, CAPTCHA follow-up, dynamic SPA navigation) where no
-    simple selector exists. Typical ``N`` is 2-5; never above 10.
+    (complex login forms, CAPTCHA follow-up) where no simple selector
+    exists. Typical ``N`` is 2-5; never above 10.
     ALWAYS wrap in try/except so a timeout doesn't crash the script.
+
+    **NEVER use page.agent() for**: age gates, consent dialogs,
+    play buttons, cookie banners, popup dismissal.  These are all
+    solvable with ``page.evaluate()`` JS snippets in < 1 s.
 
     SIGNATURE (read carefully -- frequent mistake):
 
@@ -1041,11 +1042,23 @@ __VIDEO_SECTION_END__
         async with async_paprika.connect() as cli:
             async with cli.session(initial_url="https://example.com/") as page:
                 # 1) clear startup modals BEFORE the first walk step.
-                await page.agent(
-                    "If an age verification or consent dialog appears, "
-                    "accept it. Otherwise return done immediately.",
-                    max_steps=3,
+                #    Use JS click, NOT page.agent() — agent takes 180 s
+                #    and often navigates the browser away.
+                await page.evaluate(
+                    "(() => {"
+                    "  const texts = ['enter','i am 18','18','yes','agree',"
+                    "    '入場','18歳以上','同意','accept','over 18'];"
+                    "  for (const el of document.querySelectorAll("
+                    "    'button, a, [role=button], input[type=submit]')) {"
+                    "    const t = (el.textContent||el.value||'').toLowerCase();"
+                    "    if (texts.some(x => t.includes(x))) {"
+                    "      el.click(); return true;"
+                    "    }"
+                    "  }"
+                    "  return false;"
+                    "})()"
                 )
+                await asyncio.sleep(2)
                 # 2) hand off the crawl bookkeeping to the walker.
                 async for visit in pap.walk(
                     page,
