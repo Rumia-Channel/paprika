@@ -73,7 +73,12 @@ for ip in "${HOSTS[@]}"; do
   # silently never reached the worker fleet -- only server/ + core/
   # rode the deploy.  --delete is safe here: the plugin tree is
   # canonical from git, workers hold no local-only files under it.
-  if rsync -az --delete \
+  # --checksum (-c): compare by content hash, not size+mtime.  A
+  # plain size+mtime quick-check has been observed to skip a changed
+  # adapter.py on some worker hosts (clock skew / mount mtime
+  # granularity), silently shipping stale plugin code.  Content hash
+  # is the reliable signal for a fleet where correctness > speed.
+  if rsync -azc --delete \
         --exclude '__pycache__' --exclude '*.pyc' \
         ./server ./core ./VERSION ./data/tools \
         "${SSH_USER}@${ip}:${REMOTE_ROOT}/" \
