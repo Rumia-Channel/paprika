@@ -213,6 +213,13 @@ async def lifespan(app: FastAPI):
     # ``auto_retire_enabled`` setting (default off -> dry-run logs only).
     retire_task = asyncio.create_task(_skill_convention_reaper_loop())
 
+    # Dead-worker reaper: drop Redis registrations for workers that
+    # haven't heartbeated in > 7 days. Stops the Workers tab from
+    # silting up with stale entries every time the fleet churns
+    # (clone-collision burst, version-mismatch loop, redeploy).
+    from server.hub._reaper import _dead_worker_reaper_loop
+    dead_worker_task = asyncio.create_task(_dead_worker_reaper_loop())
+
     # SMB storage: a cifs mount does not survive a restart, so re-mount
     # the configured share NOW (before the first job needs storage_dir)
     # and spawn a watchdog that re-mounts it if it ever drops (NAS
@@ -285,6 +292,7 @@ async def lifespan(app: FastAPI):
 
     reaper_task.cancel()
     retire_task.cancel()
+    dead_worker_task.cancel()
     if smb_watchdog_task is not None:
         smb_watchdog_task.cancel()
     for t in list(state.local_tasks.values()):

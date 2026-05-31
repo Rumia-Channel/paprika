@@ -1015,115 +1015,6 @@ async def wheel_at(
 # was trained on desktop browsers where one notch ~= 100px; we keep that
 # default but expose it via env so an operator can dial it for touchpads
 # that send finer wheel events.
-VISION_WHEEL_STEP_PX = int(os.environ.get("VISION_WHEEL_STEP_PX", "100"))
-
-
-async def execute_vision_action(
-    tab,
-    action: dict,
-    log: LogFn,
-    *,
-    viewport_width: int,
-    viewport_height: int,
-) -> str:
-    """Translate one CogAgent ParsedAction dict into a CDP call.
-
-    ``action`` must follow the shape emitted by ``cogagent_service``:
-    ``kind`` + optional ``box`` (with x1/y1/x2/y2 keys, pixel space) +
-    ``text`` / ``key`` / ``step_count`` / ``name``. ``end`` and
-    ``unknown`` are NOT executed here -- the caller handles them
-    (loop break, retry, etc.).
-
-    Returns the same short status strings as ``execute()``.
-    """
-    kind = action.get("kind") or "unknown"
-
-    # Resolve target point from box (clamped to viewport so a stray
-    # off-screen coord doesn't pass through to CDP).
-    def _xy() -> tuple[int, int] | None:
-        box = action.get("box")
-        if not box:
-            return None
-        cx = (int(box["x1"]) + int(box["x2"])) // 2
-        cy = (int(box["y1"]) + int(box["y2"])) // 2
-        cx = max(0, min(viewport_width - 1, cx))
-        cy = max(0, min(viewport_height - 1, cy))
-        return cx, cy
-
-    if kind in ("click", "double_click", "right_click"):
-        pt = _xy()
-        if pt is None:
-            return "ERR: missing box for click"
-        button = "right" if kind == "right_click" else "left"
-        click_count = 2 if kind == "double_click" else 1
-        return await click_at(tab, pt[0], pt[1], log, button=button, click_count=click_count)
-
-    if kind in ("hover", "long_press"):
-        # CogAgent emits LONG_PRESS for touch-style sustained taps;
-        # on a desktop browser the closest equivalent is a hover (mouse
-        # over for context menus), so we treat them the same. Real
-        # touch emulation would need Input.dispatchTouchEvent; not
-        # worth the complexity for desktop crawls.
-        pt = _xy()
-        if pt is None:
-            return "ERR: missing box for hover"
-        return await hover_at(tab, pt[0], pt[1], log)
-
-    if kind == "type":
-        pt = _xy()
-        if pt is None:
-            return "ERR: missing box for type"
-        text = action.get("text") or ""
-        return await type_at(tab, pt[0], pt[1], text, log)
-
-    if kind == "press_key":
-        # CogAgent emits PRESS_KEY(key='Enter') / sometimes the model
-        # writes combos like "Ctrl+L" into the key string. press_key
-        # parses both. count / modifiers may also be present when this
-        # call originates from a non-CogAgent caller.
-        return await press_key(
-            tab,
-            action.get("key") or "",
-            log,
-            count=int(action.get("count") or 1),
-            modifiers=action.get("modifiers"),
-        )
-
-    if kind in ("scroll_up", "scroll_down", "scroll_left", "scroll_right"):
-        # Scroll origin defaults to the viewport centre when the model
-        # didn't ground the action to a specific box (some pages
-        # scroll the body, not a sub-region; CogAgent then emits
-        # box=[[0,0,1000,1000]] which after pixel mapping = the full
-        # viewport).
-        pt = _xy() or (viewport_width // 2, viewport_height // 2)
-        steps = int(action.get("step_count") or 1)
-        px = max(1, steps) * VISION_WHEEL_STEP_PX
-        if kind == "scroll_up":
-            dx, dy = 0, -px
-        elif kind == "scroll_down":
-            dx, dy = 0, px
-        elif kind == "scroll_left":
-            dx, dy = -px, 0
-        else:  # scroll_right
-            dx, dy = px, 0
-        return await wheel_at(tab, pt[0], pt[1], dx, dy, log)
-
-    if kind == "wait":
-        # CogAgent's WAIT() takes no argument; one settle period is
-        # plenty (the loop will re-observe right after).
-        await asyncio.sleep(ACTION_SETTLE_S)
-        return "OK"
-
-    if kind == "launch":
-        # Mobile-only opcode; we get it occasionally when CogAgent
-        # mis-identifies a desktop browser as mobile. No-op + log.
-        log(f"  [vagent] LAUNCH({action.get('name')!r}) ignored (desktop)")
-        return "OK"
-
-    # end / unknown / anything else: caller handles.
-    return "OK"
-
-
 async def navigate(tab, url: str, log: LogFn) -> str:
     """Load ``url`` in the current tab. Returns ``"OK"`` once the
     initial response arrives and ``NAVIGATION_SETTLE_S`` has elapsed.
@@ -1526,6 +1417,13 @@ async def _capture_nav_response(
                 hdrs = {str(k).lower(): str(v) for k, v in hdrs_raw.items()}
             except Exception:
                 hdrs = {}
+            # Always overwrite captured -- a redirect chain fires multiple
+            # responseReceived events on the same requestId (300, then the
+            # 200 at the final hop). We want the LAST one (= the user's
+            # actual destination), matching Playwright semantics:
+            #   await page.goto("http://x") -> Response{url: "https://x", status: 200}
+            # NOT 301-from-the-first-hop. So overwrite is correct; the
+            # signaller below ensures we only "complete" on a non-3xx.
             captured.update({
                 "url":         getattr(resp, "url", "") or "",
                 "status":      status_code,
@@ -1534,7 +1432,15 @@ async def _capture_nav_response(
                 "headers":     hdrs,
                 "mime":        getattr(resp, "mime_type", "") or "",
             })
-            response_event.set()
+            # Only treat this as "navigation completed" when the status
+            # is NOT a redirect. A 301/302/303/307/308 means another
+            # responseReceived is coming for the same requestId; waiting
+            # for it gives us the final response Playwright would surface.
+            # The wait_for in the caller has a 5s ceiling so even a
+            # broken chain (server returns 302 -> 302 -> ... forever)
+            # can't hang the SDK.
+            if not (300 <= status_code < 400):
+                response_event.set()
         except Exception:
             pass
 

@@ -270,7 +270,10 @@ services:
       # `docker compose restart worker`, not a full image rebuild.
       - ./server:/app/server
       - ./core:/app/core
-      - ./VERSION:/app/VERSION:ro
+      # VERSION is writable so worker self-update can replace it after
+      # a version mismatch. Previously :ro and trapped the fleet in
+      # exit-42 loops (post-mortem: 2026-05-31).
+      - ./VERSION:/app/VERSION
 
 volumes:
   redis-data:

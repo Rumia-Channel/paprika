@@ -259,6 +259,57 @@ async def list_plugins_endpoint() -> dict:
     }
 
 
+@router.post("/admin/plugin_catalog/install/{name}")
+async def install_from_catalog(name: str) -> dict:
+    """Install a catalogued plugin into ``data/tools/installed/{name}/``.
+
+    Scaffold today -- the catalog format only carries metadata, not the
+    plugin payload. We surface clear next-step instructions:
+
+      * "already installed"  -- nothing to do.
+      * "manual install"     -- the catalog entry has no machine-readable
+                                source (paprika-native plugins ship with
+                                the repo; operator drops files at
+                                ``data/tools/installed/{name}/``).
+      * "unknown"            -- name is not in the catalog.
+
+    Returns ``{ok, message, hint?}`` so the UI can show a sensible toast
+    instead of a 500. Wired automatic install (git clone / pip / docker
+    pull) will go here once the catalog format is extended.
+    """
+    from server.hub.plugins import load_catalog, load_registry, TOOLS_DIR
+    if not name:
+        raise HTTPException(400, "name required")
+    cat = load_catalog()
+    entry = next(
+        (e for e in (cat.get("plugins") or []) if (e or {}).get("name") == name),
+        None,
+    )
+    installed = name in load_registry()
+    if installed:
+        return {
+            "ok": True,
+            "name": name,
+            "message": "already installed",
+        }
+    if entry is None:
+        raise HTTPException(404, f"plugin '{name}' is not in catalog.json")
+    source = entry.get("source") or ""
+    hint = (
+        f"Drop the plugin files at {TOOLS_DIR}/installed/{name}/ "
+        "(plugin.json + adapter.py + lib/ as needed), then refresh the "
+        "Plugins tab. Automatic install will land once the catalog "
+        "format carries a machine-readable source pointer."
+    )
+    return {
+        "ok": False,
+        "name": name,
+        "message": f"manual install required (source: {source or 'unspecified'})",
+        "hint": hint,
+        "catalog_entry": entry,
+    }
+
+
 @router.get("/admin/plugin_catalog")
 async def get_plugin_catalog() -> dict:
     """Return the merged plugin catalog (catalog.json + install status).

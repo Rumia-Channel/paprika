@@ -49,7 +49,7 @@
       <button class="tab" data-tab="profiles" role="menuitem"><iconify-icon icon="lucide:user-cog"></iconify-icon> <span data-i18n="tab.profiles">Profiles</span> <span class="count" id="cntProfiles">0</span></button>
       <button class="tab" data-tab="extensions" role="menuitem"><iconify-icon icon="lucide:puzzle"></iconify-icon> <span data-i18n="tab.extensions">Extensions</span> <span class="count" id="cntExtensions">0</span></button>
       <button class="tab" data-tab="engines" role="menuitem"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> <span data-i18n="tab.engines">AI Engines</span> <span class="count" id="cntEngines">0</span></button>
-      <button class="tab" data-tab="ai" role="menuitem"><iconify-icon icon="lucide:sparkles"></iconify-icon> <span>AI</span></button>
+      <button class="tab" data-tab="ai" role="menuitem"><iconify-icon icon="lucide:sparkles"></iconify-icon> <span data-i18n="tab.ai">AI 学習機能</span></button>
       <button class="tab" data-tab="plugins" role="menuitem"><iconify-icon icon="lucide:plug"></iconify-icon> <span data-i18n="tab.plugins">Plugins</span> <span class="count" id="cntPlugins">0</span></button>
       <button class="tab" data-tab="settings" role="menuitem"><iconify-icon icon="lucide:settings"></iconify-icon> <span data-i18n="tab.settings">Settings</span></button>
       <!-- v2: Recipes / Skills / Conventions tabs removed.
@@ -1660,6 +1660,21 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
         codegen-loop が学習した横断パターン。<code>success_rate = success / use</code> ＝ 実ジョブでの成功寄与（選別シグナル）。
       </span>
     </h2>
+    <!-- Live R1 / distiller activity ribbon. Polls /host_knowledge every
+         15s, surfaces the 5 most recent provenance.last_updated_at
+         entries written by distiller-r1 (the "brain") so the operator
+         sees what the AI just learned without having to dig into the
+         table. Updates are color-coded by recency (fresh = green pulse).
+         -->
+    <div id="aiTicker" class="ai-ticker" style="margin:6px 0 12px;">
+      <div class="ai-ticker-label">
+        <iconify-icon icon="lucide:radio-tower" style="vertical-align:middle;"></iconify-icon>
+        <span style="margin-left:6px;">最新の R1 学習</span>
+      </div>
+      <div class="ai-ticker-rail" id="aiTickerRail">
+        <span class="ai-ticker-empty">読み込み中…</span>
+      </div>
+    </div>
     <div class="ai-subtabs" role="tablist">
       <button type="button" class="ai-subtab active" data-ai-subtab="knowledge" role="tab" aria-selected="true"><iconify-icon icon="lucide:brain"></iconify-icon> Host Knowledge <span class="count" id="cntKnowledge">0</span></button>
       <button type="button" class="ai-subtab" data-ai-subtab="skills" role="tab" aria-selected="false"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> Skills <span class="count" id="cntSkills">0</span></button>
@@ -1843,6 +1858,8 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
 .hk-badge.tier-stale  { background:#fee;   color:#933; border-color:#c88; }
 .hk-chip { display:inline-block; padding:2px 8px; border-radius:6px; background:#eef4fa; color:#1a5a8a; border:1px solid #b6d3eb; font-size:0.85em; margin:2px 4px 2px 0; }
 .hk-chip.barrier { background:#fdecea; color:#933; border-color:#e8a4a0; }
+.hk-chip.hk-tool { background:#f0eeff; color:#3a2a7a; border-color:#a09bd0; font-weight:600; }
+.hk-r1-badge { display:inline-block; padding:1px 6px; border-radius:10px; background:linear-gradient(135deg, #7c3aed, #2563eb); color:#fff; font-size:0.72em; font-weight:700; letter-spacing:0.04em; margin-left:6px; vertical-align:middle; box-shadow:0 1px 2px rgba(124,58,237,.25); }
 #hkTable td { padding:6px 10px; border-bottom:1px solid #eee; vertical-align:top; }
 #hkTable tr:hover { background:#fafafa; cursor:pointer; }
 #hkTable .num { text-align:right; font-variant-numeric:tabular-nums; }
@@ -2270,15 +2287,30 @@ table.aitbl code { font-size:0.95em; }
       const stats = k.stats || {};
       const tier = stats.overall_confidence || 'low';
       const barriers = ((k.per_page || {}).barriers || {});
-      const presentBarriers = Object.entries(barriers).filter(([,v]) => v && v.present).map(([kk]) => kk);
+      const presentBarriers = Object.entries(barriers).filter(([,v]) => v && v.present);
       const extractions = ((k.per_page || {}).content_extraction || []);
       const prov = (k.provenance || {});
+      // Distiller-r1 badge: highlight hosts whose KNOWLEDGE was last
+      // written by the R1 brain (vs the light distiller / migration
+      // script / operator UI). Plus "suggested_tool" chip when any
+      // barrier carries a pre-flight plugin recommendation -- that's
+      // the actionable bit R1 produced.
+      const writtenByR1 = (prov.last_updated_by || '') === 'distiller-r1';
+      const r1Badge = writtenByR1
+        ? '<span class="hk-r1-badge" title="R1 Distiller が直近更新">R1</span>'
+        : '';
+      const suggestedTools = presentBarriers
+        .map(([kk, v]) => v && v.suggested_tool)
+        .filter(t => t);
+      const toolChips = suggestedTools.length
+        ? suggestedTools.map(t => `<span class="hk-chip hk-tool">⚙ ${t}</span>`).join('')
+        : '';
       return `<tr data-host="${e.host}">
-        <td><strong>${e.host}</strong></td>
+        <td><strong>${e.host}</strong> ${r1Badge}</td>
         <td>${tierBadge(tier)}</td>
         <td class="num">${stats.total_jobs || 0}</td>
         <td class="num">${pct(stats.success_rate)}</td>
-        <td>${presentBarriers.map(b => '<span class="hk-chip barrier">' + b + '</span>').join('') || '<span style="color:#aaa">—</span>'}</td>
+        <td>${presentBarriers.map(([kk]) => '<span class="hk-chip barrier">' + kk + '</span>').join('') || '<span style="color:#aaa">—</span>'}${toolChips}</td>
         <td>${extractions.length > 0 ? extractions.map(c => '<span class="hk-chip">' + (c.url_pattern || '*') + '</span>').join('') : '<span style="color:#aaa">—</span>'}</td>
         <td>${ago(k.updated_at)}</td>
         <td style="font-size:0.85em; color:#666;">${prov.last_updated_by || '—'}</td>
@@ -2448,12 +2480,54 @@ table.aitbl code { font-size:0.95em; }
     // Also do an initial silent load so the tab badge count is correct
     // even before the operator opens the tab.
     loadKnowledge();
+    // Live R1 activity ribbon -- redraw whenever _hkData changes (after
+    // loadKnowledge) plus a 30s heartbeat poller so the ribbon stays
+    // current even when the operator never touches the AI tab.
+    renderAiTicker();
+    setInterval(() => { loadKnowledge().then(renderAiTicker).catch(() => {}); }, 30_000);
     // Re-render whenever the locale changes / i18next finishes init,
     // because table contents are built dynamically with tt() lookups.
     if (window.i18next) {
-      window.i18next.on('languageChanged', () => { renderTable(); renderSummary(); });
-      window.i18next.on('initialized',     () => { renderTable(); renderSummary(); });
+      window.i18next.on('languageChanged', () => { renderTable(); renderSummary(); renderAiTicker(); });
+      window.i18next.on('initialized',     () => { renderTable(); renderSummary(); renderAiTicker(); });
     }
+  }
+
+  // --- live R1 ticker --------------------------------------------------
+  // Pulls the 5 most recent provenance.last_updated_at entries written
+  // by distiller-r1 across the host fleet, renders them as a horizontal
+  // strip of chips. "Fresh" (< 5 min ago) entries get a glow ring so the
+  // operator notices what just happened without reading timestamps.
+  function renderAiTicker() {
+    const rail = document.getElementById('aiTickerRail');
+    if (!rail) return;
+    const all = (_hkData || []).map(e => ({
+      host: e.host,
+      by: ((e.k.provenance || {}).last_updated_by || ''),
+      at: ((e.k.provenance || {}).last_updated_at || ''),
+      barriers: ((e.k.per_page || {}).barriers || {}),
+    }));
+    const r1 = all
+      .filter(x => x.by === 'distiller-r1' && x.at)
+      .sort((a, b) => (b.at > a.at ? 1 : -1))
+      .slice(0, 5);
+    if (!r1.length) {
+      rail.innerHTML = '<span class="ai-ticker-empty">R1 の更新はまだありません</span>';
+      return;
+    }
+    const nowMs = Date.now();
+    rail.innerHTML = r1.map(x => {
+      let what = '更新';
+      const sug = Object.values(x.barriers).map(v => v && v.suggested_tool).filter(t => t);
+      if (sug.length) what = '→ ' + sug[0];
+      const ageMs = Math.max(0, nowMs - Date.parse(x.at));
+      const fresh = ageMs < 5 * 60 * 1000 ? ' fresh' : '';
+      return `<span class="ai-ticker-item${fresh}" title="${x.at}">
+        <span class="when">${ago(x.at)}</span>
+        <span class="host">${x.host}</span>
+        <span class="what">${what}</span>
+      </span>`;
+    }).join('');
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', wire);
@@ -2685,10 +2759,14 @@ table.aitbl code { font-size:0.95em; }
         ? recentSummary
         : '<span style="color:#bbb;">—</span>';
 
-      // Action button: details (if installed) or disabled "not installed" hint.
+      // Action button: details (if installed) or install (if catalogued
+      // but not yet installed). The install button calls
+      // POST /admin/plugin_catalog/install/{name} which today returns
+      // instructions for manual file placement; a future commit will
+      // make it actually pull source.
       const actionCell = p.installed
         ? `<button class="pill pl-row-details" data-plugin="${escHtml(p.name)}"><iconify-icon icon="lucide:settings-2"></iconify-icon> ${detailsLabel}</button>`
-        : '';
+        : `<button class="pill pl-row-install" data-plugin="${escHtml(p.name)}" style="--la-bg:#eef8ee; --la-bd:#7ab68a; --la-fg:#196b2c;"><iconify-icon icon="lucide:download"></iconify-icon> ${T('plugins.install', 'install')}</button>`;
 
       const rowCursor = p.installed ? 'cursor:pointer;' : '';
       return `<tr data-plugin="${escHtml(p.name)}" data-installed="${p.installed ? '1' : '0'}" style="${rowCursor}">
@@ -2712,8 +2790,46 @@ table.aitbl code { font-size:0.95em; }
     tbody.querySelectorAll('tr').forEach(tr => {
       if (tr.getAttribute('data-installed') !== '1') return;
       tr.addEventListener('click', (e) => {
+        // Ignore clicks on inner buttons (install button on uninstalled
+        // rows handled below), but the row-click only fires for
+        // installed rows so this is mostly a non-issue.
         const name = tr.getAttribute('data-plugin');
         if (name) openPluginModal(name);
+      });
+    });
+    // Install buttons on catalog rows that aren't yet installed. Hits
+    // POST /admin/plugin_catalog/install/{name} which today returns
+    // manual-install instructions; future commits will let it actually
+    // pull source.
+    tbody.querySelectorAll('button.pl-row-install').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const name = btn.getAttribute('data-plugin');
+        if (!name) return;
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<iconify-icon icon="lucide:loader-2"></iconify-icon> ...';
+        try {
+          const r = await fetch(
+            '/admin/plugin_catalog/install/' + encodeURIComponent(name),
+            { method: 'POST' },
+          );
+          const j = await r.json().catch(() => ({}));
+          if (j.ok) {
+            alert(`${name}: ${j.message}`);
+            await loadPlugins();
+          } else {
+            // 200-with-ok=false (manual install) OR 4xx
+            const msg = (j.message || 'install failed');
+            const hint = (j.hint || '');
+            alert(`${name}\n${msg}\n\n${hint}`);
+          }
+        } catch (e) {
+          alert(`${name}: ${e}`);
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = original;
+        }
       });
     });
   }

@@ -821,6 +821,39 @@
     box-sizing: border-box;
   }
 
+  /* AI tab live R1 ticker: horizontal scroll-rail of recent R1
+     distiller updates. Refreshed by the AI tab's poller. */
+  .ai-ticker {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 12px; background: linear-gradient(90deg, #fafaff, #f5f4ff);
+    border: 1px solid #d8d3f0; border-radius: 8px;
+  }
+  .ai-ticker-label {
+    flex: 0 0 auto; font-size: .8em; color: #4338ca; font-weight: 600;
+    white-space: nowrap;
+  }
+  .ai-ticker-rail {
+    flex: 1 1 auto; overflow: hidden; display: flex; gap: 10px;
+    font-size: .85em; min-height: 22px; align-items: center;
+  }
+  .ai-ticker-empty { color: #999; font-size: .85em; font-style: italic; }
+  .ai-ticker-item {
+    display: inline-flex; gap: 6px; align-items: center;
+    padding: 2px 8px; background: #fff; border: 1px solid #e0dcf0;
+    border-radius: 12px; white-space: nowrap;
+    animation: aiTickerPop .6s ease-out;
+  }
+  .ai-ticker-item.fresh {
+    border-color: #7c3aed; box-shadow: 0 0 0 2px rgba(124,58,237,.15);
+  }
+  .ai-ticker-item .when { color: #888; font-size: .9em; }
+  .ai-ticker-item .host { color: #1f2328; font-weight: 600; }
+  .ai-ticker-item .what { color: #4338ca; font-size: .92em; }
+  @keyframes aiTickerPop {
+    0% { transform: scale(.85); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
   /* AI tab sub-tabs: same look as the Submit tab's sub-tabs (separate
      classes so the Submit sub-tab JS wiring doesn't grab them). */
   .ai-subtabs { display: flex; gap: 4px; padding: 0; margin: 0; border-bottom: 1px solid #d4cfca; }

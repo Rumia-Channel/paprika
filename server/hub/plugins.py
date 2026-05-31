@@ -556,6 +556,12 @@ def _audit(
     from datetime import datetime
     path = TOOLS_DIR / "invocations.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Rotate before append: keep up to AUDIT_KEEP archive copies
+    # (.1 newest, .N oldest) so the live file stays bounded.
+    try:
+        _rotate_audit_if_needed(path)
+    except Exception:
+        pass  # never let rotation failures swallow the actual write
     # Redact obvious secret-looking values from params for the audit log.
     safe_params: dict = {}
     for k, v in params.items():
@@ -576,3 +582,39 @@ def _audit(
     }
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+
+# Rotation knobs. Override via env when paprika needs longer retention
+# (e.g. for compliance audits in some deployments).
+_AUDIT_MAX_BYTES = int(os.environ.get("PAPRIKA_PLUGIN_AUDIT_MAX_BYTES", str(10 * 1024 * 1024)))
+_AUDIT_KEEP = int(os.environ.get("PAPRIKA_PLUGIN_AUDIT_KEEP", "5"))
+
+
+def _rotate_audit_if_needed(path: Path) -> None:
+    """Roll invocations.jsonl when it grows past _AUDIT_MAX_BYTES.
+
+    Standard log-rotate scheme: live file -> .1, .1 -> .2, ..., .N-1 -> .N,
+    .N is discarded. The /admin/plugins/invocations endpoint reads only
+    the live file, so historical rows fade from the UI but stay on disk
+    until the operator does a cleanup.
+    """
+    try:
+        if not path.is_file():
+            return
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size < _AUDIT_MAX_BYTES:
+        return
+    # Shift .N-1 -> .N down to .1, then move live -> .1.
+    for i in range(_AUDIT_KEEP, 0, -1):
+        src = path.with_suffix(path.suffix + f".{i - 1}") if i > 1 else path
+        dst = path.with_suffix(path.suffix + f".{i}")
+        try:
+            if src.exists():
+                # On Windows os.replace overwrites; on POSIX too.
+                os.replace(src, dst)
+        except OSError:
+            # Best-effort rotation; if the FS is busy just give up
+            # quietly. Worst case: next call retries.
+            return

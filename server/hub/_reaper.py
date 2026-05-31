@@ -206,6 +206,77 @@ async def _session_reaper_loop():
 
 
 # ----------------------------------------------------------------------------
+# Dead-worker reaper (clean up stale Redis registrations)
+# ----------------------------------------------------------------------------
+# Workers persist their registration in Redis (sorted by last heartbeat
+# in ``_k_index()``) so the admin UI can show "this worker was here
+# yesterday but disappeared". After a while (clone collision burst,
+# version-mismatch loop, container churn from a redeploy) those
+# entries pile up and bury the live row in the Workers tab. This
+# loop deletes any entry whose last heartbeat is older than
+# ``_DEAD_WORKER_MAX_AGE_S``. Live, currently-connected workers are
+# never touched (they're not even on the Redis path -- live entries
+# come straight from registry.connections).
+_DEAD_WORKER_MAX_AGE_S = 7 * 86400  # 7 days
+_DEAD_WORKER_REAPER_INTERVAL_S = 6 * 3600  # 6 hours
+
+
+async def _dead_worker_reaper_loop():
+    """Periodically delete dead-worker Redis registrations older than
+    ``_DEAD_WORKER_MAX_AGE_S``. Best-effort; logs and continues on any
+    exception (Redis blip etc.).
+    """
+    import time as _time
+    first = True
+    while True:
+        try:
+            await asyncio.sleep(60 if first else _DEAD_WORKER_REAPER_INTERVAL_S)
+        except asyncio.CancelledError:
+            return
+        first = False
+        reg = state.registry
+        if reg is None:
+            continue
+        try:
+            snap = await reg.stats_async()
+        except Exception:
+            log.info("dead-worker reaper: stats_async failed", exc_info=True)
+            continue
+        now = _time.time()
+        pruned = 0
+        for w in snap.get("workers", []):
+            if w.get("alive"):
+                continue
+            last_hb = w.get("last_heartbeat") or 0
+            try:
+                age_s = now - float(last_hb)
+            except (TypeError, ValueError):
+                continue
+            if age_s < _DEAD_WORKER_MAX_AGE_S:
+                continue
+            wid = w.get("worker_id")
+            if not wid:
+                continue
+            try:
+                ok = await reg.forget(wid)
+                if ok:
+                    pruned += 1
+            except Exception:
+                log.info(
+                    "dead-worker reaper: forget(%s) failed",
+                    wid,
+                    exc_info=True,
+                )
+        if pruned:
+            log.info(
+                "dead-worker reaper: pruned %d stale registration(s) "
+                "(age > %d days)",
+                pruned,
+                _DEAD_WORKER_MAX_AGE_S // 86400,
+            )
+
+
+# ----------------------------------------------------------------------------
 # Skill / convention retire reaper (selection loop, retire phase)
 # ----------------------------------------------------------------------------
 # How often to scan the registries. Slow -- fitness only shifts over many

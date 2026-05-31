@@ -40,6 +40,7 @@ const I18N_RESOURCES = {
     "tab.extensions":  "Chrome 拡張機能",
     "tab.engines":     "AI エンジン",
     "tab.knowledge":   "AI ナレッジ",
+    "tab.ai":          "AI 学習機能",
     "tab.plugins":     "プラグイン",
     "tab.settings":    "設定",
     // Submit bar
@@ -331,6 +332,7 @@ const I18N_RESOURCES = {
     "plugins.loading":             "読み込み中…",
     "plugins.never":               "未呼び出し",
     "plugins.details":             "詳細",
+    "plugins.install":             "インストール",
     "plugins.empty":               "インストール済みのプラグインはありません — data/tools/installed/ に配置してください",
     "plugins.invocations.heading": "履歴",
     "plugins.invocations.sub":     "pre-flight / 手動 / ジョブ起動 すべて記録",
@@ -394,6 +396,7 @@ const I18N_RESOURCES = {
     "tab.extensions":  "Chrome Extensions",
     "tab.engines":     "AI Engines",
     "tab.knowledge":   "AI Knowledge",
+    "tab.ai":          "AI Learning",
     "tab.plugins":     "Plugins",
     "tab.settings":    "Settings",
     // Submit bar
@@ -683,6 +686,7 @@ const I18N_RESOURCES = {
     "plugins.loading":             "loading…",
     "plugins.never":               "never",
     "plugins.details":             "details",
+    "plugins.install":             "install",
     "plugins.empty":               "no plugins installed — drop one into data/tools/installed/",
     "plugins.invocations.heading": "History",
     "plugins.invocations.sub":     "pre-flight / manual / job-triggered — all recorded",

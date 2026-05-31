@@ -140,16 +140,32 @@ async def info_text() -> str:
 
 @router.get("/health")
 async def health() -> dict:
-    """The probe every operational sidecar reads. ``version`` surfaces
-    the source hash so external monitoring can spot fleet drift --
-    compare to each worker's reported version via /workers to see
-    which ones haven't auto-updated yet."""
-    nstats = state.registry.stats() if state.registry else {"count": 0}
+    """The probe every operational sidecar reads.
+
+    Returns hub version + connected-worker count, plus a
+    ``worker_versions`` breakdown so monitoring can spot fleet drift
+    at a glance (any version other than ``{hub: N}`` means at least
+    one worker is on an old build). Previously operators had to GET
+    /workers and post-process to see the mismatch — which is exactly
+    what got missed in the 2026-05-27 and 2026-05-31 self-update loops.
+    """
+    nstats = state.registry.stats() if state.registry else {"count": 0, "workers": []}
+    hub_v = _hub_version()
+    by_version: dict[str, int] = {}
+    for w in nstats.get("workers", []):
+        v = (w.get("version") or "unknown")[:12] or "unknown"
+        by_version[v] = by_version.get(v, 0) + 1
     return {
         "status": "ok",
         "store": state.store_kind,
         "workers": nstats["count"],
-        "version": _hub_version(),
+        "version": hub_v,
+        # {"ad68471": 25, "older-hash": 1} -- key matches the hub's
+        # 12-char short hash. mismatch = "fleet hasn't fully updated".
+        "worker_versions": by_version,
+        "worker_drift": sum(
+            n for v, n in by_version.items() if v != hub_v[:12]
+        ),
     }
 
 
@@ -160,14 +176,34 @@ async def health() -> dict:
 
 # Admin UI HTML shell. Extracted to server/hub/static/admin.html -- this
 # was the last big HTML-in-Python blob (a ~3000-line r"""...""" literal
-# here; the JS/CSS were already external static files). Loaded once at
-# import. The @@PAPRIKA_VERSION@@ cache-bust token is substituted per
-# request in admin_ui().
+# here; the JS/CSS were already external static files).
+#
+# Mtime-cached: re-read on disk only when the file's mtime moved. Means
+# an `scp admin.html` lands without a hub restart -- the next request
+# picks up the new bytes. Previously read once at import which forced a
+# restart on every UI tweak; that produced the 2026-05-28 "I changed
+# the tab label but Ctrl-Shift-R doesn't update" surprise.
 from pathlib import Path as _Path
 
-_ADMIN_HTML = (
+_ADMIN_HTML_PATH = (
     _Path(__file__).resolve().parent.parent / "static" / "admin.html"
-).read_text(encoding="utf-8")
+)
+_ADMIN_HTML_CACHE: dict = {"mtime": 0.0, "text": ""}
+
+
+def _load_admin_html() -> str:
+    try:
+        mtime = _ADMIN_HTML_PATH.stat().st_mtime
+    except FileNotFoundError:
+        return ""
+    if mtime != _ADMIN_HTML_CACHE["mtime"]:
+        _ADMIN_HTML_CACHE["text"] = _ADMIN_HTML_PATH.read_text(encoding="utf-8")
+        _ADMIN_HTML_CACHE["mtime"] = mtime
+    return _ADMIN_HTML_CACHE["text"]
+
+
+# Pre-warm so the first request doesn't pay the read cost.
+_load_admin_html()
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -177,7 +213,7 @@ async def admin_ui() -> HTMLResponse:
     # without us having to fight ETags. The shell HTML itself is small
     # enough that no-cache on it is cheap and avoids stale-version-tag
     # foot-guns.
-    html = _ADMIN_HTML.replace("@@PAPRIKA_VERSION@@", _static_asset_version())
+    html = _load_admin_html().replace("@@PAPRIKA_VERSION@@", _static_asset_version())
     return HTMLResponse(
         content=html,
         headers={
