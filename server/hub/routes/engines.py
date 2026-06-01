@@ -157,6 +157,14 @@ def _engine_to_dict(rec: EngineRecord) -> dict:
         "daily_token_budget": rec.daily_token_budget,
         "daily_request_budget": rec.daily_request_budget,
         "usage_today": _usage_today_for(rec.slug),
+        # Pricing (¥ per 1M tokens) — 0 = 課金なし (自前 GPU 等)。
+        "cost_input_per_1m_jpy": rec.cost_input_per_1m_jpy,
+        "cost_output_per_1m_jpy": rec.cost_output_per_1m_jpy,
+        # 本日の累計コスト (¥)。usage_today × pricing で算出。
+        "cost_today_jpy": _cost_today_jpy_for(rec),
+        # 過去 14 日の日次トークン + 円換算履歴。Chart 表示用。
+        # 形式: [{"date": "2026-06-01", "prompt": N, "completion": M, "requests": K, "cost_jpy": ¥}]
+        "cost_history": _cost_history_for(rec),
         "notes": rec.notes,
         "builtin": rec.builtin,
         "created_at": rec.created_at,
@@ -175,6 +183,50 @@ def _usage_today_for(slug: str) -> dict:
         return reg.get_today(slug)
     except Exception:
         return {"prompt": 0, "completion": 0, "requests": 0}
+
+
+def _calc_cost_jpy(prompt: int, completion: int, rec: EngineRecord) -> float:
+    """Compute ¥ cost from (prompt, completion) tokens using the engine's
+    per-1M-token pricing. 0 rate = ¥0 (= local GPU / not billed).
+    Rounded to 2 decimal places for display."""
+    if not rec.cost_input_per_1m_jpy and not rec.cost_output_per_1m_jpy:
+        return 0.0
+    cost = (
+        (prompt or 0) / 1_000_000.0 * float(rec.cost_input_per_1m_jpy or 0.0)
+        + (completion or 0) / 1_000_000.0 * float(rec.cost_output_per_1m_jpy or 0.0)
+    )
+    return round(cost, 2)
+
+
+def _cost_today_jpy_for(rec: EngineRecord) -> float:
+    """Today's ¥ cost for this engine. Reads usage_today × pricing."""
+    u = _usage_today_for(rec.slug)
+    return _calc_cost_jpy(u.get("prompt", 0), u.get("completion", 0), rec)
+
+
+def _cost_history_for(rec: EngineRecord) -> list:
+    """Per-day token + ¥ history for this engine.
+    Returns sorted ascending by date so a chart can render directly.
+    Empty list when no history or the usage registry isn't initialised."""
+    reg = getattr(state, "engine_usage", None)
+    if reg is None:
+        return []
+    try:
+        hist = reg.get_history(rec.slug)
+    except Exception:
+        return []
+    out: list = []
+    for date_str, row in sorted(hist.items()):
+        prompt = int(row.get("prompt", 0) or 0)
+        completion = int(row.get("completion", 0) or 0)
+        out.append({
+            "date": date_str,
+            "prompt": prompt,
+            "completion": completion,
+            "requests": int(row.get("requests", 0) or 0),
+            "cost_jpy": _calc_cost_jpy(prompt, completion, rec),
+        })
+    return out
 
 
 _OPENAI_ENDPOINT_SUFFIXES = (

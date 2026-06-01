@@ -14,6 +14,10 @@
      inlined into the HTML below as a regular JS object, so no extra
      JSON fetches at startup. -->
 <script src="https://unpkg.com/i18next@23/i18next.min.js"></script>
+<!-- Chart.js (UMD bundle, ~60 KB gzip). Used by the AI engines tab to
+     show 14-day token + cost-in-yen history per engine. Loading at
+     <head> time is OK because no other module depends on the order. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/admin.css?v=@@PAPRIKA_VERSION@@">
 </head>
 <body>
@@ -1340,6 +1344,11 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
       新規追加は OpenAI / Claude (LiteLLM 経由) / Gemini など <strong>OpenAI 互換</strong> エンドポイントに対応。
       API キーは <code>.env</code> の環境変数を参照する方式 (本ファイルには値を保存しません)。
     </div>
+    <!-- Fleet-wide cost summary (U): 全エンジンの本日合計 ¥。
+         過去 14 日トレンドは個別 engine の選択で右ペインに表示。 -->
+    <div id="enginesCostSummary" style="margin:6px 0 10px; padding:8px 12px; background:#fafafb; border:1px solid #e0e0e8; border-radius:6px; font-size:.9em; color:#666;">
+      本日累計: 読み込み中…
+    </div>
     <!-- Master-detail layout: 左に slug 一覧、右に編集フォーム -->
     <div id="enginesLayout" style="display:grid; grid-template-columns: 280px 1fr; gap:14px; align-items:start;">
       <!-- LEFT: list -->
@@ -1429,6 +1438,39 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
               <div id="engineUsageToday" style="font-size:.82em; color:#666;">今日の利用量: 読み込み中…</div>
               <div style="font-size:.75em; color:#888;">
                 上限を超えると次の codegen / planner / judge 呼び出しが <strong>このエンジンだけ</strong> 拒否されます (他エンジンや非 LLM ジョブはそのまま動作)。リセットは UTC 0:00 (= JST 9:00)。
+              </div>
+            </div>
+
+            <!-- ¥ pricing (U): 入力/出力それぞれの ¥/1M token 単価。
+                 既知の slug / model パターンは hub 起動時に自動 seed されるが
+                 operator が手動で上書きも可能。0 = 自前 GPU 等の課金なし。 -->
+            <label style="font-weight:600; align-self:start; padding-top:5px;">単価 (¥/1M tokens)</label>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <label style="display:flex; align-items:center; gap:6px;" title="入力 (prompt) 1M トークンあたりの円コスト。0 = 計算しない (自前 GPU など)。">
+                  <span>入力</span>
+                  <input type="number" id="engineCostInputJpy" min="0" step="0.01" placeholder="0" style="padding:4px 6px; width:120px;">
+                  <span style="font-size:.85em; color:#888;">¥/1M</span>
+                </label>
+                <label style="display:flex; align-items:center; gap:6px;" title="出力 (completion) 1M トークンあたりの円コスト。">
+                  <span>出力</span>
+                  <input type="number" id="engineCostOutputJpy" min="0" step="0.01" placeholder="0" style="padding:4px 6px; width:120px;">
+                  <span style="font-size:.85em; color:#888;">¥/1M</span>
+                </label>
+              </div>
+              <div id="engineCostToday" style="font-size:.82em; color:#666;">本日のコスト: 読み込み中…</div>
+              <div style="font-size:.75em; color:#888;">
+                参考レート (2026 年時点・¥150/USD 換算): DeepSeek-R1 ¥85/¥330、GPT-5 ¥375/¥1500、Claude Sonnet ¥450/¥2250、自前 GPU ¥0/¥0
+              </div>
+            </div>
+
+            <!-- 14 日履歴グラフ: token 使用量 (棒) と ¥ コスト (線) を
+                 dual-axis で表示。Chart.js は loadEngines 後に lazy-load。 -->
+            <label style="font-weight:600; align-self:start; padding-top:5px;">14日履歴</label>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <canvas id="engineCostChart" style="max-height:200px; width:100%;"></canvas>
+              <div id="engineCostChartEmpty" style="font-size:.85em; color:#888; padding:8px 0; display:none;">
+                履歴データなし (このエンジンはまだ利用されていません)。
               </div>
             </div>
 

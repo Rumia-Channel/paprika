@@ -10022,6 +10022,121 @@ async function loadEngines() {
   }
 }
 
+// --- 14-day token + ¥ cost chart per engine (U) ---------------------------
+// Chart.js is loaded in <head>. We keep a single Chart instance and
+// .destroy() before each refresh so switching engines doesn't leak
+// canvases. Empty history → swap to a placeholder text.
+let _engineCostChartInstance = null;
+
+function _renderEngineCostChart(history) {
+  const canvas = document.getElementById('engineCostChart');
+  const empty  = document.getElementById('engineCostChartEmpty');
+  if (!canvas) return;
+  // Destroy any prior instance to avoid stacking.
+  if (_engineCostChartInstance) {
+    try { _engineCostChartInstance.destroy(); } catch (_) {}
+    _engineCostChartInstance = null;
+  }
+  if (!history || history.length === 0) {
+    canvas.style.display = 'none';
+    if (empty) empty.style.display = '';
+    return;
+  }
+  canvas.style.display = '';
+  if (empty) empty.style.display = 'none';
+  if (typeof Chart === 'undefined') {
+    // Chart.js failed to load (offline, blocked CDN, …). Fall back to a
+    // simple text summary so the operator at least sees the numbers.
+    if (empty) {
+      empty.style.display = '';
+      const last = history[history.length - 1] || {};
+      const days = history.length;
+      const totJpy = history.reduce((s, r) => s + (r.cost_jpy || 0), 0);
+      const totTok = history.reduce((s, r) => s + (r.prompt || 0) + (r.completion || 0), 0);
+      empty.textContent = `Chart.js が読み込めません。直近 ${days} 日合計: ${totTok.toLocaleString()} tokens / ¥${totJpy.toLocaleString(undefined, {minimumFractionDigits:2})}`;
+    }
+    return;
+  }
+  const labels = history.map(r => (r.date || '').slice(5));  // MM-DD
+  const promptD     = history.map(r => r.prompt || 0);
+  const completionD = history.map(r => r.completion || 0);
+  const costD       = history.map(r => r.cost_jpy || 0);
+  _engineCostChartInstance = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '入力 (prompt)',
+          data: promptD,
+          backgroundColor: 'rgba(58,92,168,0.55)',
+          borderColor: 'rgba(58,92,168,1)',
+          borderWidth: 1,
+          stack: 'tokens',
+          yAxisID: 'yTok',
+        },
+        {
+          label: '出力 (completion)',
+          data: completionD,
+          backgroundColor: 'rgba(212,161,61,0.55)',
+          borderColor: 'rgba(212,161,61,1)',
+          borderWidth: 1,
+          stack: 'tokens',
+          yAxisID: 'yTok',
+        },
+        {
+          type: 'line',
+          label: 'コスト ¥',
+          data: costD,
+          borderColor: 'rgba(192,32,32,1)',
+          backgroundColor: 'rgba(192,32,32,0.15)',
+          fill: false,
+          tension: 0.25,
+          pointRadius: 3,
+          yAxisID: 'yYen',
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'bottom', labels: { font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const v = ctx.parsed.y;
+              if (ctx.dataset.yAxisID === 'yYen') {
+                return `${ctx.dataset.label}: ¥${v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+              }
+              return `${ctx.dataset.label}: ${v.toLocaleString()} tokens`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { font: { size: 10 } } },
+        yTok: {
+          type: 'linear', position: 'left', beginAtZero: true,
+          title: { display: true, text: 'tokens', font: { size: 11 } },
+          ticks: {
+            font: { size: 10 },
+            callback: (v) => v >= 1000 ? (v/1000).toFixed(0)+'k' : v,
+          },
+        },
+        yYen: {
+          type: 'linear', position: 'right', beginAtZero: true,
+          grid: { drawOnChartArea: false },
+          title: { display: true, text: '¥', font: { size: 11 } },
+          ticks: { font: { size: 10 } },
+        },
+      },
+    },
+  });
+}
+
+
 function renderEnginesList() {
   const host = document.getElementById('enginesList');
   if (!host) return;
@@ -10038,18 +10153,45 @@ function renderEnginesList() {
     const [bg, fg] = colors[k] || ['#eee','#666'];
     return `<span style="display:inline-block; padding:0 5px; border-radius:3px; font-size:.78em; background:${bg}; color:${fg};">${esc(k)}</span>`;
   };
+  // Build per-row entries plus a fleet-wide cost summary in the header.
+  // ぱっぷす運用では「今日の AI 課金合計」が一番気になる数字。
+  let totalToday = 0;
+  let totalReqsToday = 0;
+  ENGINES_STATE.records.forEach(r => {
+    totalToday += (r.cost_today_jpy || 0);
+    totalReqsToday += ((r.usage_today || {}).requests || 0);
+  });
   host.innerHTML = ENGINES_STATE.records.map(rec => {
     const isSel = rec.slug === ENGINES_STATE.selectedSlug;
     const bg = isSel ? '#fff4d4' : '';
     const promoted = rec.promoted ? ' <span title="promoted" style="color:#d4a13d;">●</span>' : '';
-    // ``builtin`` is a historical marker from the now-removed auto-seed
-    // and is no longer surfaced in the list (all engines are operator-
-    // managed). The flag may still be ``true`` in legacy JSON on disk.
+    // Cost chip (U): show today's ¥ next to the row so the operator
+    // can spot the expensive engine at a glance. Green at ¥0, amber
+    // < ¥100, red ≥ ¥100.
+    const cost = rec.cost_today_jpy || 0;
+    let costColor = '#888';
+    let costBg = '#f0f0f0';
+    if (cost > 0) {
+      costColor = cost >= 100 ? '#fff' : '#7a4a00';
+      costBg    = cost >= 100 ? '#c02020' : '#fff0c0';
+    } else if ((rec.cost_input_per_1m_jpy || 0) || (rec.cost_output_per_1m_jpy || 0)) {
+      // Priced but no usage today — green.
+      costColor = '#196b2c';
+      costBg    = '#eef8ee';
+    }
+    const costChip = `<span class="engine-cost-chip" title="本日累計コスト" style="float:right; padding:0 6px; border-radius:8px; font-size:.72em; background:${costBg}; color:${costColor}; font-weight:600;">¥${cost.toLocaleString(undefined, {minimumFractionDigits: cost < 10 ? 2 : 0, maximumFractionDigits: 2})}</span>`;
     return `<div class="engine-row" data-slug="${esc(rec.slug)}" style="padding:6px 8px; border-radius:4px; cursor:pointer; background:${bg};">
-      <div style="font-weight:600; font-size:.92em;">${esc(rec.slug)}${promoted}</div>
+      <div style="font-weight:600; font-size:.92em;">${esc(rec.slug)}${promoted}${costChip}</div>
       <div style="font-size:.78em; color:#666; margin-top:1px;">${kindBadge(rec.kind)} ${esc(rec.model || '')}</div>
     </div>`;
   }).join('');
+  // Fleet-wide cost summary at the top of the list, if the host has a
+  // sibling element we can put it in.
+  const summaryEl = document.getElementById('enginesCostSummary');
+  if (summaryEl) {
+    summaryEl.innerHTML = `本日累計: <strong>¥${totalToday.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</strong> (${totalReqsToday.toLocaleString()} req)`;
+    summaryEl.style.color = totalToday >= 1000 ? '#c00' : (totalToday >= 100 ? '#a06000' : '#196b2c');
+  }
   host.querySelectorAll('.engine-row').forEach(el => {
     el.addEventListener('click', () => {
       selectEngine(el.dataset.slug);
@@ -10150,6 +10292,26 @@ function fillEngineForm(rec) {
     else if (cap > 0 && tt >= cap * 0.9) usageEl.style.color = '#a06000';
     else usageEl.style.color = '#666';
   }
+  // ¥ pricing inputs (U) + today's cost display.
+  const costInEl  = document.getElementById('engineCostInputJpy');
+  const costOutEl = document.getElementById('engineCostOutputJpy');
+  if (costInEl)  costInEl.value  = (rec.cost_input_per_1m_jpy  || 0) || '';
+  if (costOutEl) costOutEl.value = (rec.cost_output_per_1m_jpy || 0) || '';
+  const costTodayEl = document.getElementById('engineCostToday');
+  if (costTodayEl) {
+    const c = rec.cost_today_jpy || 0;
+    const inRate  = rec.cost_input_per_1m_jpy  || 0;
+    const outRate = rec.cost_output_per_1m_jpy || 0;
+    if (!inRate && !outRate) {
+      costTodayEl.textContent = '本日のコスト: ¥0 (単価未設定 ─ 自前 GPU または非課金)';
+      costTodayEl.style.color = '#888';
+    } else {
+      costTodayEl.textContent = `本日のコスト: ¥${c.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+      costTodayEl.style.color = c > 1000 ? '#c00' : (c > 100 ? '#a06000' : '#196b2c');
+    }
+  }
+  // 14-day chart (token bars + cost line). Lazy-load Chart.js once.
+  _renderEngineCostChart(rec.cost_history || []);
   document.getElementById('engineNotes').value = rec.notes || '';
   document.getElementById('engineDeleteBtn').disabled = false;
   document.getElementById('engineDeleteBtn').title = '削除';
@@ -10194,6 +10356,11 @@ async function saveEngine() {
       parseInt(document.getElementById('engineDailyTokenBudget').value, 10) || 0,
     daily_request_budget:
       parseInt(document.getElementById('engineDailyRequestBudget').value, 10) || 0,
+    // U: ¥/1M pricing. Empty = 0 = no cost calculation.
+    cost_input_per_1m_jpy:
+      parseFloat(document.getElementById('engineCostInputJpy').value) || 0,
+    cost_output_per_1m_jpy:
+      parseFloat(document.getElementById('engineCostOutputJpy').value) || 0,
     notes: document.getElementById('engineNotes').value,
   };
   // Direct API key: only include in body if the user typed something

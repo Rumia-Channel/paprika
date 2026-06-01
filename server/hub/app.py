@@ -86,6 +86,18 @@ async def lifespan(app: FastAPI):
     # start so the existing engine names keep resolving.
     state.engines = EngineRegistry(config.data_dir)
     state.engine_usage = EngineUsageRegistry(config.data_dir)
+    # Auto-seed default ¥/1M pricing on engines that have never been
+    # priced. Operator edits win on subsequent restarts (the seeder
+    # only writes when both cost fields are still 0). One-shot, runs
+    # to completion before route handlers go live; log the count for
+    # operator visibility.
+    try:
+        from server.hub.engines import seed_default_pricing as _seed_pricing
+        _n_priced = _seed_pricing(state.engines)
+        if _n_priced:
+            print(f"[engines] auto-priced {_n_priced} engine(s) with default ¥/1M rates")
+    except Exception as _e:
+        print(f"[engines] default pricing seed crashed: {type(_e).__name__}: {_e}")
     # Ensure the effective storage directory (SMB mount or data_dir)
     # exists. get_storage_dir() reads settings.storage_dir which was
     # just initialised above.

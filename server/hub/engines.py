@@ -163,6 +163,19 @@ class EngineRecord:
     # Cloudflare) handles the per-second case.
     daily_token_budget: int = 0            # 0 = no cap. counts prompt+completion
     daily_request_budget: int = 0          # 0 = no cap. counts /chat/completions calls
+    # Pricing (¥ per 1M tokens) for cost-in-yen computation.
+    # OpenAI / Anthropic / DeepSeek bill per-million tokens with separate
+    # rates for input vs output. ぱっぷす運用では予算管理に円換算が必要
+    # なので EngineRecord ごとに固定レート (¥/1M) を持つ。0 = 計算しない
+    # (= 自前 GPU 等の実費 ¥0)。
+    #
+    # 推奨初期値 (2026 年時点; 為替 ¥150/USD 換算):
+    #   deepseek-r1: input ¥85 / output ¥330      ($0.55 / $2.19 per 1M)
+    #   chatgpt51:   input ¥375 / output ¥1500   (gpt-5 推定 $2.50 / $10)
+    #   claude:      input ¥450 / output ¥2250   (sonnet $3 / $15)
+    #   qwen / local: 0 / 0 (自前 GPU、電気代別)
+    cost_input_per_1m_jpy: float = 0.0
+    cost_output_per_1m_jpy: float = 0.0
     notes: str = ""                        # operator memo
     builtin: bool = False                  # True = seeded, UI shows as read-only
     created_at: str = ""
@@ -203,6 +216,8 @@ class EngineRecord:
             ),
             daily_token_budget=int(d.get("daily_token_budget") or 0),
             daily_request_budget=int(d.get("daily_request_budget") or 0),
+            cost_input_per_1m_jpy=float(d.get("cost_input_per_1m_jpy") or 0.0),
+            cost_output_per_1m_jpy=float(d.get("cost_output_per_1m_jpy") or 0.0),
             notes=str(d.get("notes") or ""),
             builtin=bool(d.get("builtin") or False),
             created_at=str(d.get("created_at") or ""),
@@ -213,6 +228,83 @@ class EngineRecord:
 # ----------------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------------
+
+
+# ----------------------------------------------------------------------------
+# Default pricing for well-known engines (¥ per 1M tokens).
+#
+# Auto-seeded on startup ONLY for records whose cost fields are still 0
+# (= operator never set a price). Once the operator edits a price the
+# value is preserved across restarts. Conservative rates pinned to
+# late-2025 vendor pricing × ¥150/USD; operator can override per-engine
+# from the admin UI.
+#
+# Rules apply in order; first match wins. Each rule is matched against:
+#   - the engine's slug (lowercase)
+#   - the engine's model name (lowercase)
+# ----------------------------------------------------------------------------
+_DEFAULT_PRICING_RULES: list[tuple[str, str, float, float]] = [
+    # (substring_to_match_in_slug_or_model, label, in_jpy_per_1m, out_jpy_per_1m)
+    # DeepSeek R1 family (DeepSeek API direct):
+    ("deepseek-reasoner", "DeepSeek-R1",   85.0,  330.0),
+    ("deepseek-r1",       "DeepSeek-R1",   85.0,  330.0),
+    ("deepseek",          "DeepSeek-Chat", 30.0,   60.0),
+    # OpenAI GPT (rough; bumped for gpt-5 tier):
+    ("gpt-5",             "GPT-5",        375.0, 1500.0),
+    ("gpt-4o-mini",       "GPT-4o-mini",   25.0,  100.0),
+    ("gpt-4o",            "GPT-4o",       375.0, 1500.0),
+    ("gpt-4",             "GPT-4",       4500.0, 9000.0),
+    ("o3-mini",           "OpenAI o3-mini", 165.0, 660.0),
+    ("o1",                "OpenAI o1",   2250.0, 9000.0),
+    # Anthropic Claude:
+    ("claude-sonnet-4",   "Claude Sonnet 4",  450.0, 2250.0),
+    ("claude-3-5-sonnet", "Claude Sonnet 3.5",450.0, 2250.0),
+    ("claude-opus",       "Claude Opus",     2250.0,11250.0),
+    ("claude-haiku",      "Claude Haiku",      37.5,  187.5),
+    ("claude",            "Claude (default)",  450.0, 2250.0),
+    # Self-hosted / local — explicit ¥0 to avoid false billing.
+    ("qwen",              "Qwen (self-hosted)", 0.0, 0.0),
+    ("llama",             "Llama (self-hosted)", 0.0, 0.0),
+]
+
+
+def default_pricing_for(slug: str, model: str) -> tuple[float, float] | None:
+    """Lookup default (input, output) ¥ rate per 1M tokens for the
+    given (slug, model) pair, or None when no rule matches.
+    Caller is expected to apply it only when both cost fields are 0."""
+    needle_slug = (slug or "").lower()
+    needle_model = (model or "").lower()
+    for needle, _label, in_jpy, out_jpy in _DEFAULT_PRICING_RULES:
+        if needle in needle_slug or needle in needle_model:
+            return in_jpy, out_jpy
+    return None
+
+
+def seed_default_pricing(registry: "EngineRegistry") -> int:
+    """Auto-apply default ¥ rates to engines whose pricing is still
+    unset (= both cost fields are 0). Returns the number of records
+    updated. Idempotent + non-destructive: explicit operator prices
+    are never overwritten.
+
+    Called once at hub startup so a fresh deploy gets sensible defaults
+    without operator UI clicking."""
+    n = 0
+    try:
+        for rec in registry.all():
+            if rec.cost_input_per_1m_jpy or rec.cost_output_per_1m_jpy:
+                continue  # operator already priced this
+            hit = default_pricing_for(rec.slug, rec.model)
+            if hit is None:
+                continue
+            in_jpy, out_jpy = hit
+            rec.cost_input_per_1m_jpy = in_jpy
+            rec.cost_output_per_1m_jpy = out_jpy
+            registry._write(rec)  # bypass upsert (no slug normalisation needed)
+            n += 1
+    except Exception:
+        # Best-effort: pricing seed must not crash hub startup.
+        pass
+    return n
 
 
 class EngineRegistry(JsonRecordRegistry[EngineRecord]):
