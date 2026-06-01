@@ -3096,24 +3096,24 @@ class WorkerAgent:
                 ),
                 user_agent=_session_ua,
             )
-            # Asset URL blacklist wrapper (V): the passive on_stream_detected
-            # callback inside install_session_asset_capture skips blocked
-            # URLs at the capture layer, but explicit SDK calls
-            # (page.download_video(url=...)) reach the closure directly --
-            # filter here too so the same deny list governs both paths.
-            _video_bl = tuple(
-                s.lower() for s in (getattr(msg, "asset_url_blacklist", []) or ()) if s
+            # Asset URL blacklist wrapper (V + Y): glob/regex deny list.
+            # passive on_stream_detected inside install_session_asset_capture
+            # already filters at the capture layer; this wrapper covers the
+            # explicit SDK call path (page.download_video(url=...)) so the
+            # same list governs both. See core/url_blacklist.py for syntax.
+            from core.url_blacklist import compile_blacklist as _compile_blacklist_yt
+            _video_bl_matcher = _compile_blacklist_yt(
+                getattr(msg, "asset_url_blacklist", []) or ()
             )
 
             def maybe_download_video_session(url, referer=""):
-                if _video_bl and url:
-                    u = url.lower()
-                    for pat in _video_bl:
-                        if pat in u:
-                            _logger.info(
-                                f"[session {sid}] yt-dlp BLOCK (blacklist={pat!r}) {url[:120]}"
-                            )
-                            return None
+                if url:
+                    hit = _video_bl_matcher.match(url)
+                    if hit is not None:
+                        _logger.info(
+                            f"[session {sid}] yt-dlp BLOCK (blacklist={hit!r}) {url[:120]}"
+                        )
+                        return None
                 return _raw_downloader(url, referer)
 
             state.video_downloader = maybe_download_video_session

@@ -3482,17 +3482,25 @@ table.aitbl code { font-size:0.95em; }
         </span>
       </div>
 
-      <!-- V: Asset URL blacklist. 1 行 1 パターン (case-insensitive substring)。
+      <!-- V + Y: Asset URL blacklist. 1 行 1 パターン (4 種類のシンタックス)。
            マッチした URL は assets/ に保存されず、yt-dlp も発火しない。
-           広告 CDN や計測ピクセルなど不要なノイズを除外できる。 -->
+           広告 CDN / 計測ピクセル / 不要な動画 (preview / ads) を除外できる。 -->
       <label for="setAssetUrlBlacklist" style="align-self:start; padding-top:6px;">URL ブラックリスト:</label>
       <div>
-        <textarea id="setAssetUrlBlacklist" rows="4"
-          placeholder="1 行 1 パターン (case-insensitive 部分一致)。例:&#10;media-hls.saawsedge.com&#10;/tracker.gif&#10;.cloudfront.net/ads/&#10;# 行頭 # はコメント"
-          style="width:100%; max-width:560px; padding:5px 8px; font-family:monospace; font-size:12px;"></textarea>
-        <div style="color:#888; font-size:.85em; margin-top:4px;">
+        <textarea id="setAssetUrlBlacklist" rows="6"
+          placeholder="例:&#10;media-hls.saawsedge.com           # 部分一致&#10;https://media-hls.saawsedge.com*  # ワイルドカード (前方一致)&#10;*/ads/*.js                        # glob (どこにあっても)&#10;^https://tracker.                 # ^ で先頭固定&#10;/saawsedge\.com/(media|preview)/.*\.ts/  # /regex/&#10;# 行頭 # はコメント"
+          style="width:100%; max-width:680px; padding:5px 8px; font-family:monospace; font-size:12px;"></textarea>
+        <div style="color:#888; font-size:.85em; margin-top:4px; max-width:680px;">
           マッチした URL は <strong>asset 保存スキップ</strong> & <strong>yt-dlp も発火しない</strong>。
-          1 行 1 パターン (case-insensitive 部分一致)。<code>#</code> 行頭はコメント。
+          1 行 1 パターン。<code>#</code> 行頭はコメント。シンタックス:
+          <ul style="margin:4px 0 0 18px; padding:0; font-size:.95em;">
+            <li><b>部分一致</b>: 特殊文字なし → URL 中にその文字列があれば block (case-insensitive)。<br>
+                例: <code>media-hls.saawsedge.com</code></li>
+            <li><b>glob ワイルドカード</b>: <code>*</code> 任意文字列 / <code>?</code> 1 文字 / <code>^</code> 先頭固定 / <code>$</code> 末尾固定。<br>
+                例: <code>https://media-hls.saawsedge.com*</code> · <code>*/ads/*.js</code> · <code>^https://tracker.</code></li>
+            <li><b>正規表現</b>: <code>/.../</code> で囲む。case-insensitive。<br>
+                例: <code>/saawsedge\.com/(media|preview)/.*\.ts/</code></li>
+          </ul>
         </div>
       </div>
 

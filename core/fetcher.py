@@ -1521,20 +1521,14 @@ async def fetch(opts: FetchOptions) -> FetchResult:
         _net_log: list = opts.network_log if opts.network_log is not None else []
         _net_logged_urls: set = set()
 
-        # URL blacklist (V): operator-managed substring deny list.
-        # Pre-lower for cheap per-response substring checks.
-        _fetch_bl_lower = tuple(
-            s.lower() for s in (opts.asset_url_blacklist or ()) if s
-        )
+        # URL blacklist (V + Y): operator-managed deny list. Supports
+        # substring / glob / regex (see core/url_blacklist.py for syntax).
+        # Compiled once before the on_response hot path.
+        from core.url_blacklist import compile_blacklist as _compile_blacklist
+        _fetch_bl_matcher = _compile_blacklist(opts.asset_url_blacklist or ())
 
         def _fetch_blacklisted(u: str) -> str | None:
-            if not _fetch_bl_lower:
-                return None
-            ul = (u or "").lower()
-            for pat in _fetch_bl_lower:
-                if pat in ul:
-                    return pat
-            return None
+            return _fetch_bl_matcher.match(u)
 
         async def on_response(event: cdp.network.ResponseReceived):
             nonlocal in_flight, last_activity

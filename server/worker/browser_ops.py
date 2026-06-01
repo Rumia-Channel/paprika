@@ -2649,20 +2649,15 @@ async def install_session_asset_capture(
     assets_dir = Path(assets_dir)
     assets_dir.mkdir(parents=True, exist_ok=True)
     metadata: dict = {}
-    # URL blacklist (V): operator-managed substring deny list. Pre-process
-    # to lower-case so the per-response check is a cheap substring scan.
-    # Empty entries / # comments are filtered upstream by the hub.
-    _bl_lower = tuple(s.lower() for s in (url_blacklist or ()) if s)
+    # URL blacklist (V + Y): operator-managed deny list with substring /
+    # glob (*, ?, ^, $) / regex (/.../) syntaxes. Compiled once outside
+    # the hot per-response path. See core/url_blacklist.py for syntax.
+    from core.url_blacklist import compile_blacklist as _compile_blacklist
+    _bl_matcher = _compile_blacklist(url_blacklist or ())
 
     def _is_blacklisted(url: str) -> str | None:
         """Return the first matching pattern, or None when not blocked."""
-        if not _bl_lower:
-            return None
-        u = (url or "").lower()
-        for pat in _bl_lower:
-            if pat in u:
-                return pat
-        return None
+        return _bl_matcher.match(url)
     # request_id -> document_url snapshot at the time the request was
     # issued. Populated by on_request (RequestWillBeSent) and consumed
     # by on_response so we know which page initiated each asset request.
