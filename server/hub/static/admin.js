@@ -7716,9 +7716,17 @@ document.getElementById('opRecStartBtn').addEventListener('click', async () => {
     // 5. Flip UI to active state.
     document.getElementById('opRecSid').textContent = OP_REC.sid;
     document.getElementById('opRecWorker').textContent = OP_REC.worker_id;
-    const novncHref =
-      '/sessions/' + encodeURIComponent(OP_REC.sid)
-      + '/novnc/?autoconnect=1&resize=scale&reconnect=1';
+    // Use the hub's canonical noVNC URL (includes the critical
+    // ?path=sessions/<sid>/novnc/websockify query that tells the noVNC
+    // client which WS path to connect to). My earlier hand-built URL
+    // dropped the path= param -- noVNC then tried '/websockify' at the
+    // hub root, which 403s, producing 'Something went wrong, connection
+    // is closed'.
+    const novncHref = sess.novnc_url_autoconnect
+      || sess.novnc_url
+      || ('/sessions/' + encodeURIComponent(OP_REC.sid)
+          + '/novnc/?path=sessions/' + encodeURIComponent(OP_REC.sid)
+          + '/novnc/websockify&autoconnect=1&resize=scale&reconnect=1');
     document.getElementById('opRecNovncLink').href = novncHref;
     document.getElementById('opRecIdle').style.display = 'none';
     document.getElementById('opRecActive').style.display = '';
