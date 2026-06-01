@@ -7855,7 +7855,34 @@ document.getElementById('opRecStopBtn').addEventListener('click', async () => {
     OP_REC.worker_id = null;
     OP_REC.tStarted = 0;
   } catch (e) {
-    _opRecShowError(e.message || String(e));
+    // Drain failure (504 from a flapped worker, dead session, ...).
+    // Make sure the UI doesn't get stuck in the active state -- reset
+    // to idle so the operator can immediately re-record. Surface the
+    // error in BOTH the live block and the idle-side error box because
+    // we toggle visibility below.
+    const msg = (e && e.message) || String(e);
+    _opRecShowError(
+      '停止 / 結果取得に失敗しました: ' + msg
+      + '\n(セッションが reap された / worker が一時切断、等のフリート不安定が原因のことが多いです。'
+      + '上の "noVNC を開く" タブを閉じて、もう一度「記録開始」を試してみてください。)'
+    );
+    // Force the result block to show with whatever happened so the
+    // operator sees the failure inline -- not just a hidden alert.
+    document.getElementById('opRecResultMeta').textContent =
+      '⚠️ 失敗: ' + msg + ' (session=' + sid + ')';
+    document.getElementById('opRecEventsJson').textContent =
+      '// No events recovered. The session likely terminated before drain.\n'
+      + '// Common causes:\n'
+      + '//   - worker WebSocket flap (hub log: "worker disconnected: ...")\n'
+      + '//   - session idle-reap if recording took longer than idle_ttl_s\n'
+      + '//   - heavy video page exhausted the per-session action lock\n';
+    document.getElementById('opRecClipGallery').style.display = 'none';
+    document.getElementById('opRecResult').style.display = '';
+    document.getElementById('opRecActive').style.display = 'none';
+    document.getElementById('opRecIdle').style.display = '';
+    OP_REC.sid = null;
+    OP_REC.worker_id = null;
+    OP_REC.tStarted = 0;
   } finally {
     btn.disabled = false;
     btn.innerHTML = origLabel;
