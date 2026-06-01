@@ -7584,6 +7584,215 @@ document.getElementById('ljpForensics').addEventListener('click', async () => {
   openForensicsModal(sessionId, hintUrl);
 });
 
+// --------------------------------------------------------------------------
+// Operator-event recorder UI (programming-by-demonstration MVP1)
+// --------------------------------------------------------------------------
+// One-button workflow for trying out the agent extension's operator-event
+// logger. The Submit panel hosts the buttons:
+//   * 記録開始 -> POST /sessions (with optional worker pin), then ext
+//     recordingStart, then surface the noVNC link.
+//   * 停止 & 結果表示 -> ext recordingStop, ext getOperatorEvents(drain),
+//     dump as pretty JSON into the result block. Session is left alive
+//     (idle TTL = 3600 s) so the operator can re-record or inspect manually.
+// Errors anywhere in the chain land in #opRecError so the operator sees
+// what broke (which worker, what HTTP code, etc.) without needing curl.
+
+const OP_REC = { sid: null, worker_id: null, tStarted: 0, liveTimer: null };
+
+async function _opRecPost(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : null,
+  });
+  const t = await r.text();
+  let j = null;
+  try { j = JSON.parse(t); } catch (_) {}
+  if (!r.ok) {
+    const detail = (j && (j.detail || j.error)) || t.slice(0, 200);
+    throw new Error('HTTP ' + r.status + ': ' + detail);
+  }
+  return j;
+}
+
+function _opRecShowError(msg) {
+  const el = document.getElementById('opRecError');
+  el.textContent = msg;
+  el.style.display = '';
+}
+function _opRecClearError() {
+  const el = document.getElementById('opRecError');
+  el.textContent = '';
+  el.style.display = 'none';
+}
+
+async function _opRecLookupWorkerIdByIp(ip) {
+  // Resolve "10.10.50.147" -> worker_id by scanning /workers. Returns
+  // null if no alive worker matches.
+  if (!ip) return null;
+  try {
+    const r = await fetch('/workers');
+    const d = await r.json();
+    for (const w of (d.workers || [])) {
+      if (!w.alive) continue;
+      const urls = (w.lane_novnc_urls || []).join(' ');
+      if (urls.indexOf(ip) >= 0) return w.worker_id;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function _opRecTickLive() {
+  if (!OP_REC.tStarted) return;
+  const secs = Math.floor((Date.now() - OP_REC.tStarted) / 1000);
+  const el = document.getElementById('opRecLive');
+  if (el) el.textContent = '記録中… ' + secs + 's 経過';
+}
+
+document.getElementById('opRecStartBtn').addEventListener('click', async () => {
+  _opRecClearError();
+  const startUrl = (document.getElementById('opRecStartUrl').value || '').trim();
+  const workerIp = (document.getElementById('opRecWorkerIp').value || '').trim();
+  if (!startUrl) { _opRecShowError('開始 URL を入力してください'); return; }
+
+  const btn = document.getElementById('opRecStartBtn');
+  btn.disabled = true;
+  const origLabel = btn.innerHTML;
+  btn.innerHTML = '<iconify-icon icon="lucide:loader-circle" class="spin"></iconify-icon> セッション作成中…';
+
+  try {
+    // 1. Optional worker pin: resolve IP -> worker_id.
+    let pinnedWid = null;
+    if (workerIp) {
+      pinnedWid = await _opRecLookupWorkerIdByIp(workerIp);
+      if (!pinnedWid) {
+        throw new Error(`worker IP ${workerIp} が現在 alive な inventory に見つかりません`);
+      }
+    }
+
+    // 2. Create session. Generous TTLs so the operator has plenty of
+    // time to interact before idle-reaper grabs it.
+    const sessBody = {
+      initial_url: startUrl,
+      idle_ttl_s: 3600,
+      absolute_ttl_s: 7200,
+    };
+    if (pinnedWid) sessBody.worker_id = pinnedWid;
+    const sess = await _opRecPost('/sessions', sessBody);
+    OP_REC.sid = sess.session_id;
+    OP_REC.worker_id = sess.worker_id;
+
+    // 3. Wait briefly for Chrome to load the page + extension content
+    // script. Without this the first ext command races a half-attached
+    // worker WS and fails. 5 s covers ~95% of cases on the current
+    // fleet; the recordingStart retry below is the belt-and-braces.
+    btn.innerHTML = '<iconify-icon icon="lucide:loader-circle" class="spin"></iconify-icon> ページ読込待機 (5s)…';
+    await new Promise(r => setTimeout(r, 5000));
+
+    // 4. Start recording -- with one retry. The first call sometimes
+    // hits an in-flight worker WebSocket reconnect; pause + retry covers
+    // that without bothering the operator.
+    let started = null;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      btn.innerHTML = `<iconify-icon icon="lucide:loader-circle" class="spin"></iconify-icon> recordingStart (${attempt}/2)…`;
+      try {
+        started = await _opRecPost(
+          '/sessions/' + encodeURIComponent(OP_REC.sid) + '/ext',
+          { cmd: 'recordingStart' },
+        );
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < 2) await new Promise(r => setTimeout(r, 4000));
+      }
+    }
+    if (!started) {
+      throw new Error(
+        '記録開始に失敗 (拡張機能 v0.4.0 が未インストールの可能性): ' + (lastErr && lastErr.message)
+      );
+    }
+
+    // 5. Flip UI to active state.
+    document.getElementById('opRecSid').textContent = OP_REC.sid;
+    document.getElementById('opRecWorker').textContent = OP_REC.worker_id;
+    const novncHref =
+      '/sessions/' + encodeURIComponent(OP_REC.sid)
+      + '/novnc/?autoconnect=1&resize=scale&reconnect=1';
+    document.getElementById('opRecNovncLink').href = novncHref;
+    document.getElementById('opRecIdle').style.display = 'none';
+    document.getElementById('opRecActive').style.display = '';
+    document.getElementById('opRecResult').style.display = 'none';
+
+    OP_REC.tStarted = Date.now();
+    _opRecTickLive();
+    if (OP_REC.liveTimer) clearInterval(OP_REC.liveTimer);
+    OP_REC.liveTimer = setInterval(_opRecTickLive, 1000);
+
+    // Auto-open noVNC in a new tab so the operator doesn't have to
+    // hunt for the link. Popup blockers may swallow this when the
+    // click handler ran async after a network round-trip -- the
+    // visible link is the fallback.
+    try { window.open(novncHref, '_blank'); } catch (_) {}
+  } catch (e) {
+    _opRecShowError(e.message || String(e));
+    OP_REC.sid = null;
+    OP_REC.worker_id = null;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origLabel;
+  }
+});
+
+document.getElementById('opRecStopBtn').addEventListener('click', async () => {
+  if (!OP_REC.sid) return;
+  const sid = OP_REC.sid;
+  const btn = document.getElementById('opRecStopBtn');
+  btn.disabled = true;
+  const origLabel = btn.innerHTML;
+  btn.innerHTML = '<iconify-icon icon="lucide:loader-circle" class="spin"></iconify-icon> 停止中…';
+
+  if (OP_REC.liveTimer) {
+    clearInterval(OP_REC.liveTimer);
+    OP_REC.liveTimer = null;
+  }
+
+  try {
+    // Stop the recorder. Failure here is non-fatal -- proceed to drain.
+    try {
+      await _opRecPost(
+        '/sessions/' + encodeURIComponent(sid) + '/ext',
+        { cmd: 'recordingStop' },
+      );
+    } catch (_) {}
+
+    // Drain the buffered events.
+    const got = await _opRecPost(
+      '/sessions/' + encodeURIComponent(sid) + '/ext',
+      { cmd: 'getOperatorEvents', args: { drain: true } },
+    );
+    const ext = (got && got.result) || {};
+    const events = ext.events || [];
+
+    document.getElementById('opRecResultMeta').textContent =
+      events.length + ' 件キャプチャ · session=' + sid;
+    document.getElementById('opRecEventsJson').textContent =
+      JSON.stringify(events, null, 2);
+    document.getElementById('opRecResult').style.display = '';
+    document.getElementById('opRecActive').style.display = 'none';
+    document.getElementById('opRecIdle').style.display = '';
+
+    OP_REC.sid = null;
+    OP_REC.worker_id = null;
+    OP_REC.tStarted = 0;
+  } catch (e) {
+    _opRecShowError(e.message || String(e));
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origLabel;
+  }
+});
+
 // NOTE: "save skill" handler removed alongside the Skills tab (v2 cleanup).
 // Codegen-loop scripts are now distilled into HostKnowledge directly by the
 // R1 Distiller; there's no operator-curated skill registry anymore.

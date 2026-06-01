@@ -840,6 +840,80 @@ asyncio.run(main())"
   </section>
   </div><!-- /.submit-subpane[live] -->
 
+  <!-- Operator-event recorder (programming-by-demonstration MVP1) -->
+  <!-- Standalone tool: opens a fresh session, starts the agent-extension's
+       operator-event recorder, exposes a noVNC link so the operator can
+       interact, and on Stop drains the captured events into a panel.
+       Hub-only feature -- no plumbing into Submit form -- so the operator
+       can run a quick demo session whenever they want. -->
+  <section id="opRecPanel" style="margin-top:20px; padding:14px 18px; background:#fff8f0; border:1px solid #d0a060; border-radius:8px;">
+    <h2 style="margin:0 0 8px; font-size:1em; color:#7a4a14;">
+      <iconify-icon icon="lucide:circle-dot" style="color:#c0392b;"></iconify-icon>
+      <span data-i18n="oprec.title">操作デモ記録 (実験)</span>
+      <span style="font-size:.75em; color:#a07a4a; font-weight:normal; margin-left:8px;" data-i18n="oprec.subtitle">
+        noVNC で手動操作した内容をキャプチャ → 後で AI 解析の few-shot に使う
+      </span>
+    </h2>
+
+    <!-- Idle state: show start button -->
+    <div id="opRecIdle">
+      <label style="display:flex; gap:8px; align-items:center; font-size:.88em; margin-bottom:8px;">
+        <span data-i18n="oprec.start_url">開始 URL:</span>
+        <input type="text" id="opRecStartUrl" value="https://www.google.com/"
+               style="flex:1; padding:4px 8px;">
+      </label>
+      <label style="display:flex; gap:8px; align-items:center; font-size:.88em; margin-bottom:8px;">
+        <span data-i18n="oprec.worker">ワーカー (空 = 自動、要 v0.4.0):</span>
+        <input type="text" id="opRecWorkerIp" placeholder="例: 10.10.50.147"
+               style="width:200px; padding:4px 8px;">
+        <small style="color:#888;" data-i18n="oprec.worker.hint">未指定だと最も古い Chrome v0.3.1 拡張のワーカーに当たることがあります</small>
+      </label>
+      <button type="button" id="opRecStartBtn" class="pill"
+              style="background:#c0392b; border-color:#a03020; color:#fff; font-weight:600;">
+        <iconify-icon icon="lucide:circle-dot"></iconify-icon>
+        <span data-i18n="oprec.start_btn">記録開始 (新セッション)</span>
+      </button>
+      <div id="opRecError" style="color:#c00; margin-top:8px; font-size:.9em; display:none;"></div>
+    </div>
+
+    <!-- Active state: show session info, noVNC link, stop button -->
+    <div id="opRecActive" style="display:none;">
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+        <span style="background:#c0392b; color:#fff; padding:2px 8px; border-radius:4px; font-size:.8em;">
+          <iconify-icon icon="lucide:circle"></iconify-icon> REC
+        </span>
+        <code id="opRecSid" style="font-size:.85em; background:#fff; padding:2px 6px; border-radius:3px;"></code>
+        <span style="color:#888; font-size:.85em;">on</span>
+        <code id="opRecWorker" style="font-size:.85em; background:#fff; padding:2px 6px; border-radius:3px;"></code>
+        <a id="opRecNovncLink" href="#" target="_blank" class="pill"
+           style="background:#fff; border-color:#bbb; color:#333;">
+          <iconify-icon icon="lucide:monitor"></iconify-icon>
+          <span data-i18n="oprec.open_novnc">noVNC を開く</span>
+        </a>
+        <button type="button" id="opRecStopBtn" class="pill"
+                style="background:#196b2c; border-color:#155022; color:#fff; font-weight:600;">
+          <iconify-icon icon="lucide:square"></iconify-icon>
+          <span data-i18n="oprec.stop_btn">停止 & 結果表示</span>
+        </button>
+        <span id="opRecLive" style="color:#666; font-size:.85em;"></span>
+      </div>
+      <div style="color:#666; font-size:.85em;">
+        <iconify-icon icon="lucide:info"></iconify-icon>
+        <span data-i18n="oprec.howto">noVNC を開いて手動でクリック/入力すると裏で記録されます。終わったら「停止」を押すと結果が下に出ます。</span>
+      </div>
+    </div>
+
+    <!-- Result: show captured events -->
+    <div id="opRecResult" style="display:none; margin-top:14px;">
+      <h3 style="margin:0 0 6px; font-size:.95em;">
+        <span data-i18n="oprec.result">結果</span>
+        <span id="opRecResultMeta" style="color:#666; font-size:.85em; font-weight:normal; margin-left:8px;"></span>
+      </h3>
+      <pre id="opRecEventsJson"
+           style="background:#1f2330; color:#e6edf3; padding:10px 12px; border-radius:6px; max-height:400px; overflow:auto; font-size:.8em; margin:0;"></pre>
+    </div>
+  </section>
+
   <!-- Asset detail modal (overlay). One per page; populated on click. -->
   <div id="ljpAssetModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center; padding:20px;">
     <div style="background:#fff; max-width:720px; width:100%; max-height:90vh; border-radius:8px; overflow:hidden; display:flex; flex-direction:column;">
