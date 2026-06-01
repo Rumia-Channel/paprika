@@ -93,6 +93,22 @@ services:
       # DeepSeek API key fallback (the EngineRecord's direct api_key wins
       # when set; this env is only consulted via api_key_env="DEEPSEEK_API_KEY").
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # ----- GPU throughput knobs (ぱっぷす環境向け) ------------------------
+      # 自前 RTX 6000 Pro Max-Q 1 枚を 24 worker line で共有しているため、
+      # Qwen-VL 推論はサブスク料金 ¥0 だが「同時実行数」が constraint。
+      #
+      # PAPRIKA_PERCEPTION_SAMPLE_RATE: post-job perception を確率的にスキップ。
+      #   1.0 = 全ジョブ生成 (デフォルト)、0.3 = 30% だけ生成。
+      #   ぱっぷす 24-lane 本番では 0.3 を推奨。
+      - PAPRIKA_PERCEPTION_SAMPLE_RATE=${PAPRIKA_PERCEPTION_SAMPLE_RATE:-0.3}
+      # PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP: fetch モード + status=completed
+      # のジョブの perception 生成を完全スキップ。codegen-loop と失敗ジョブ
+      # は引き続き生成 (学習の主入力)。1 推奨。
+      - PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP=${PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP:-1}
+      # PAPRIKA_CODEGEN_LOOP_CONCURRENCY: codegen-loop ジョブの同時実行上限。
+      #   0 = 無制限 (デフォルト)、3 = 3 ジョブまで。
+      #   24 ライン環境で page.agent を含むジョブが暴れて GPU 独占するのを防ぐ。
+      - PAPRIKA_CODEGEN_LOOP_CONCURRENCY=${PAPRIKA_CODEGEN_LOOP_CONCURRENCY:-3}
     # Docker socket: the hub spawns ephemeral runner containers per
     # codegen attempt. LAN-trusted deployment; the hub already executes
     # arbitrary CDP commands and writes to disk, so a privileged

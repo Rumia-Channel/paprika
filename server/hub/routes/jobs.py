@@ -3199,6 +3199,56 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
             auto_host = None
             auto_popup_policy = "kill"
 
+    # ---- GPU concurrency gate (codegen-loop only) ----
+    # ぱっぷす環境では Qwen-VL を自前 GPU (RTX 6000 Pro Max-Q) で走らせるが
+    # 1 枚を 24 ライン で奪い合うので、page.agent / observe / ask を呼び得る
+    # codegen-loop ジョブが多数並ぶと GPU 飽和で全体が詰まる。
+    # PAPRIKA_CODEGEN_LOOP_CONCURRENCY で同時実行数を絞り、上限に到達したら
+    # grace window で他ジョブの完了を待つ。Pinned (attach_to_job) は対象外。
+    _is_codegen_loop = (req.options.mode or "fetch") == "codegen-loop"
+    if _is_codegen_loop and pinned_worker is None:
+        from server.hub._gpu_gate import (
+            codegen_loop_at_capacity,
+            codegen_loop_in_flight,
+            get_codegen_loop_limit,
+        )
+        if codegen_loop_at_capacity():
+            _gpu_deadline = time.monotonic() + max(JOB_DISPATCH_GRACE_S, 5.0)
+            _gpu_waited = False
+            while codegen_loop_at_capacity() and time.monotonic() < _gpu_deadline:
+                await asyncio.sleep(_JOB_DISPATCH_POLL_S)
+                _gpu_waited = True
+            if codegen_loop_at_capacity():
+                log.info(
+                    f"[hub] job {job_id}: codegen-loop GPU gate full "
+                    f"({codegen_loop_in_flight()}/{get_codegen_loop_limit()}); "
+                    f"refusing dispatch",
+                )
+                # Mark failed with a clear reason so the admin UI / SDK
+                # can see "GPU gate" not "fleet at capacity". The job
+                # never reached a worker -- no recovery work needed.
+                info.status = JobStatus.failed
+                info.error = (
+                    f"GPU gate full ({codegen_loop_in_flight()}/"
+                    f"{get_codegen_loop_limit()} codegen-loop already "
+                    f"running); retry with backoff"
+                )
+                info.progress.phase = "failed"
+                info.completed_at = datetime.utcnow()
+                try:
+                    await state.store.save_job_info(info)
+                except Exception:
+                    pass
+                raise HTTPException(
+                    503,
+                    info.error,
+                )
+            if _gpu_waited:
+                log.info(
+                    f"[hub] job {job_id}: codegen-loop GPU gate freed during "
+                    f"grace ({codegen_loop_in_flight()}/{get_codegen_loop_limit()})",
+                )
+
     # ---- dispatch in priority order ----
     # 1) WebSocket-connected worker (pinned or any free).
     #
@@ -3352,6 +3402,15 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
                     else novnc
                 )
             await state.store.save_job_info(info)
+            # GPU gate: register the codegen-loop job so subsequent
+            # submissions see the right in-flight count. Unregister
+            # happens in workers.py when WorkerJobComplete / Failed lands.
+            if _is_codegen_loop:
+                try:
+                    from server.hub._gpu_gate import register_codegen_loop
+                    register_codegen_loop(job_id)
+                except Exception:
+                    pass
             log.info(
                 f"[hub] job {job_id} → worker {worker.worker_id} "
                 f"(in_flight={worker.in_flight}/"

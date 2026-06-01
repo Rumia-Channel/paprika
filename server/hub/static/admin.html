@@ -1670,6 +1670,13 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
       <div class="ai-ticker-label">
         <iconify-icon icon="lucide:radio-tower" style="vertical-align:middle;"></iconify-icon>
         <span style="margin-left:6px;">最新の R1 学習</span>
+        <!-- GPU gauge: ぱっぷす環境では Qwen-VL 自前 GPU (RTX 6000) が
+             24 ライン共有のボトルネック。active/peak がリアルタイムで
+             見えると sampling rate を絞るべきかが分かる。 -->
+        <span class="ai-gpu-gauge" id="aiGpuGauge" title="hub-side Qwen-VL inference concurrency / peak / total" style="margin-left:14px; font-size:0.85em; color:#888;">
+          <iconify-icon icon="lucide:cpu" style="vertical-align:middle;"></iconify-icon>
+          <span id="aiGpuGaugeText">GPU: idle</span>
+        </span>
       </div>
       <div class="ai-ticker-rail" id="aiTickerRail">
         <span class="ai-ticker-empty">読み込み中…</span>
@@ -2485,6 +2492,28 @@ table.aitbl code { font-size:0.95em; }
     // current even when the operator never touches the AI tab.
     renderAiTicker();
     setInterval(() => { loadKnowledge().then(renderAiTicker).catch(() => {}); }, 30_000);
+    // GPU gauge poller (lightweight: /health hits no LLM, just gauges).
+    // 5 秒間隔 ─ active=1 で約 5-15s かかる 1 推論を確実に取りこぼさない。
+    async function updateGpuGauge() {
+      try {
+        const r = await fetch('/health');
+        if (!r.ok) return;
+        const j = await r.json();
+        const vi = j.vision_inference;
+        const el = document.getElementById('aiGpuGaugeText');
+        const wrap = document.getElementById('aiGpuGauge');
+        if (!el || !wrap) return;
+        if (!vi) { el.textContent = 'GPU: n/a'; return; }
+        const active = vi.active || 0;
+        const peak   = vi.peak   || 0;
+        const total  = vi.total  || 0;
+        el.textContent = `GPU: ${active > 0 ? '🟢 busy' : '⚪ idle'} (active=${active}, peak=${peak}, total=${total})`;
+        // Color the chip red if peak >= 3 (queue building up); orange if 2.
+        wrap.style.color = peak >= 3 ? '#d24' : (peak >= 2 ? '#d80' : '#888');
+      } catch (e) { /* swallow */ }
+    }
+    updateGpuGauge();
+    setInterval(updateGpuGauge, 5_000);
     // Re-render whenever the locale changes / i18next finishes init,
     // because table contents are built dynamically with tt() lookups.
     if (window.i18next) {

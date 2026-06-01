@@ -1103,6 +1103,14 @@ async def _handle_worker_message(worker, msg) -> None:
             )
         except Exception:
             pass
+        # GPU gate release (P): if this was a codegen-loop job, free its
+        # slot so the next queued codegen-loop job can dispatch.
+        # Idempotent; safe even if it wasn't a codegen-loop job.
+        try:
+            from server.hub._gpu_gate import unregister_codegen_loop
+            unregister_codegen_loop(msg.job_id)
+        except Exception:
+            pass
         info = await state.store.get_job_info(msg.job_id)
         keep_session_active = False
         if info is not None:
@@ -1150,7 +1158,7 @@ async def _handle_worker_message(worker, msg) -> None:
                     record_job_outcome,
                 )
 
-                async def _perception_bg(jid: str, jurl: str, jstatus: str, jerror: str) -> None:
+                async def _perception_bg(jid: str, jurl: str, jstatus: str, jerror: str, jmode: str | None) -> None:
                     try:
                         await asyncio.wait_for(
                             save_perception_for_job(
@@ -1158,6 +1166,8 @@ async def _handle_worker_message(worker, msg) -> None:
                                 url=jurl,
                                 data_dir=get_storage_dir(),
                                 log=None,
+                                mode=jmode,
+                                success=(jstatus == "completed"),
                             ),
                             timeout=90.0,
                         )
@@ -1231,6 +1241,7 @@ async def _handle_worker_message(worker, msg) -> None:
                     msg.job_id, info.url,
                     info.status.value if hasattr(info.status, "value") else str(info.status),
                     info.error or "",
+                    (info.options.mode if info.options else None),
                 ))
             except Exception as e:
                 # Import failure / unexpected; never disrupt job completion.
@@ -1281,6 +1292,14 @@ async def _handle_worker_message(worker, msg) -> None:
                 f"[{jid_short}] failed: {err}",
                 kind="error",
             )
+        except Exception:
+            pass
+        # GPU gate release (P): if this was a codegen-loop job, free its
+        # slot so the next queued codegen-loop job can dispatch.
+        # Idempotent; safe even if it wasn't a codegen-loop job.
+        try:
+            from server.hub._gpu_gate import unregister_codegen_loop
+            unregister_codegen_loop(msg.job_id)
         except Exception:
             pass
         info = await state.store.get_job_info(msg.job_id)

@@ -28,6 +28,7 @@ Environment variables:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -81,6 +82,104 @@ _PERCEPTION_MAX_OUTLINE_CHARS = int(
     # up token cost. Set PERCEPTION_MAX_OUTLINE_CHARS in env to override.
     os.environ.get("PERCEPTION_MAX_OUTLINE_CHARS", "16000"),
 )
+
+# ---------------------------------------------------------------------------
+# GPU throughput knobs (ぱっぷす環境向け最適化)
+#
+# Qwen-VL は自前 GPU (RTX 6000 Pro Max-Q) で走るのでサブスク料金は無いが
+# **GPU 1 枚を 24 worker line で奪い合う** ので post-job perception が
+# スループットのボトルネックになる。以下 2 つの env で GPU 負荷を絞れる。
+#
+# * PAPRIKA_PERCEPTION_SAMPLE_RATE (0.0-1.0, default 1.0):
+#     ジョブごとに確率的に perception を skip。0.3 にすれば 70% skip。
+#     決定論的 (job_id ハッシュベース) なので同じジョブは常に同じ判定。
+#
+# * PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP (default 0):
+#     1 にすると fetch モードで成功 (status=completed) なジョブの
+#     perception 生成を完全 skip。codegen-loop と失敗ジョブは引き続き
+#     生成。「成熟ホストの fetch 成功」が最頻なのでここを切ると効く。
+# ---------------------------------------------------------------------------
+_PAPRIKA_PERCEPTION_SAMPLE_RATE = max(
+    0.0, min(1.0, float(os.environ.get("PAPRIKA_PERCEPTION_SAMPLE_RATE", "1.0") or "1.0"))
+)
+_PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP = bool(
+    int(os.environ.get("PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP", "0") or "0")
+)
+
+
+# ---------------------------------------------------------------------------
+# GPU gauge -- track Qwen-VL inference concurrency so the operator can see
+# "how saturated is my RTX 6000 right now?" in /health and admin UI.
+#
+# These gauges count hub-side perception_llm calls only. Worker-side
+# Tier 4/5/6 (page.observe/ask/agent) hit the same GPU but aren't tracked
+# here yet -- TODO: have workers report their vision_in_flight to hub
+# in WorkerHello / heartbeat. For Phase 1 the post-job perception is by
+# far the dominant consumer (1 inference per completed job × 24 lanes).
+# ---------------------------------------------------------------------------
+_vision_inference_active = 0   # currently running httpx.post
+_vision_inference_total = 0    # lifetime counter (since hub start)
+_vision_inference_max = 0      # peak concurrency observed
+
+
+def get_vision_inference_stats() -> dict:
+    """Snapshot of hub-side Qwen-VL inference counters. Read by /health."""
+    return {
+        "active": _vision_inference_active,
+        "total": _vision_inference_total,
+        "peak": _vision_inference_max,
+    }
+
+
+class _VisionGauge:
+    """Context manager that bumps the GPU gauges around an LLM call."""
+
+    def __enter__(self):
+        global _vision_inference_active, _vision_inference_total, _vision_inference_max
+        _vision_inference_active += 1
+        _vision_inference_total += 1
+        if _vision_inference_active > _vision_inference_max:
+            _vision_inference_max = _vision_inference_active
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        global _vision_inference_active
+        _vision_inference_active = max(0, _vision_inference_active - 1)
+        return False
+
+
+def _should_generate_perception(
+    *,
+    job_id: str,
+    mode: str | None = None,
+    success: bool | None = None,
+) -> tuple[bool, str | None]:
+    """Return (should_generate, skip_reason).
+
+    Decision order:
+      1. fetch + success + FETCH_SUCCESS_SKIP=1  → skip
+      2. sample_rate < 1.0 and hash(job_id) above threshold → skip
+      3. otherwise → generate
+
+    The hash-based sampling is **deterministic** per job_id so the same
+    job always yields the same decision -- helpful when debugging
+    "why didn't this job get a perception?".
+    """
+    # Rule 1: success-fetch skip.
+    if (
+        _PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP
+        and (mode or "").lower() == "fetch"
+        and success is True
+    ):
+        return False, "fetch+success skip"
+    # Rule 2: probabilistic sampling.
+    if _PAPRIKA_PERCEPTION_SAMPLE_RATE < 1.0:
+        # Deterministic hash to 0.0-1.0 (first 8 hex chars / 0xffffffff).
+        digest = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+        bucket = int(digest[:8], 16) / 0xFFFFFFFF
+        if bucket >= _PAPRIKA_PERCEPTION_SAMPLE_RATE:
+            return False, f"sampled out (rate={_PAPRIKA_PERCEPTION_SAMPLE_RATE:.2f})"
+    return True, None
 
 # Heuristic: only send screenshot bytes when the model name hints at vision
 # support. Text-only models (vLLM-served Qwen3 / DeepSeek / etc.) will OOM
@@ -297,19 +396,24 @@ async def generate_perception(
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=tgt.timeout) as client:
-            r = await client.post(tgt.url, json=body, headers=tgt.headers)
-            if r.status_code >= 400:
-                _log.info(
-                    "[perception] LLM %d from %s model=%s: %s",
-                    r.status_code,
-                    tgt.url,
-                    tgt.model,
-                    r.text[:600],
-                )
-                return None
-            payload = r.json()
-            record_engine_usage(tgt, payload.get("usage") or {})
+        # Bump GPU gauge for the duration of the httpx.post -- visible
+        # in /health.vision_inference. RTX 6000 Pro Max-Q is single-batch
+        # for Qwen-VL-72B at int8, so this counter approximates the GPU
+        # busy state when its value is >= 1.
+        with _VisionGauge():
+            async with httpx.AsyncClient(timeout=tgt.timeout) as client:
+                r = await client.post(tgt.url, json=body, headers=tgt.headers)
+                if r.status_code >= 400:
+                    _log.info(
+                        "[perception] LLM %d from %s model=%s: %s",
+                        r.status_code,
+                        tgt.url,
+                        tgt.model,
+                        r.text[:600],
+                    )
+                    return None
+                payload = r.json()
+                record_engine_usage(tgt, payload.get("usage") or {})
     except Exception as e:
         _log.info(
             "[perception] LLM call failed: %s: %s",
@@ -382,6 +486,8 @@ async def save_perception_for_job(
     url: str,
     data_dir: Path,
     log: object = None,
+    mode: str | None = None,
+    success: bool | None = None,
 ) -> PerceptionResult | None:
     """Generate end-of-job PerceptionResult and save to ``data/jobs/{id}/perception.json``.
 
@@ -399,7 +505,32 @@ async def save_perception_for_job(
         data_dir: Hub's ``config.data_dir`` (typically ``/data/jobs``).
         log: Optional callable ``(line: str) -> None`` for streaming job
             logs. Defaults to module logger if None.
+        mode: The job's mode ("fetch" / "codegen-loop" / "rerun"). Used by
+            the sampling gate (PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP) to
+            decide whether to skip generation. Optional for back-compat;
+            when omitted, only the rate-based sampler can skip.
+        success: Whether the job succeeded (status==completed). Used by
+            the success-skip gate above. Optional.
     """
+    # GPU throughput gate -- ぱっぷす環境では Qwen-VL 1 枚を 24 ライン
+    # で奪い合うので、ここで一部 skip して GPU を空けることが効く。
+    # 設定は env (PAPRIKA_PERCEPTION_SAMPLE_RATE /
+    # PAPRIKA_PERCEPTION_FETCH_SUCCESS_SKIP) で operator が回せる。
+    should_run, skip_reason = _should_generate_perception(
+        job_id=job_id, mode=mode, success=success
+    )
+    if not should_run:
+        if callable(log):
+            try:
+                log(f"  📸 perception: skipped ({skip_reason})")
+            except Exception:
+                pass
+        _log.debug(
+            "[perception] skip job=%s reason=%s mode=%s success=%s",
+            job_id, skip_reason, mode, success,
+        )
+        return None
+
     workdir = data_dir / job_id
 
     # Find latest screenshot (codegen-loop saves per-attempt screenshots;

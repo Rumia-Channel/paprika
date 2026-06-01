@@ -588,12 +588,18 @@ async def _run_codegen_loop_job(request: Request, info: JobInfo) -> None:
     # See internal/v2-architecture.html for context.
     try:
         from server.hub.perception_llm import save_perception_for_job
+        # Pass mode + success so the sampling gate (PAPRIKA_PERCEPTION_*)
+        # can decide whether to skip this job's perception. GPU-saturation
+        # mitigation: on ぱっぷす environment Qwen-VL is local but the
+        # single RTX 6000 is shared by 24 worker lines.
         await asyncio.wait_for(
             save_perception_for_job(
                 job_id=job_id,
                 url=info.url,
                 data_dir=get_storage_dir(),
                 log=_log,
+                mode=(info.options.mode if info.options else None),
+                success=(info.status == JobStatus.completed),
             ),
             timeout=90.0,
         )

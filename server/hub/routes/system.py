@@ -155,6 +155,28 @@ async def health() -> dict:
     for w in nstats.get("workers", []):
         v = (w.get("version") or "unknown")[:12] or "unknown"
         by_version[v] = by_version.get(v, 0) + 1
+
+    # GPU gauge (hub-side Qwen-VL inference concurrency). ぱっぷす 環境では
+    # RTX 6000 Pro Max-Q 1 枚を 24 ライン で奪い合うので、ここの active が
+    # 0 → アイドル / >= 1 → busy / 連続的に高い → サンプリング率を下げる兆候。
+    # 取得失敗 (perception_llm が import できない等) は黙ってスキップ。
+    vision_inference: dict | None = None
+    try:
+        from server.hub.perception_llm import get_vision_inference_stats
+        vision_inference = get_vision_inference_stats()
+    except Exception:
+        vision_inference = None
+
+    # GPU gate (P): codegen-loop concurrency status.
+    # codegen_loop_running / codegen_loop_limit を見て、operator が現在の
+    # GPU 飽和度合いと拒否されているジョブの数を把握できる。
+    gpu_gate: dict | None = None
+    try:
+        from server.hub._gpu_gate import snapshot as _gg_snapshot
+        gpu_gate = _gg_snapshot()
+    except Exception:
+        gpu_gate = None
+
     return {
         "status": "ok",
         "store": state.store_kind,
@@ -166,6 +188,16 @@ async def health() -> dict:
         "worker_drift": sum(
             n for v, n in by_version.items() if v != hub_v[:12]
         ),
+        # GPU saturation visibility: {"active": N, "total": M, "peak": K}.
+        # active >= 1 means a perception inference is running RIGHT NOW.
+        # peak shows the highest concurrency ever observed since hub start
+        # (use this to size sampling rate; if peak > 2 you're queueing).
+        "vision_inference": vision_inference,
+        # Codegen-loop concurrency gate:
+        # {"codegen_loop_limit": N, "codegen_loop_running": M, "codegen_loop_jobs": [..]}.
+        # limit=0 means unlimited (default); set PAPRIKA_CODEGEN_LOOP_CONCURRENCY
+        # to throttle.
+        "gpu_gate": gpu_gate,
     }
 
 
