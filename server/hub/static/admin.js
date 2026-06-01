@@ -7782,10 +7782,44 @@ document.getElementById('opRecStopBtn').addEventListener('click', async () => {
     const ext = (got && got.result) || {};
     const events = ext.events || [];
 
+    // Visual gallery of bbox crops. We render each clipped event as a
+    // small thumbnail; click to enlarge. The JSON dump below shows the
+    // event metadata with the clip dataURL ABBREVIATED so the operator
+    // can read the structure without scrolling through 30KB base64.
+    const gallery = document.getElementById('opRecClipGrid');
+    const clipped = events.filter(e => e && e.clip);
+    if (clipped.length > 0) {
+      gallery.innerHTML = clipped.map((e, i) => {
+        const idx = events.indexOf(e);
+        const lbl = (e.type || '').toString() + ' · ' +
+          ((e.target && e.target.text) || (e.target && e.target.tag) || '?').slice(0, 30);
+        return `<div title="event #${idx + 1}  ${esc(lbl)}"
+                     style="display:flex; flex-direction:column; align-items:center; gap:2px;">
+          <img src="${esc(e.clip)}" alt="${esc(lbl)}"
+               style="max-width:160px; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:zoom-in;"
+               onclick="window.open(this.src, '_blank')">
+          <small style="color:#666; font-size:.72em; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">#${idx + 1} ${esc(lbl)}</small>
+        </div>`;
+      }).join('');
+      document.getElementById('opRecClipCount').textContent = String(clipped.length);
+      document.getElementById('opRecClipGallery').style.display = '';
+    } else {
+      document.getElementById('opRecClipGallery').style.display = 'none';
+      gallery.innerHTML = '';
+    }
+
     document.getElementById('opRecResultMeta').textContent =
-      events.length + ' 件キャプチャ · session=' + sid;
+      events.length + ' 件キャプチャ · クロップ ' + clipped.length + ' 件 · session=' + sid;
+
+    // Abbreviate the data: URL of each clip so the JSON dump stays
+    // skim-able. The full image is already shown in the gallery above.
+    const eventsForJson = events.map(e => {
+      if (!e || !e.clip) return e;
+      const c = String(e.clip);
+      return { ...e, clip: c.slice(0, 60) + '… (' + c.length + ' chars, see gallery)' };
+    });
     document.getElementById('opRecEventsJson').textContent =
-      JSON.stringify(events, null, 2);
+      JSON.stringify(eventsForJson, null, 2);
     document.getElementById('opRecResult').style.display = '';
     document.getElementById('opRecActive').style.display = 'none';
     document.getElementById('opRecIdle').style.display = '';

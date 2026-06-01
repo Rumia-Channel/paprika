@@ -156,7 +156,12 @@ window.addEventListener("message", (ev) => {
     } catch (_) { return false; }
   }
 
-  function _emit(type, payload) {
+  // When true, ask the service worker to grab a visible-tab JPEG and
+  // crop it to the target's bbox before stashing the event. Skipped on
+  // password-redacted change events (the surrounding pixels can still
+  // reveal what was typed if the form rendered the value somewhere
+  // else on the page).
+  function _emit(type, payload, opts) {
     const ev = {
       t: Date.now(),
       type,
@@ -165,9 +170,15 @@ window.addEventListener("message", (ev) => {
                   sx: window.scrollX, sy: window.scrollY },
       ...payload,
     };
+    const captureClip = !!(opts && opts.captureClip)
+      && !payload.redacted;
     try {
       chrome.runtime.sendMessage(
-        { __paprikaAgent: true, cmd: "pushOperatorEvent", args: ev },
+        {
+          __paprikaAgent: true,
+          cmd: "pushOperatorEvent",
+          args: { ...ev, __captureClip: captureClip },
+        },
         () => {},
       );
     } catch (_e) {}
@@ -192,7 +203,7 @@ window.addEventListener("message", (ev) => {
           shift: !!e.shiftKey, meta: !!e.metaKey,
         },
         cursor: { x: e.clientX, y: e.clientY },
-      });
+      }, { captureClip: true });
     });
   }, true);
 
@@ -226,7 +237,7 @@ window.addEventListener("message", (ev) => {
         value,
         value_length: (el.value != null ? String(el.value).length : null),
         redacted,
-      });
+      }, { captureClip: true });
     });
   }, true);
 

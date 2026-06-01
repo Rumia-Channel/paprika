@@ -19,7 +19,7 @@
 // session action -> POST /sessions/{id}/ext {cmd,args}; thin typed
 // wrappers live in the Python client (_page.py).
 
-const AGENT_VERSION = "0.4.0";
+const AGENT_VERSION = "0.4.1";
 
 async function activeTab() {
   let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -49,6 +49,105 @@ const NAV_KEY = "navEvents";
 const OP_REC_KEY = "opRecording";
 const OP_EVT_KEY = "opEvents";
 const OP_EVT_MAX = 1000;
+
+// MVP1 phase 2: capture a small JPEG crop around the click/change
+// target so the recorded demonstration carries the same visual context
+// (button colour / shape, surrounding labels) that the operator's eye
+// used to find it. Pure pixel record; the DOM selector handles the
+// "where" — this is the "what does it look like".
+//
+// Pipeline:
+//   chrome.tabs.captureVisibleTab -> JPEG dataURL of full tab
+//   createImageBitmap (works in MV3 SW) -> ImageBitmap
+//   OffscreenCanvas + drawImage -> crop region with padding around bbox
+//   convertToBlob(jpeg quality 0.75) -> Blob
+//   FileReader.readAsDataURL -> base64 dataURL string we can stash on
+//   the event in chrome.storage.session
+//
+// Sizing:
+//   * 40px padding on each side of the bbox so the visual neighbourhood
+//     is recognisable, not just the pixel of the click target itself.
+//   * Down-scaled to fit in a 400x400 box so storage stays small (~25KB
+//     per clip after JPEG encode). 50 events x 25KB = ~1.2 MB << the
+//     10 MB storage.session quota.
+//
+// Failure mode: best-effort. Any error (no active tab, captureVisibleTab
+// not allowed, OffscreenCanvas unsupported, ...) returns null and the
+// caller simply omits the clip from the event. Recording continues.
+async function _captureBboxClip(tabId, bbox, viewport) {
+  const PAD = 40;
+  const cx = Math.max(0, Math.floor(bbox.x - PAD));
+  const cy = Math.max(0, Math.floor(bbox.y - PAD));
+  const cw = Math.ceil(bbox.w + 2 * PAD);
+  const ch = Math.ceil(bbox.h + 2 * PAD);
+
+  // captureVisibleTab needs a windowId (defaults to lastFocusedWindow).
+  // Use the sender tab's window when available so we capture exactly
+  // the tab the operator clicked on, not whatever Chrome considers
+  // "focused" at this instant.
+  let windowId = null;
+  if (tabId != null) {
+    try {
+      const t = await chrome.tabs.get(tabId);
+      windowId = t.windowId;
+    } catch (_e) {}
+  }
+
+  // Capture the visible viewport of the active tab as JPEG.
+  const dataUrl = await new Promise((resolve) => {
+    chrome.tabs.captureVisibleTab(
+      windowId,
+      { format: "jpeg", quality: 80 },
+      (url) => {
+        if (chrome.runtime.lastError) resolve(null);
+        else resolve(url);
+      },
+    );
+  });
+  if (!dataUrl) return null;
+
+  // Decode the JPEG into an ImageBitmap we can draw into a Canvas.
+  let bitmap;
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    bitmap = await createImageBitmap(blob);
+  } catch (_e) {
+    return null;
+  }
+
+  // Clamp the crop rect to the image bounds (bbox can go negative
+  // when scrolled, or off-screen at the right edge).
+  const sx = Math.max(0, Math.min(bitmap.width - 1, cx));
+  const sy = Math.max(0, Math.min(bitmap.height - 1, cy));
+  const sw = Math.max(1, Math.min(bitmap.width - sx, cw));
+  const sh = Math.max(1, Math.min(bitmap.height - sy, ch));
+
+  // Scale down to fit MAX x MAX. Preserves aspect ratio.
+  const MAX = 400;
+  const scale = Math.min(1, MAX / Math.max(sw, sh));
+  const dw = Math.max(1, Math.round(sw * scale));
+  const dh = Math.max(1, Math.round(sh * scale));
+
+  let outBlob;
+  try {
+    const canvas = new OffscreenCanvas(dw, dh);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, dw, dh);
+    outBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.75 });
+  } catch (_e) {
+    return null;
+  } finally {
+    try { bitmap.close(); } catch (_) {}
+  }
+
+  // Convert Blob -> base64 dataURL. FileReader works in MV3 SWs.
+  return await new Promise((resolve) => {
+    const r = new FileReader();
+    r.onloadend = () => resolve(typeof r.result === "string" ? r.result : null);
+    r.onerror = () => resolve(null);
+    r.readAsDataURL(outBlob);
+  });
+}
 function pickNav(d) {
   return {
     tabId: d.tabId, frameId: d.frameId, url: d.url,
@@ -192,16 +291,33 @@ const HANDLERS = {
     await chrome.storage.session.set({ [OP_REC_KEY]: false });
     return { active: false };
   },
-  async pushOperatorEvent(args) {
+  async pushOperatorEvent(args, sender) {
     // Gate again here too: content.js may race a stop, and we'd
     // rather lose a couple of events than capture past the stop.
     const active = (await chrome.storage.session.get(OP_REC_KEY))[OP_REC_KEY];
     if (!active) return { dropped: true };
+    // Optional screenshot crop around the target bbox. The content
+    // script sets __captureClip on click/change events; we strip the
+    // flag here so it doesn't leak into the persisted payload. Best-
+    // effort: any failure (tab busy, OffscreenCanvas not ready, ...)
+    // just stores the event without the clip.
+    const wantClip = !!args.__captureClip;
+    delete args.__captureClip;
+    const bbox = args && args.target && args.target.bbox;
+    if (wantClip && bbox && bbox.w > 0 && bbox.h > 0) {
+      try {
+        const tabId = sender && sender.tab && sender.tab.id;
+        const clip = await _captureBboxClip(tabId, bbox, args.viewport);
+        if (clip) args.clip = clip;
+      } catch (_e) {
+        // swallow — clip is purely a nice-to-have
+      }
+    }
     const cur = (await chrome.storage.session.get(OP_EVT_KEY))[OP_EVT_KEY] || [];
     cur.push(args);
     while (cur.length > OP_EVT_MAX) cur.shift();
     await chrome.storage.session.set({ [OP_EVT_KEY]: cur });
-    return { stored: true, buffered: cur.length };
+    return { stored: true, buffered: cur.length, clipped: !!args.clip };
   },
   // args: { since?: epoch_ms, drain?: bool }
   async getOperatorEvents(args) {

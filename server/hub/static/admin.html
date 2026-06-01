@@ -909,6 +909,17 @@ asyncio.run(main())"
         <span data-i18n="oprec.result">結果</span>
         <span id="opRecResultMeta" style="color:#666; font-size:.85em; font-weight:normal; margin-left:8px;"></span>
       </h3>
+      <!-- Visual gallery: each click/change event's bbox crop, rendered
+           as a small thumbnail so the operator can see what the
+           recorder actually captured (without scrolling through JSON). -->
+      <div id="opRecClipGallery" style="display:none; margin-bottom:10px;">
+        <div style="font-size:.85em; color:#7a4a14; margin-bottom:4px;">
+          <span data-i18n="oprec.clips">画面クロップ</span>
+          (<span id="opRecClipCount">0</span>)
+        </div>
+        <div id="opRecClipGrid"
+             style="display:flex; flex-wrap:wrap; gap:6px; padding:6px; background:#fff; border:1px solid #e0dcf0; border-radius:6px;"></div>
+      </div>
       <pre id="opRecEventsJson"
            style="background:#1f2330; color:#e6edf3; padding:10px 12px; border-radius:6px; max-height:400px; overflow:auto; font-size:.8em; margin:0;"></pre>
     </div>
