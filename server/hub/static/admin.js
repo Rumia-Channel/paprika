@@ -68,6 +68,7 @@ const I18N_RESOURCES = {
     "jobs.tab.success":  "成功",
     "jobs.tab.error":    "エラー",
     "jobs.tab.running":  "実行中",
+    "jobs.loading":      "読み込み中…",
     "jobs.th.id":        "ID",
     "jobs.th.mode":      "モード",
     "jobs.th.status":    "ステータス",
@@ -467,6 +468,7 @@ const I18N_RESOURCES = {
     "jobs.tab.success":  "success",
     "jobs.tab.error":    "errors",
     "jobs.tab.running":  "running",
+    "jobs.loading":      "loading…",
     "jobs.th.id":        "id",
     "jobs.th.mode":      "mode",
     "jobs.th.status":    "status",
@@ -1717,6 +1719,9 @@ async function refresh() {
     if (didStructuralUpdate) {
       applyJobCols();
       renderJobsPager(total, startIdx, endIdx);
+      // Drop the click-acknowledgement dim once real rows are painted.
+      const _jt = document.getElementById('jobsTable');
+      if (_jt) _jt.classList.remove('jobs-refreshing');
     }
   } catch (e) {
     document.getElementById('status').textContent = 'error: ' + e.message;
@@ -2933,6 +2938,13 @@ document.getElementById('closeAllSessions').addEventListener('click', closeAllSe
 // data-jobs-status attribute, persists the choice in localStorage,
 // updates the .active class for visual feedback, and triggers a
 // refresh() so the table re-renders with the new filter immediately.
+//
+// UX note: even after the 2-second poll's render path was made
+// signature-cached, the operator perceives a beat of dead time between
+// click and table-swap because refresh() has to round-trip /jobs /
+// /workers / /sessions before the new filter is applied. We paint a
+// transient "更新中…" row into tbody synchronously so the click feels
+// instantly acknowledged; the actual render that follows replaces it.
 document.querySelectorAll('#jobsStatusTabs [data-jobs-status]').forEach(btn => {
   btn.addEventListener('click', () => {
     const val = btn.dataset.jobsStatus || 'all';
@@ -2946,6 +2958,28 @@ document.querySelectorAll('#jobsStatusTabs [data-jobs-status]').forEach(btn => {
       b.classList.toggle('active', sel);
       b.setAttribute('aria-selected', sel ? 'true' : 'false');
     });
+    // Immediate visual feedback: bust the render cache, paint a
+    // loading row into the table body, and dim the table slightly so
+    // the rerender lands with a visible swap. The next refresh()
+    // tick's full rebuild branch replaces both naturally because the
+    // filter is part of visSig (different value -> sig mismatch ->
+    // rebuild).
+    _jobsLastSig = '';
+    const jt = document.getElementById('jobsTable');
+    const tb = jt && jt.querySelector('tbody');
+    if (tb) {
+      tb.innerHTML =
+        '<tr><td colspan="10" class="empty" style="text-align:center; color:#888;">' +
+        '<iconify-icon icon="lucide:loader-circle" class="spin" style="vertical-align:middle;"></iconify-icon> ' +
+        '<span data-i18n="jobs.loading">読み込み中…</span></td></tr>';
+    }
+    if (jt) {
+      jt.classList.add('jobs-refreshing');
+      // Auto-remove the dim after a beat regardless of refresh()'s
+      // outcome -- worst case the table stays slightly dim until the
+      // next tick, which still gets removed once new rows render.
+      setTimeout(() => jt.classList.remove('jobs-refreshing'), 1200);
+    }
     // Trigger immediate re-render via the next refresh tick. refresh()
     // is the routine that rebuilds the table; we don't have a
     // standalone renderJobs() here, so just force a poll.

@@ -877,6 +877,18 @@
   /* Generic pager (reused by each AI feature). */
   .ai-pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: .88em; }
   .ai-pager:empty { display: none; }
+
+  /* Click-to-render acknowledgement for the Jobs status filter tabs.
+     The class is added by admin.js when an operator clicks a filter
+     and removed once the rebuild branch of the renderer paints real
+     rows. Opacity transition is the right tool here: instant click
+     feedback for a perceptually-async fetch, no layout shift. */
+  #jobsTable.jobs-refreshing {
+    opacity: 0.55;
+    transition: opacity .12s ease-out;
+    pointer-events: none;
+  }
+  #jobsTable { transition: opacity .18s ease-in; }
   .aipg { font-size: .85em; padding: 3px 12px; border: 1px solid #ccd; background: #fff; border-radius: 6px; cursor: pointer; color: #446; }
   .aipg:hover:not([disabled]) { background: #eef4fa; }
   .aipg[disabled] { opacity: .4; cursor: default; }
