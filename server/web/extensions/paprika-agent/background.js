@@ -19,7 +19,7 @@
 // session action -> POST /sessions/{id}/ext {cmd,args}; thin typed
 // wrappers live in the Python client (_page.py).
 
-const AGENT_VERSION = "0.4.2";
+const AGENT_VERSION = "0.4.3";
 
 async function activeTab() {
   let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -49,6 +49,28 @@ const NAV_KEY = "navEvents";
 const OP_REC_KEY = "opRecording";
 const OP_EVT_KEY = "opEvents";
 const OP_EVT_MAX = 1000;
+
+// Pre-click screenshot pre-fetch buffer. content.js fires a
+// prefetchClipForCursor command on every mousedown that happens
+// while recording is active; this handler kicks off captureVisibleTab
+// immediately (capturing the page in its pre-click visual state) and
+// stores the still-resolving Promise under a content-script-supplied id.
+// When the corresponding click event arrives a few ms later carrying
+// the same id in __prefetchId, pushOperatorEvent awaits the buffered
+// promise and attaches the resulting clip to the event -- so the
+// recorded image is "what the operator saw when they decided to click"
+// rather than "what the page looks like after the click started
+// processing". Entries TTL out after 2s in case mousedown happened
+// without a follow-up click (drag, cancelled gesture).
+const PREFETCH_TTL_MS = 2000;
+const _prefetchBuffer = new Map(); // id -> { promise: Promise<dataURL|null>, t: ms }
+
+function _prefetchSweep() {
+  const now = Date.now();
+  for (const [k, v] of _prefetchBuffer) {
+    if (now - v.t > PREFETCH_TTL_MS) _prefetchBuffer.delete(k);
+  }
+}
 
 // MVP1 phase 2: capture a small JPEG crop around the click/change
 // target so the recorded demonstration carries the same visual context
@@ -289,7 +311,37 @@ const HANDLERS = {
   },
   async recordingStop() {
     await chrome.storage.session.set({ [OP_REC_KEY]: false });
+    _prefetchBuffer.clear();
     return { active: false };
+  },
+
+  // Fired from content.js mousedown (capture phase). Kicks off the
+  // captureVisibleTab + bbox crop synchronously so the page bitmap we
+  // grab is the pre-click state. Returns immediately; the actual clip
+  // is awaited later by pushOperatorEvent when the matching click
+  // arrives carrying __prefetchId = this args.id.
+  async prefetchClipForCursor(args, sender) {
+    const active = (await chrome.storage.session.get(OP_REC_KEY))[OP_REC_KEY];
+    if (!active) return { skipped: "not recording" };
+    const id = String(args && args.id || "");
+    if (!id) return { skipped: "no id" };
+    const x = Number(args.x), y = Number(args.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return { skipped: "bad coords" };
+    const tabId = sender && sender.tab && sender.tab.id;
+    // 160x160 square centred on cursor -- same shape as the bbox-0x0
+    // fallback in pushOperatorEvent, so prefetched clips and fallback
+    // clips look consistent in the gallery.
+    const r = 80;
+    const rect = {
+      x: Math.max(0, x - r),
+      y: Math.max(0, y - r),
+      w: r * 2,
+      h: r * 2,
+    };
+    const promise = _captureBboxClip(tabId, rect).catch(() => null);
+    _prefetchBuffer.set(id, { promise, t: Date.now() });
+    _prefetchSweep();
+    return { queued: true, buffered: _prefetchBuffer.size };
   },
   async pushOperatorEvent(args, sender) {
     // Gate again here too: content.js may race a stop, and we'd
@@ -303,7 +355,29 @@ const HANDLERS = {
     // just stores the event without the clip.
     const wantClip = !!args.__captureClip;
     delete args.__captureClip;
-    if (wantClip) {
+    // Pre-click pre-fetched clip (mousedown side path). When the
+    // click event carries a __prefetchId matching a buffered Promise,
+    // use that clip (= "pre-click visual state") instead of capturing
+    // fresh here (= "post-click visual state, after the page may have
+    // started rendering the click's side effect"). The bounded await
+    // means we wait at most 800 ms for the pre-fetch -- if it's
+    // somehow stuck we fall back to the live capture path below.
+    const prefetchId = args.__prefetchId;
+    delete args.__prefetchId;
+    if (wantClip && prefetchId) {
+      const entry = _prefetchBuffer.get(prefetchId);
+      if (entry) {
+        _prefetchBuffer.delete(prefetchId);
+        try {
+          const clip = await Promise.race([
+            entry.promise,
+            new Promise((res) => setTimeout(() => res(null), 800)),
+          ]);
+          if (clip) args.clip = clip;
+        } catch (_) {}
+      }
+    }
+    if (wantClip && !args.clip) {
       const tgt = (args && args.target) || {};
       const bbox = tgt.bbox;
       // Prefer the element's bbox. Some sites use absolutely-positioned

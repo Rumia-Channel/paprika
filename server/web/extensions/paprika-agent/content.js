@@ -156,6 +156,40 @@ window.addEventListener("message", (ev) => {
     } catch (_) { return false; }
   }
 
+  // ----- Pre-click screenshot pre-fetch (M0.5++ for visual fidelity) -
+  // The "captureVisibleTab on click" path is racy: by the time the SW
+  // resolves the capture, the click handler has already triggered a
+  // visual change (player loading, navigation, modal open). To capture
+  // what the operator ACTUALLY SAW at the moment they decided to
+  // click, fire the screenshot ASAP from mousedown (which runs ~10-100
+  // ms before click). The background SW stores the result keyed by an
+  // id and the click handler hands the same id along so the buffered
+  // clip lands on the right event.
+  let _lastMousedown = null;
+  document.addEventListener("mousedown", (e) => {
+    if (!e.isTrusted) return;
+    _isRecording((on) => {
+      if (!on) return;
+      const id = "md-" + Date.now() + "-" + e.clientX + "-" + e.clientY;
+      _lastMousedown = {
+        id,
+        t: Date.now(),
+        x: e.clientX,
+        y: e.clientY,
+      };
+      try {
+        chrome.runtime.sendMessage(
+          {
+            __paprikaAgent: true,
+            cmd: "prefetchClipForCursor",
+            args: { id, x: e.clientX, y: e.clientY },
+          },
+          () => {},
+        );
+      } catch (_e) {}
+    });
+  }, true);
+
   // When true, ask the service worker to grab a visible-tab JPEG and
   // crop it to the target's bbox before stashing the event. Skipped on
   // password-redacted change events (the surrounding pixels can still
@@ -172,12 +206,33 @@ window.addEventListener("message", (ev) => {
     };
     const captureClip = !!(opts && opts.captureClip)
       && !payload.redacted;
+    // Link click events back to the mousedown that preceded them, so
+    // the SW can attach the pre-click screenshot it pre-fetched.
+    // Only valid if the mousedown was very recent (<500ms) and matches
+    // the click roughly in cursor position.
+    let prefetchId = null;
+    if (captureClip && type === "click" && _lastMousedown) {
+      const ageMs = Date.now() - _lastMousedown.t;
+      const cx = payload.cursor && payload.cursor.x;
+      const cy = payload.cursor && payload.cursor.y;
+      if (
+        ageMs <= 500
+        && Math.abs((cx || 0) - _lastMousedown.x) <= 4
+        && Math.abs((cy || 0) - _lastMousedown.y) <= 4
+      ) {
+        prefetchId = _lastMousedown.id;
+      }
+    }
     try {
       chrome.runtime.sendMessage(
         {
           __paprikaAgent: true,
           cmd: "pushOperatorEvent",
-          args: { ...ev, __captureClip: captureClip },
+          args: {
+            ...ev,
+            __captureClip: captureClip,
+            __prefetchId: prefetchId,
+          },
         },
         () => {},
       );
