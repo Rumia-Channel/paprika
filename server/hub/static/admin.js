@@ -3093,6 +3093,25 @@ for (const r of document.querySelectorAll('input[name="mode"]')) {
 for (const r of document.querySelectorAll('input[name="fetchSubMode"]')) {
   r.addEventListener('change', syncFetchSubMode);
 }
+
+// X: 解析の目標プリセットボタン。クリックで textarea を GOAL_PRESETS の
+// 文言で上書き。operator 編集中の内容は失われるが、それ以前にプリセット
+// 文言から書き換えていないかは判別不能なので確認は省略 (誤クリックは
+// Ctrl+Z で復活できる)。
+for (const btn of document.querySelectorAll('.goal-preset[data-goal-preset]')) {
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.goalPreset;
+    const text = GOAL_PRESETS[key];
+    if (!text) return;
+    const ta = document.getElementById('fetchInvestigateGoal');
+    if (ta) {
+      ta.value = text;
+      ta.focus();
+      // カーソルを末尾に置いて operator が追記しやすくする。
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+    }
+  });
+}
 // 動画をダウンロード <-> アセット保存 の相互制約 guard
 {
   const _dv = document.getElementById('fetchDownloadVideo');
@@ -7912,6 +7931,20 @@ function currentFetchSubMode() {
   const sel = document.querySelector('input[name="fetchSubMode"]:checked');
   return (sel && sel.value) || 'recipe';
 }
+
+// X: 解析の目標プリセット。最頻ユースケースを 1 クリックで textarea に
+// 投入できる。文言は planner/coder LLM 向けに最適化済み:
+//   - SDK 関数名 (page.download_video, pap.assets.add, page.outline,
+//     pap.walk) を明示して LLM が候補から外れにくくする
+//   - 副次的な落とし穴 (HLS は video.play() 必要、lazy-load は scroll
+//     必要、広告除外) を予め指示
+//   - 「YouTube 等は url 明示」convention と整合
+const GOAL_PRESETS = {
+  video:   "このページのメイン動画を再生して動画 URL を検出し、page.download_video(url=...) で yt-dlp 経由でダウンロードして pap.assets.add(path) で保存する。HLS / DASH の .m3u8 / .mpd を network から拾うために必要なら video.play() を発火する。広告動画やプレビューサムネは対象外。",
+  gallery: "このページに表示されている主要な画像 (本文中の写真・イラスト等) を全て pap.assets.add(path) で保存する。lazy-load 画像を取りこぼさないよう必要に応じて scroll を発火させる。アイコン・ロゴ・1px トラッカー等の装飾画像は対象外。",
+  page:    "ページ全体の HTML を pap.assets.add(name='page.html', content=...) で保存し、メタデータ (title / meta description / og:image) を抽出して pap.assets.add(name='meta.json', content=JSON) で併せて保存する。",
+  links:   "このページから同じドメインのリンクをすべて列挙し、pap.walk(seed_urls=[...], same_host=True) で BFS クロールして各ページの URL とタイトルを pap.assets.add(name='links.json', content=JSON) にまとめる。",
+};
 
 // Toggle visibility of the inline goal area when AI調査 is selected.
 // Wired to radio onchange below and called once on page load.

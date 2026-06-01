@@ -187,14 +187,47 @@
           </label>
           <span id="fetchSubModeBadge" style="color:#888; font-size:.85em; margin-left:auto;"></span>
         </div>
-        <!-- "AI で解析する" only: inline goal textarea + sensible defaults. -->
+        <!-- "AI で解析する" only: inline goal textarea + sensible defaults.
+             X: プリセット (動画 DL / 画像ギャラリー / ページ HTML / リンク
+             抽出) を上に並べてワンクリックで textarea を埋められる。最頻ユース
+             ケースの「動画再生 + ダウンロード」は textarea にプリセットして
+             open 時から即 Submit できる状態にしておく。 -->
         <div id="fetchInvestigateArea" class="fetch-investigate-area" style="display:none;">
-          <label style="display:block; font-weight:600; margin-bottom:4px;">
-            <iconify-icon icon="lucide:bot"></iconify-icon> 解析の目標
-          </label>
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+            <label style="display:block; font-weight:600; margin:0;">
+              <iconify-icon icon="lucide:bot"></iconify-icon> 解析の目標
+            </label>
+            <span style="color:#888; font-size:.85em;">プリセット:</span>
+            <button type="button" class="pill goal-preset" data-goal-preset="video"
+                    style="background:#fff0c0; border-color:#d4a13d; color:#7a4a00; font-size:.85em;"
+                    title="メイン動画を再生して URL を検出 → page.download_video() で yt-dlp 経由ダウンロード → pap.assets.add() で保存">
+              <iconify-icon icon="lucide:video"></iconify-icon> 動画 DL
+            </button>
+            <button type="button" class="pill goal-preset" data-goal-preset="gallery"
+                    style="background:#eef0ff; border-color:#6a8ec7; color:#3a5ca8; font-size:.85em;"
+                    title="ページ上の主要な画像をすべて pap.assets.add() で保存。lazy-load を考慮して scroll する">
+              <iconify-icon icon="lucide:image"></iconify-icon> 画像ギャラリー
+            </button>
+            <button type="button" class="pill goal-preset" data-goal-preset="page"
+                    style="background:#eef8ee; border-color:#7ab68a; color:#196b2c; font-size:.85em;"
+                    title="ページの本文 HTML を保存し、メタデータ (title / description / og:image) を JSON で抽出">
+              <iconify-icon icon="lucide:file-text"></iconify-icon> ページ保存
+            </button>
+            <button type="button" class="pill goal-preset" data-goal-preset="links"
+                    style="background:#f5edff; border-color:#9777cc; color:#5a3b8a; font-size:.85em;"
+                    title="同ドメインの全リンクを列挙して pap.walk() で BFS クロール">
+              <iconify-icon icon="lucide:link"></iconify-icon> リンク収集
+            </button>
+            <span style="color:#888; font-size:.8em;">クリックで textarea を上書き</span>
+          </div>
+          <!-- デフォルトでぱっぷす最頻ユースケース「動画 DL」のテンプレートを
+               textarea に事前入力。operator が他の用途を選ぶ場合は上のプリセット
+               ボタン or 直接編集する。LLM (planner / coder) への指示として最適化
+               されており、page.download_video(url=...) で yt-dlp 経由 + asset 保存
+               の流れを明示。convention「YouTube は url 明示」も自然に満たす。 -->
           <textarea id="fetchInvestigateGoal"
-            style="width:100%; min-height:64px; box-sizing:border-box;"
-            placeholder="例: このページのメイン動画 URL を pap.assets.add() で保存する"></textarea>
+            style="width:100%; min-height:72px; box-sizing:border-box;"
+            placeholder="解析させたい内容を自然言語で。例: このページのメイン動画を再生してダウンロード">このページのメイン動画を再生して動画 URL を検出し、page.download_video(url=...) で yt-dlp 経由でダウンロードして pap.assets.add(path) で保存する。HLS / DASH の .m3u8 / .mpd を network から拾うために必要なら video.play() を発火する。広告動画やプレビューサムネは対象外。</textarea>
           <div style="display:flex; gap:14px; align-items:center; margin-top:6px; font-size:.9em; flex-wrap:wrap;">
             <label>最大試行回数 <input type="number" id="fetchInvestigateMaxAttempts" value="3" min="1" max="10" style="width:50px"></label>
             <label>1試行タイムアウト <input type="number" id="fetchInvestigateTimeoutSec" value="600" min="60" max="86400" style="width:80px"> 秒</label>
