@@ -1454,6 +1454,48 @@ class Page:
         _check(reply)
         return reply.get("result")
 
+    async def _get_html(self) -> str:
+        """Serialize the page's full HTML via the /evaluate endpoint.
+        Shared by :meth:`html` / :meth:`content` / :meth:`source` so each
+        public name logs as itself (no nested-decorator double trace)."""
+        reply = await self._client._json(
+            "POST", f"/sessions/{self._sid}/evaluate",
+            json=self._pid_json({
+                "expression": "document.documentElement.outerHTML",
+                "await_promise": False,
+            }),
+        )
+        _check(reply)
+        return reply.get("result") or ""
+
+    @_action_log
+    async def html(self) -> str:
+        """Return the page's full serialized HTML (``<html>…</html>``).
+
+        There is no dedicated hub endpoint -- this runs
+        ``document.documentElement.outerHTML`` in the page via
+        :meth:`evaluate`.  Provided because automation scripts (and the
+        models that write them) routinely reach for ``page.html()`` /
+        ``page.content()`` / ``page.source()`` to scrape a manifest /
+        player URL out of the DOM::
+
+            html = await page.html()
+            m = re.search(r"https://[^\"']+\\.m3u8[^\"']*", html)
+            if m:
+                await page.download_video(url=m.group(0))
+        """
+        return await self._get_html()
+
+    @_action_log
+    async def content(self) -> str:
+        """Alias for :meth:`html` (Playwright-style name)."""
+        return await self._get_html()
+
+    @_action_log
+    async def source(self) -> str:
+        """Alias for :meth:`html` (Selenium-style name)."""
+        return await self._get_html()
+
     async def _eval_el(self, selector: str, body: str, *, index: int = 0):
         """Run a JS expression ``body`` (using ``el``) against the
         ``index``-th match of ``selector``. Negative ``index`` counts from
@@ -2457,23 +2499,55 @@ class Page:
 # their own setup steps after a reopen -- exposed via the
 # ``Session.add_on_reopen(callback)`` hook.
 
-def _is_session_not_found_error(exc) -> bool:
-    """True if *exc* is a hub 404 saying the session vanished.
+def _is_session_recoverable_error(exc) -> bool:
+    """True if *exc* is a hub-side failure that auto-reopening the
+    session can plausibly fix.
 
-    Recognises both shapes the hub uses:
-      * ``HTTP 404: {'detail': "session 'ses_XXX' not found"}`` from
-        the per-session action endpoints (the common case after a hub
-        restart wipes the in-memory SessionRegistry).
-      * ``HTTP 404: session '...' not found`` (rare textual shape).
+    Three failure shapes are covered:
+
+      * **HTTP 404** ``session 'ses_XXX' not found`` -- a hub restart
+        wiped the in-memory SessionRegistry (the original case this
+        helper was built for).
+      * **HTTP 502** ``session worker 'WID' is no longer connected``
+        -- the worker that held this session's lane dropped WS
+        (self-update / crash / network blip); a fresh open_session
+        picks an alive worker.
+      * **HTTP 502** ``no active worker`` -- the scheduler can't find
+        an alive worker right now. A reopen retries which works as
+        soon as fleet recovers.
+
+    Intentionally NOT covered:
+
+      * **HTTP 504** ``session action timed out`` -- the worker IS
+        alive and reachable but the underlying action (e.g. ``goto``
+        to a 1 GB mp4) is slow. Reopening would just hit the same
+        timeout on the new session.
+      * Generic transport errors (DNS / connect refused) -- the hub
+        itself is unreachable; a reopen won't help.
     """
     from ._client import PaprikaError
 
     if not isinstance(exc, PaprikaError):
         return False
-    if getattr(exc, "status_code", None) != 404:
-        return False
+    code = getattr(exc, "status_code", None)
     msg = str(exc)
-    return ("session" in msg) and ("not found" in msg)
+    if code == 404:
+        return ("session" in msg) and ("not found" in msg)
+    if code == 502:
+        # Worker side disappeared between session-action dispatch and
+        # arrival. Reopening picks a different live worker.
+        if "session worker" in msg and "no longer connected" in msg:
+            return True
+        # Scheduler couldn't dispatch session_start to anyone -- often
+        # transient (fleet mid-restart). Retry the open.
+        if "no active worker" in msg:
+            return True
+    return False
+
+
+# Back-compat alias for callers that imported the old name. Both
+# refer to the same predicate.
+_is_session_not_found_error = _is_session_recoverable_error
 
 
 class _SessionReopenProxy:
@@ -2514,7 +2588,7 @@ class _SessionReopenProxy:
         try:
             return await self._real._json(method, path, **kwargs)
         except Exception as e:  # noqa: BLE001 -- specific check below
-            if not _is_session_not_found_error(e):
+            if not _is_session_recoverable_error(e):
                 raise
             if not getattr(self._session, "_auto_reopen", True):
                 raise
