@@ -28,6 +28,11 @@ from server.hub.codegen import (
     LLMTarget,
     generate_script,
 )
+from server.hub.codegen_preflight import (
+    PREFLIGHT_ENABLED,
+    PreflightResult,
+    run_preflight,
+)
 from server.hub.judge_llm import Verdict, judge_attempt
 from server.hub.planner_llm import Plan, plan_goal
 from server.hub.runner import ExecResult, execute_in_sandbox
@@ -662,6 +667,57 @@ async def run_iterative_codegen(
         n_rules = convention_addendum.count("\n- ")
         _log(f"  ... appended {n_rules} curated convention(s) to the codegen system prompt")
 
+    # Preflight ("事前偵察"): before we let the planner and the first
+    # codegen attempt write code against a URL they've never seen, open
+    # a short-lived browser session, render the page, and capture what
+    # actually loaded -- final URL after redirects, title, page outline,
+    # h1/h2/h3, and flags (age gate, login form, video / iframe counts).
+    # Both the planner and every codegen attempt then prompt against
+    # REAL observation, not a guess derived from the URL string. Cost
+    # is one settled-page sample (~3-10s) up front but typically saves
+    # an entire failed attempt (60-180s each) when the page diverges
+    # from the LLM's prior. Falls back gracefully on any error: an
+    # ok=False result yields an empty prompt block, so downstream code
+    # behaves identically to the pre-preflight world.
+    preflight: PreflightResult | None = None
+    preflight_block: str = ""
+    if PREFLIGHT_ENABLED and start_url:
+        try:
+            _log("preflight: scouting the start URL (open page, sample DOM)...")
+            preflight = await run_preflight(
+                start_url,
+                hub_base_url=hub_url,
+                log_fn=_log,
+            )
+            if preflight.ok:
+                preflight_block = preflight.format_for_prompt()
+                _log(
+                    f"preflight: ok in {preflight.elapsed_ms}ms "
+                    f"(title={preflight.title[:60]!r}, "
+                    f"final_url={preflight.final_url[:80]!r}, "
+                    f"outline={len(preflight.outline_text)}ch, "
+                    f"flags={preflight.detected})"
+                )
+                # Persist alongside plan.json so an operator inspecting
+                # the job in the admin UI can see what the LLM saw.
+                try:
+                    (data_dir / job_id).mkdir(parents=True, exist_ok=True)
+                    (data_dir / job_id / "preflight.txt").write_text(
+                        preflight_block, encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+            else:
+                _log(
+                    f"preflight: skipped after {preflight.elapsed_ms}ms "
+                    f"({preflight.error}); proceeding with URL-only context"
+                )
+        except Exception as e:
+            _log(
+                f"preflight: raised {type(e).__name__}: {e}; "
+                "proceeding with URL-only context"
+            )
+
     # Decompose the goal into a plan (= 3-7 ordered sub-steps with
     # a testable success criterion) before the attempt loop starts.
     # Runs ONCE; the plan rides along on every attempt's codegen
@@ -679,6 +735,7 @@ async def run_iterative_codegen(
             goal=goal,
             start_url=start_url,
             target=llm_target,
+            preflight_block=preflight_block,
         )
     except Exception as e:
         _log(f"planner: call raised {type(e).__name__}: {e} -- skipping")
@@ -710,6 +767,14 @@ async def run_iterative_codegen(
         enriched_goal = enriched_goal + "\n\n" + plan_block
     else:
         _log("planner: no plan produced (LLM unreachable or unparseable JSON); continuing without")
+
+    # Preflight observation rides along on every codegen attempt too,
+    # not just the planner. The script-writing LLM benefits from the
+    # same ground truth: real DOM outline, real title, real detected
+    # flags. Appended AFTER the plan_block so the model reads it as
+    # "here's the plan; here's what the page actually looks like".
+    if preflight_block:
+        enriched_goal = enriched_goal + "\n\n" + preflight_block
 
     for n in range(1, max_attempts + 1):
         retry_ctx = _build_retry_context(attempts)

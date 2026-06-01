@@ -238,6 +238,7 @@ async def plan_goal(
     max_tokens: int = 700,
     temperature: float = 0.1,
     target: LLMTarget | None = None,
+    preflight_block: str = "",
 ) -> Plan | None:
     """Decompose ``goal`` into a Plan via one LLM call.
 
@@ -246,6 +247,13 @@ async def plan_goal(
     behaviour as before this module existed). Synchronous-but-await-
     shaped to match codegen.generate_script's call surface so
     iterative_codegen wires through with the same pattern.
+
+    ``preflight_block`` (optional) is a pre-formatted summary of what
+    was observed by opening the start URL in a real browser before this
+    call -- title, outline, headings, detected flags (age gate / login
+    form / video / iframe). When supplied, it lets the planner produce
+    a plan grounded in the actual page DOM instead of guessing from
+    the URL string alone. Empty string = no preflight (legacy behaviour).
     """
     if not goal or not goal.strip():
         return None
@@ -253,6 +261,15 @@ async def plan_goal(
     user_msg = f"GOAL:\n{goal.strip()}"
     if start_url:
         user_msg += f"\n\nSTART URL: {start_url.strip()}"
+    if preflight_block:
+        # Surface the live observation as a distinct block the model is
+        # explicitly told to lean on. Otherwise some models bury it
+        # under their own prior and still guess.
+        user_msg += (
+            "\n\nThe following is the result of an actual page load — "
+            "not a guess. Use it to ground your plan in the real DOM:\n\n"
+            + preflight_block
+        )
 
     tgt = target or _env_default_target()
     body = {
