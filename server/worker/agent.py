@@ -2219,7 +2219,25 @@ class WorkerAgent:
                 url = f"{self.hub_ws_url}/workers/{self.worker_id}/link"
                 try:
                     _logger.info(f"[worker {self.worker_id}] connecting to {url}")
-                    async with websockets.connect(url, max_size=2**24) as ws:
+                    # ping_interval / ping_timeout MUST match the hub-side
+                    # values in server/__main__.py (ws_ping_interval=30,
+                    # ws_ping_timeout=120). Without this, the worker's
+                    # client library uses the websockets-default 20s pong
+                    # timeout while the hub uses 120s; whenever the HUB
+                    # event loop blocks momentarily (e.g. a heavy session
+                    # reconcile, a sync DB write, a large JSON dump) all
+                    # workers fire their 20s pong timeout simultaneously,
+                    # closing every WS with "keepalive ping timeout" and
+                    # producing a fleet-wide reconnect storm. The
+                    # symmetric setting lets the hub stall up to 120s
+                    # before any worker gives up -- enough to absorb
+                    # normal back-pressure.
+                    async with websockets.connect(
+                        url,
+                        max_size=2**24,
+                        ping_interval=30,
+                        ping_timeout=120,
+                    ) as ws:
                         self._ws = ws
                         await self._handshake_and_loop()
                         backoff = 1.0
