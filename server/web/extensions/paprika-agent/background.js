@@ -19,7 +19,7 @@
 // session action -> POST /sessions/{id}/ext {cmd,args}; thin typed
 // wrappers live in the Python client (_page.py).
 
-const AGENT_VERSION = "0.4.3";
+const AGENT_VERSION = "0.4.4";
 
 async function activeTab() {
   let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -64,6 +64,7 @@ const OP_EVT_MAX = 1000;
 // without a follow-up click (drag, cancelled gesture).
 const PREFETCH_TTL_MS = 2000;
 const _prefetchBuffer = new Map(); // id -> { promise: Promise<dataURL|null>, t: ms }
+let _prefetchInFlight = false;     // single-flight gate (see prefetchClipForCursor)
 
 function _prefetchSweep() {
   const now = Date.now();
@@ -320,6 +321,15 @@ const HANDLERS = {
   // grab is the pre-click state. Returns immediately; the actual clip
   // is awaited later by pushOperatorEvent when the matching click
   // arrives carrying __prefetchId = this args.id.
+  //
+  // Single-flight: chrome.tabs.captureVisibleTab is rate-limited by
+  // Chrome (~2/s); rapid clicking would queue multiple captures and
+  // back-pressure the service worker, which makes EVERY other ext
+  // command (including recordingStop / getOperatorEvents from the
+  // admin UI Stop button) time out at the hub 30s gateway. So we
+  // gate on _prefetchInFlight -- when one is running, subsequent
+  // mousedowns just record metadata without a clip, and pushOperator
+  // Event falls back to its own cursor-fallback capture path.
   async prefetchClipForCursor(args, sender) {
     const active = (await chrome.storage.session.get(OP_REC_KEY))[OP_REC_KEY];
     if (!active) return { skipped: "not recording" };
@@ -327,10 +337,12 @@ const HANDLERS = {
     if (!id) return { skipped: "no id" };
     const x = Number(args.x), y = Number(args.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return { skipped: "bad coords" };
+    if (_prefetchInFlight) {
+      // Another prefetch is still running. Don't pile on; the click
+      // path will fall back to bbox / cursor crop after the fact.
+      return { skipped: "in flight" };
+    }
     const tabId = sender && sender.tab && sender.tab.id;
-    // 160x160 square centred on cursor -- same shape as the bbox-0x0
-    // fallback in pushOperatorEvent, so prefetched clips and fallback
-    // clips look consistent in the gallery.
     const r = 80;
     const rect = {
       x: Math.max(0, x - r),
@@ -338,7 +350,16 @@ const HANDLERS = {
       w: r * 2,
       h: r * 2,
     };
-    const promise = _captureBboxClip(tabId, rect).catch(() => null);
+    _prefetchInFlight = true;
+    const promise = (async () => {
+      try {
+        return await _captureBboxClip(tabId, rect);
+      } catch (_e) {
+        return null;
+      } finally {
+        _prefetchInFlight = false;
+      }
+    })();
     _prefetchBuffer.set(id, { promise, t: Date.now() });
     _prefetchSweep();
     return { queued: true, buffered: _prefetchBuffer.size };
@@ -377,7 +398,14 @@ const HANDLERS = {
         } catch (_) {}
       }
     }
-    if (wantClip && !args.clip) {
+    // Live-capture fallback path. Only taken when (a) no prefetched
+    // clip was attached above AND (b) no other capture is currently
+    // in flight -- otherwise we'd pile on captureVisibleTab calls and
+    // back-pressure the service worker, blocking recordingStop /
+    // getOperatorEvents at the hub 30s gateway. Skipping the fallback
+    // gracefully leaves the event without a clip; the event metadata
+    // alone is still useful for verbalisation.
+    if (wantClip && !args.clip && !_prefetchInFlight) {
       const tgt = (args && args.target) || {};
       const bbox = tgt.bbox;
       // Prefer the element's bbox. Some sites use absolutely-positioned
@@ -400,12 +428,15 @@ const HANDLERS = {
         };
       }
       if (clipRect) {
+        _prefetchInFlight = true;
         try {
           const tabId = sender && sender.tab && sender.tab.id;
           const clip = await _captureBboxClip(tabId, clipRect, args.viewport);
           if (clip) args.clip = clip;
         } catch (_e) {
           // swallow — clip is purely a nice-to-have
+        } finally {
+          _prefetchInFlight = false;
         }
       }
     }
