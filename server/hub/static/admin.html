@@ -2208,7 +2208,15 @@ table.aitbl code { font-size:0.95em; }
   }
 
   function setAiSubtab(name) {
-    document.querySelectorAll('.ai-subtab').forEach(t => {
+    // Scope to elements that actually carry data-ai-subtab. The same
+    // .ai-subtab class is shared with the Jobs panel's status-filter
+    // tabs (#jobsStatusTabs), which have NO data-ai-subtab attribute.
+    // Without this scope, `dataset.aiSubtab === name` evaluates to
+    // `undefined === undefined` for those siblings when name itself is
+    // undefined (or the same kind of stray comparison when name is a
+    // real string), flipping their .active state in lockstep — hence
+    // the "click エラー and all four jobs tabs light up" bug.
+    document.querySelectorAll('.ai-subtab[data-ai-subtab]').forEach(t => {
       const on = t.dataset.aiSubtab === name;
       t.classList.toggle('active', on);
       t.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -2645,12 +2653,20 @@ table.aitbl code { font-size:0.95em; }
     // AI tab: load the currently-active sub-tab's data on activation.
     document.querySelectorAll('[data-tab="ai"]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const active = document.querySelector('.ai-subtab.active');
+        // Scope to AI subtabs only — the .ai-subtab class is also used
+        // by the Jobs panel's status filter, which can be .active when
+        // the AI tab is opened.
+        const active = document.querySelector('.ai-subtab[data-ai-subtab].active');
         setAiSubtab(active ? active.dataset.aiSubtab : 'knowledge');
       });
     });
     // AI sub-tabs (Skills / Conventions) -- same design as the Submit tab.
-    document.querySelectorAll('.ai-subtab').forEach(btn => {
+    // Scope to [data-ai-subtab] so this listener is NOT installed on the
+    // Jobs panel's status-filter tabs (which share class .ai-subtab but
+    // use data-jobs-status instead). Without the scope, clicking a Jobs
+    // status tab would fire setAiSubtab(undefined) and visually mark
+    // every status tab as .active simultaneously.
+    document.querySelectorAll('.ai-subtab[data-ai-subtab]').forEach(btn => {
       btn.addEventListener('click', () => setAiSubtab(btn.dataset.aiSubtab));
     });
     // Pager prev/next (delegated, per feature -- incl. grooming + oracle).
