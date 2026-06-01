@@ -870,6 +870,8 @@ def _make_video_downloader(
         _dl_label = [
             (target_url.split("?", 1)[0].rsplit("/", 1)[-1] or target_url)[:64]
         ]
+        # monotonic time of the last throttled progress marker (see below)
+        _dl_last_marker = [0.0]
 
         def _ytdlp_log(line: str) -> None:
             # Runs in asyncio.to_thread (a plain OS thread), so we
@@ -900,16 +902,27 @@ def _make_video_downloader(
                 if _prog is not None:
                     if _prog.get("label"):
                         _dl_label[0] = _prog["label"]
-                    _payload = {"key": _dl_key, "label": _dl_label[0]}
-                    _payload.update(_prog)
-                    try:
-                        _loop.call_soon_threadsafe(
-                            job_log,
-                            JOB_PROGRESS_MARKER + json.dumps(_payload),
-                        )
-                    except RuntimeError:
-                        pass
-                    if _prog.get("state") in ("downloading", "muxing", "done"):
+                    _st = _prog.get("state")
+                    # Throttle the high-frequency downloading/muxing markers
+                    # to ~1/s.  yt-dlp can emit 20+ progress lines/sec on a
+                    # direct file; one WorkerJobLog per line floods the hub
+                    # WS (observed destabilising the worker connection).
+                    # start/done always pass through so the bar appears and
+                    # resolves promptly.
+                    _now = time.monotonic()
+                    if (_st not in ("downloading", "muxing")
+                            or _now - _dl_last_marker[0] >= 1.0):
+                        _dl_last_marker[0] = _now
+                        _payload = {"key": _dl_key, "label": _dl_label[0]}
+                        _payload.update(_prog)
+                        try:
+                            _loop.call_soon_threadsafe(
+                                job_log,
+                                JOB_PROGRESS_MARKER + json.dumps(_payload),
+                            )
+                        except RuntimeError:
+                            pass
+                    if _st in ("downloading", "muxing", "done"):
                         return
             _spam = (
                 _stripped.startswith("frame=")
@@ -5385,6 +5398,9 @@ class WorkerAgent:
             # (set before each target below).  run_ytdlp processes the
             # targets sequentially, so a single holder is unambiguous.
             _cur = {"key": None, "label": None}
+            # monotonic time of the last throttled progress marker; reset
+            # per target so each download's first update emits promptly.
+            _cur_last = [0.0]
 
             def _emit_progress(line: str) -> None:
                 # Schedule a WorkerJobLog send from this worker THREAD.
@@ -5412,15 +5428,27 @@ class WorkerAgent:
                     _prog = _parse_dl_progress(line.lstrip())
                 except Exception:
                     _prog = None
-                if _prog is not None:
-                    if _prog.get("label"):
-                        _cur["label"] = _prog["label"]
-                    _payload = {
-                        "key": _cur["key"] or "video",
-                        "label": _cur["label"] or _cur["key"] or "video",
-                    }
-                    _payload.update(_prog)
-                    _emit_progress(JOB_PROGRESS_MARKER + json.dumps(_payload))
+                if _prog is None:
+                    return
+                if _prog.get("label"):
+                    _cur["label"] = _prog["label"]
+                _st = _prog.get("state")
+                # Throttle downloading/muxing markers to ~1/s -- yt-dlp emits
+                # 20+ progress lines/sec on a direct file, and one
+                # WorkerJobLog per line floods the hub WS (observed
+                # destabilising the worker connection).  start/done always
+                # pass through.
+                _now = time.monotonic()
+                if (_st in ("downloading", "muxing")
+                        and _now - _cur_last[0] < 1.0):
+                    return
+                _cur_last[0] = _now
+                _payload = {
+                    "key": _cur["key"] or "video",
+                    "label": _cur["label"] or _cur["key"] or "video",
+                }
+                _payload.update(_prog)
+                _emit_progress(JOB_PROGRESS_MARKER + json.dumps(_payload))
 
             added: list = []
             try:
@@ -5438,6 +5466,7 @@ class WorkerAgent:
                     _cur["label"] = (
                         u.split("?", 1)[0].rsplit("/", 1)[-1] or u
                     )[:64]
+                    _cur_last[0] = 0.0  # let this target's first marker emit now
                     ok, msg = await asyncio.to_thread(
                         run_ytdlp, u, tmp,
                         referer=ref, timeout=dl_timeout, log=_dl_log,
