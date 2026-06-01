@@ -111,6 +111,12 @@ class PreflightResult:
     detected: dict = field(default_factory=dict)
     error: str = ""
     elapsed_ms: int = 0
+    # noVNC URL of the short-lived session preflight opens — surfaced
+    # so an operator on the Live Job Panel can watch the scout pass
+    # happen in real time (Cloudflare challenge / age-gate / SPA load).
+    # Empty if session creation failed before nav.
+    session_id: str = ""
+    novnc_url: str = ""
 
     def format_for_prompt(self) -> str:
         """Render as a prompt block. Empty string if preflight failed,
@@ -244,10 +250,18 @@ async def run_preflight(
     *,
     hub_base_url: str,
     log_fn: Optional[LogFn] = None,
+    job_id: Optional[str] = None,
 ) -> PreflightResult:
     """Open a short-lived session against ``url``, sample the page,
     return a structured result. Never raises; failures are reported in
-    ``result.error`` with ``ok=False``."""
+    ``result.error`` with ``ok=False``.
+
+    ``job_id`` (optional) tags the preflight session as belonging to
+    the parent codegen-loop job. The Live Job Panel polls
+    /jobs/{id}/sessions and renders a noVNC iframe for every session
+    tagged with the job, so passing this lets the operator WATCH the
+    scout pass in real time — Cloudflare challenges, age gates, slow
+    SPA loads etc. become visible instead of being a black box."""
 
     def _log(s: str) -> None:
         if log_fn is not None:
@@ -291,13 +305,20 @@ async def run_preflight(
                 # 1) Create the session. idle_ttl/absolute_ttl are
                 # generous so the reaper doesn't yank our session
                 # mid-probe; we DELETE it explicitly in `finally`.
+                # parent_job_id ties this transient session to the
+                # parent codegen-loop job so the Live Job Panel auto-
+                # discovers and renders the noVNC iframe -- operator
+                # gets a live view of the scout pass.
+                _create_body: dict = {
+                    "initial_url": url,
+                    "idle_ttl_s": 120,
+                    "absolute_ttl_s": 180,
+                }
+                if job_id:
+                    _create_body["parent_job_id"] = job_id
                 r = await cli.post(
                     f"{hub}/sessions",
-                    json={
-                        "initial_url": url,
-                        "idle_ttl_s": 120,
-                        "absolute_ttl_s": 180,
-                    },
+                    json=_create_body,
                     timeout=STEP_TIMEOUT_S * 2,  # nav-begin can be slower
                 )
                 r.raise_for_status()
@@ -305,7 +326,24 @@ async def run_preflight(
                 sid = sd.get("session_id")
                 if not sid:
                     raise RuntimeError("session create returned no session_id")
-                _log(f"  preflight: opened session {sid}")
+                # Stash the noVNC URL on the result so callers (and the
+                # job log) can surface it. The Live Job Panel finds
+                # this same session via parent_job_id and renders its
+                # own iframe -- the URL on the result is the
+                # "open in a new tab" path operators can also use.
+                result.session_id = sid
+                _novnc = sd.get("novnc_url_autoconnect") or sd.get("novnc_url") or ""
+                if _novnc:
+                    # Prefix with the hub origin so the URL is
+                    # clickable in a terminal / external log viewer.
+                    if _novnc.startswith("/"):
+                        result.novnc_url = hub.rstrip("/") + _novnc
+                    else:
+                        result.novnc_url = _novnc
+                _log(
+                    f"  preflight: opened session {sid}"
+                    + (f"  noVNC: {result.novnc_url}" if result.novnc_url else "")
+                )
 
                 # 2) Let the page settle. POST /sessions only waits for
                 # initial navigation to begin; XHRs / JS-rendered DOM /

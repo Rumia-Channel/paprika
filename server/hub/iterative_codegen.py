@@ -688,7 +688,17 @@ async def run_iterative_codegen(
                 start_url,
                 hub_base_url=hub_url,
                 log_fn=_log,
+                job_id=job_id,
             )
+            # If preflight surfaced a noVNC URL, post it as a separate
+            # job-log line so the operator (and the live-log viewer)
+            # can click straight into the running Chrome while the
+            # scout pass is still in flight. The Live Job Panel also
+            # auto-discovers this session via parent_job_id and
+            # renders its own iframe — this log line is for terminal
+            # / external-viewer paths and for the audit trail.
+            if preflight.novnc_url:
+                _log(f"preflight: noVNC ▶ {preflight.novnc_url}")
             if preflight.ok:
                 preflight_block = preflight.format_for_prompt()
                 _log(
