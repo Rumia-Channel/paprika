@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Paprika Agent",
-  "version": "0.3.1",
-  "description": "Built-in Paprika worker helper. Exposes a generic command bus for Chrome capabilities that CDP / nodriver can't reach directly (genuine page zoom, request header/block rules, content settings, privacy, downloads, proxy, ...). Driven by the worker via a page<->content-script<->service-worker relay; has no UI.",
+  "version": "0.4.0",
+  "description": "Built-in Paprika worker helper. Exposes a generic command bus for Chrome capabilities CDP / nodriver can't reach directly (genuine page zoom, request header/block rules, content settings, privacy, downloads, proxy) plus an operator-event recorder for programming-by-demonstration learning. Driven by the worker via a page<->content-script<->service-worker relay; has no UI.",
   "permissions": [
     "tabs",
     "storage",

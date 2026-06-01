@@ -19,7 +19,7 @@
 // session action -> POST /sessions/{id}/ext {cmd,args}; thin typed
 // wrappers live in the Python client (_page.py).
 
-const AGENT_VERSION = "0.3.1";
+const AGENT_VERSION = "0.4.0";
 
 async function activeTab() {
   let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -42,6 +42,13 @@ function targetTabId(args, sender) {
 // on unload. Persist a ring buffer in storage.session (survives SW
 // restarts within the browser session; cleared on browser restart).
 const NAV_KEY = "navEvents";
+// Operator-event recorder (programming-by-demonstration MVP1).
+// Two storage.session keys:
+//   opRecording: bool      -- recording active flag
+//   opEvents:    array     -- ring buffer (max 1000), kept under 1 MB of session storage
+const OP_REC_KEY = "opRecording";
+const OP_EVT_KEY = "opEvents";
+const OP_EVT_MAX = 1000;
 function pickNav(d) {
   return {
     tabId: d.tabId, frameId: d.frameId, url: d.url,
@@ -158,6 +165,55 @@ const HANDLERS = {
     const cur = (await chrome.storage.session.get(NAV_KEY))[NAV_KEY] || [];
     const since = args.since || 0;
     return { events: cur.filter((e) => e.t > since) };
+  },
+
+  // ----- operator-event recorder (programming-by-demonstration MVP1) -
+  // The content script listens for clicks / changes / Enter / Esc /
+  // submit / unload and forwards each event here for buffering. The
+  // operator (or the admin UI on their behalf) toggles recording via
+  // recordingStart / recordingStop; recordingState is the cheap poll
+  // the content script makes to gate its forwarding. Buffer survives
+  // SW unload via chrome.storage.session (same pattern as navEvents)
+  // but is cleared on browser restart.
+  //
+  // Sensitive value handling lives in content.js (password fields are
+  // never sent here; other input values are pre-truncated to 40 chars).
+  // The background handler is dumb storage — by design — so a future
+  // privacy review only has to audit one place.
+  async recordingState() {
+    const v = (await chrome.storage.session.get(OP_REC_KEY))[OP_REC_KEY];
+    return { active: !!v };
+  },
+  async recordingStart() {
+    await chrome.storage.session.set({ [OP_REC_KEY]: true });
+    return { active: true };
+  },
+  async recordingStop() {
+    await chrome.storage.session.set({ [OP_REC_KEY]: false });
+    return { active: false };
+  },
+  async pushOperatorEvent(args) {
+    // Gate again here too: content.js may race a stop, and we'd
+    // rather lose a couple of events than capture past the stop.
+    const active = (await chrome.storage.session.get(OP_REC_KEY))[OP_REC_KEY];
+    if (!active) return { dropped: true };
+    const cur = (await chrome.storage.session.get(OP_EVT_KEY))[OP_EVT_KEY] || [];
+    cur.push(args);
+    while (cur.length > OP_EVT_MAX) cur.shift();
+    await chrome.storage.session.set({ [OP_EVT_KEY]: cur });
+    return { stored: true, buffered: cur.length };
+  },
+  // args: { since?: epoch_ms, drain?: bool }
+  async getOperatorEvents(args) {
+    const cur = (await chrome.storage.session.get(OP_EVT_KEY))[OP_EVT_KEY] || [];
+    const since = args.since || 0;
+    const out = cur.filter((e) => (e.t || 0) > since);
+    if (args.drain) {
+      // Keep only events older than the cutoff (none of them, since
+      // we just emitted everything > since). Simpler: wipe.
+      await chrome.storage.session.set({ [OP_EVT_KEY]: [] });
+    }
+    return { events: out, total_buffered: cur.length };
   },
 
   // ----- userScripts: persistent MAIN-world page hooks ---------------
