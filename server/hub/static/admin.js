@@ -4873,11 +4873,17 @@ function ljpRemoveProgress(key) {
 
 function ljpSetStatus(s, phase) {
   const el = document.getElementById('ljpStatus');
-  // "downloading" phase: status is still running (the fetch finished but
-  // a detached yt-dlp download is uploading the video). Show it as a
-  // distinct label while keeping the running palette/pulse.
-  const isDownloading = (s === 'running' && phase === 'downloading');
-  el.textContent = isDownloading ? 'downloading' : (s || '…');
+  // Surface running-phase detail as a distinct label so the operator can
+  // tell WHAT a "running" job is actually doing:
+  //   * "downloading" -- fetch finished, a detached yt-dlp download is
+  //     still uploading the video.
+  //   * "keepalive"   -- keep_session job: capture done, the browser is
+  //     held open for the operator to drive (idle, NOT working).
+  // Both keep the running palette; only the label changes.
+  let _label = s || '…';
+  if (s === 'running' && phase === 'downloading') _label = 'downloading';
+  else if (s === 'running' && phase === 'keepalive') _label = 'keepalive';
+  el.textContent = _label;
   // The status pill colour is driven by a CSS class -- swap the
   // class based on the current state so the palette stays in sync
   // with the rest of the panel.
