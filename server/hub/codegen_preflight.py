@@ -69,11 +69,13 @@ PREFLIGHT_ENABLED = (
     not in ("0", "false", "no", "off", "")
 )
 # Hard cap on the whole preflight pass (session create + waits + outline
-# + evaluate + session close). The page-settle sleep is the dominant
-# fixed cost; the rest is small CDP round-trips. 25s gives a slow SPA
-# enough time to finish XHRs before we sample the DOM.
+# + evaluate + session close). With per-step timeouts (default 6s)
+# wrapped around state / outline / evaluate, the realistic worst-case
+# total is ~30s on a Cloudflare-protected site (session create ~12s,
+# settle 3s, three steps 6s each). 40s leaves a small margin and is
+# the outer-emergency-brake; per-step caps do the actual budgeting.
 PREFLIGHT_TIMEOUT_S = float(
-    os.environ.get("PAPRIKA_CODEGEN_PREFLIGHT_TIMEOUT_S", "25"),
+    os.environ.get("PAPRIKA_CODEGEN_PREFLIGHT_TIMEOUT_S", "40"),
 )
 # How long to let the page settle after the initial navigation before
 # sampling the DOM. Lower bound on perceived "preflight overhead".
@@ -271,14 +273,21 @@ async def run_preflight(
     sid: Optional[str] = None
     hub = hub_base_url.rstrip("/")
 
+    # Each sub-step has its own short timeout so a single wedged step
+    # (typical case: page mid-Cloudflare-challenge, state action
+    # blocked on a hung CDP round-trip) doesn't waste the rest of the
+    # budget. Sized so that even if EVERY step hits its cap, total
+    # stays inside the overall PREFLIGHT_TIMEOUT_S wait_for safety net.
+    STEP_TIMEOUT_S = float(
+        os.environ.get("PAPRIKA_CODEGEN_PREFLIGHT_STEP_TIMEOUT_S", "6"),
+    )
+
     try:
-        # The whole pass is wrapped in asyncio.wait_for so a wedged
-        # worker or stalled page can't drag the planner / codegen
-        # behind it. The wait_for cancels the in-flight task and we
-        # fall through to the `finally` to clean up the session.
+        # The whole pass is wrapped in asyncio.wait_for as a hard
+        # safety net. Per-step timeouts below mean we rarely hit it.
         async def _do_preflight() -> None:
             nonlocal sid, result
-            async with httpx.AsyncClient(timeout=PREFLIGHT_TIMEOUT_S) as cli:
+            async with httpx.AsyncClient(timeout=STEP_TIMEOUT_S * 2) as cli:
                 # 1) Create the session. idle_ttl/absolute_ttl are
                 # generous so the reaper doesn't yank our session
                 # mid-probe; we DELETE it explicitly in `finally`.
@@ -289,6 +298,7 @@ async def run_preflight(
                         "idle_ttl_s": 120,
                         "absolute_ttl_s": 180,
                     },
+                    timeout=STEP_TIMEOUT_S * 2,  # nav-begin can be slower
                 )
                 r.raise_for_status()
                 sd = r.json()
@@ -302,9 +312,14 @@ async def run_preflight(
                 # client-side redirects need a moment.
                 await asyncio.sleep(PREFLIGHT_SETTLE_S)
 
-                # 3) Get state (final URL + title).
+                # 3) Get state (final URL + title). Per-step timeout
+                # so a hung Cloudflare challenge doesn't block the
+                # outline + probe steps from at least trying.
                 try:
-                    r = await cli.get(f"{hub}/sessions/{sid}/state")
+                    r = await cli.get(
+                        f"{hub}/sessions/{sid}/state",
+                        timeout=STEP_TIMEOUT_S,
+                    )
                     if r.status_code == 200:
                         st = (r.json().get("result") or {})
                         result.final_url = str(st.get("url") or url)
@@ -314,13 +329,12 @@ async def run_preflight(
 
                 # 4) Outline (clickable elements + form fields).
                 try:
-                    r = await cli.get(f"{hub}/sessions/{sid}/outline")
+                    r = await cli.get(
+                        f"{hub}/sessions/{sid}/outline",
+                        timeout=STEP_TIMEOUT_S,
+                    )
                     if r.status_code == 200:
                         ol = (r.json().get("result") or {})
-                        # The outline shape on the worker side is
-                        # {"outline": "<text>", "visited": ...}. Be
-                        # defensive — fall back to str(result) if not
-                        # the expected shape so we always have SOMETHING.
                         text = ""
                         if isinstance(ol, dict):
                             text = str(ol.get("outline") or "")
@@ -335,6 +349,7 @@ async def run_preflight(
                     r = await cli.post(
                         f"{hub}/sessions/{sid}/evaluate",
                         json={"expression": _PROBE_JS, "await_promise": False},
+                        timeout=STEP_TIMEOUT_S,
                     )
                     if r.status_code == 200:
                         ev = r.json().get("result") or {}
@@ -353,13 +368,46 @@ async def run_preflight(
                 except Exception as e:
                     _log(f"  preflight: probe evaluate failed: {type(e).__name__}: {e}")
 
-                result.ok = True
+                # ok=True if we got ANYTHING useful. The point of a
+                # partial result on a slow site (Cloudflare, heavy SPA)
+                # is that even just final_url+title or a tiny outline
+                # is strictly better than feeding the LLM only the URL
+                # string. False only when every step failed.
+                if (
+                    result.final_url
+                    or result.title
+                    or result.outline_text
+                    or result.headings
+                    or result.body_snippet
+                ):
+                    result.ok = True
 
         await asyncio.wait_for(_do_preflight(), timeout=PREFLIGHT_TIMEOUT_S)
 
     except asyncio.TimeoutError:
-        result.error = f"preflight timed out after {PREFLIGHT_TIMEOUT_S:.0f}s"
-        _log(f"  preflight: TIMEOUT ({result.error})")
+        # The outer safety net fired. Whatever sub-steps had completed
+        # before the cancellation still sit in `result` (closure vars
+        # aren't rolled back), so if we collected anything useful,
+        # ship it as a partial-success rather than nothing at all.
+        if (
+            result.final_url
+            or result.title
+            or result.outline_text
+            or result.headings
+            or result.body_snippet
+        ):
+            result.ok = True
+            result.error = (
+                f"hit overall {PREFLIGHT_TIMEOUT_S:.0f}s cap; "
+                "returning the partial data that was collected"
+            )
+            _log(f"  preflight: outer-timeout but partial data captured ({result.error})")
+        else:
+            result.error = (
+                f"preflight timed out after {PREFLIGHT_TIMEOUT_S:.0f}s "
+                "with nothing usable collected"
+            )
+            _log(f"  preflight: TIMEOUT ({result.error})")
     except httpx.HTTPStatusError as e:
         result.error = (
             f"hub HTTP {e.response.status_code}: "
