@@ -86,18 +86,9 @@ async def lifespan(app: FastAPI):
     # start so the existing engine names keep resolving.
     state.engines = EngineRegistry(config.data_dir)
     state.engine_usage = EngineUsageRegistry(config.data_dir)
-    # Auto-seed default ¥/1M pricing on engines that have never been
-    # priced. Operator edits win on subsequent restarts (the seeder
-    # only writes when both cost fields are still 0). One-shot, runs
-    # to completion before route handlers go live; log the count for
-    # operator visibility.
-    try:
-        from server.hub.engines import seed_default_pricing as _seed_pricing
-        _n_priced = _seed_pricing(state.engines)
-        if _n_priced:
-            print(f"[engines] auto-priced {_n_priced} engine(s) with default ¥/1M rates")
-    except Exception as _e:
-        print(f"[engines] default pricing seed crashed: {type(_e).__name__}: {_e}")
+    # NOTE: ¥/1M default pricing seed runs AFTER MariaDB restore (further
+    # down in this lifespan), otherwise MariaDB pulls zero values back
+    # and overwrites whatever we seeded here.
     # Ensure the effective storage directory (SMB mount or data_dir)
     # exists. get_storage_dir() reads settings.storage_dir which was
     # just initialised above.
@@ -196,6 +187,32 @@ async def lifespan(app: FastAPI):
                 )
                 _mdb_pool = None
                 state.mariadb_pool = None
+
+    # ¥/1M default pricing seed (U). Runs AFTER MariaDB restore so the
+    # auto-priced values land in BOTH the file mirror and MariaDB
+    # (via the upsert which routes through the upsert_engine_row write-
+    # through). Operator-edited prices are preserved because the seeder
+    # only touches engines whose cost fields are still 0.0. Idempotent.
+    try:
+        from server.hub.engines import seed_default_pricing as _seed_pricing
+        _n_priced = _seed_pricing(state.engines)
+        if _n_priced:
+            log.info("engines: auto-priced %d engine(s) with default ¥/1M rates", _n_priced)
+            # Push the freshly-priced records to MariaDB so the next
+            # restart's restore returns the new values instead of 0.
+            if state.mariadb_pool is not None:
+                try:
+                    from server.hub.mariadb import upsert_engine_row as _mdb_upsert_eng
+                    for _rec in state.engines.list_all():
+                        if _rec.cost_input_per_1m_jpy or _rec.cost_output_per_1m_jpy:
+                            try:
+                                await _mdb_upsert_eng(state.mariadb_pool, _rec)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+    except Exception as _e:
+        log.warning("engines: default pricing seed crashed: %s: %s", type(_e).__name__, _e)
 
     state.store, state.store_kind = await make_store(
         config.redis_url, mariadb_pool=_mdb_pool,

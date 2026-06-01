@@ -189,6 +189,8 @@ _TABLES: list[tuple[str, str]] = [
             use_for_codegen     TINYINT(1)    DEFAULT 0,
             daily_token_budget  INT           DEFAULT 0,
             daily_request_budget INT          DEFAULT 0,
+            cost_input_per_1m_jpy  DOUBLE    DEFAULT 0,
+            cost_output_per_1m_jpy DOUBLE    DEFAULT 0,
             notes               TEXT,
             builtin             TINYINT(1)    DEFAULT 0,
             created_at          DATETIME(3),
@@ -1267,16 +1269,51 @@ async def restore_engines(pool: Any, engine_registry: Any) -> int:
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT slug, name, kind, protocol, endpoint, "
-                "model, api_key_env, api_key, headers, "
-                "timeout_s, promoted, supports_tools, "
-                "use_for_codegen, daily_token_budget, "
-                "daily_request_budget, notes, builtin, "
-                "created_at, updated_at "
-                "FROM engines"
-            )
-            rows = await cur.fetchall()
+            # SELECT with backward-compat for old MariaDB schemas that
+            # predate the cost columns: try the new column list first,
+            # fall back to the legacy SELECT when MariaDB returns
+            # ER_BAD_FIELD_ERROR (1054).
+            try:
+                await cur.execute(
+                    "SELECT slug, name, kind, protocol, endpoint, "
+                    "model, api_key_env, api_key, headers, "
+                    "timeout_s, promoted, supports_tools, "
+                    "use_for_codegen, daily_token_budget, "
+                    "daily_request_budget, notes, builtin, "
+                    "created_at, updated_at, "
+                    "cost_input_per_1m_jpy, cost_output_per_1m_jpy "
+                    "FROM engines"
+                )
+                rows = await cur.fetchall()
+                _has_cost_cols = True
+            except Exception as e:
+                if "1054" in str(e) or "Unknown column" in str(e):
+                    # Old schema -- ALTER TABLE then re-SELECT.
+                    try:
+                        await cur.execute(
+                            "ALTER TABLE engines "
+                            "ADD COLUMN cost_input_per_1m_jpy DOUBLE DEFAULT 0, "
+                            "ADD COLUMN cost_output_per_1m_jpy DOUBLE DEFAULT 0"
+                        )
+                        log.info("restore: added cost_*_jpy columns to engines table")
+                    except Exception as e2:
+                        log.warning(
+                            "restore: failed to ADD cost columns: %s; "
+                            "falling back to legacy SELECT", e2,
+                        )
+                    await cur.execute(
+                        "SELECT slug, name, kind, protocol, endpoint, "
+                        "model, api_key_env, api_key, headers, "
+                        "timeout_s, promoted, supports_tools, "
+                        "use_for_codegen, daily_token_budget, "
+                        "daily_request_budget, notes, builtin, "
+                        "created_at, updated_at "
+                        "FROM engines"
+                    )
+                    rows = await cur.fetchall()
+                    _has_cost_cols = False
+                else:
+                    raise
 
     # Deletion reconciliation: any slug present on disk but missing in
     # MariaDB is dropped. Run BEFORE the upsert pass so a row that
@@ -1302,6 +1339,13 @@ async def restore_engines(pool: Any, engine_registry: Any) -> int:
     restored = 0
     for row in rows:
         try:
+            # cost_*_jpy columns are appended after the legacy 19. When the
+            # ALTER above failed (very old MariaDB), row has 19 cols and we
+            # fall back to 0.0 → seed_default_pricing() will fill it on next
+            # startup (file-level seeding still applies since MariaDB had
+            # no value to overwrite).
+            ci = float(row[19]) if (_has_cost_cols and len(row) > 19 and row[19] is not None) else 0.0
+            co = float(row[20]) if (_has_cost_cols and len(row) > 20 and row[20] is not None) else 0.0
             rec = EngineRecord(
                 slug=row[0],
                 name=row[1] or "",
@@ -1318,6 +1362,8 @@ async def restore_engines(pool: Any, engine_registry: Any) -> int:
                 use_for_codegen=bool(row[12]),
                 daily_token_budget=row[13] or 0,
                 daily_request_budget=row[14] or 0,
+                cost_input_per_1m_jpy=ci,
+                cost_output_per_1m_jpy=co,
                 notes=row[15] or "",
                 builtin=bool(row[16]),
             )
@@ -1350,48 +1396,85 @@ async def upsert_engine_row(pool: Any, rec: Any) -> None:
     d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                """INSERT INTO engines
-                   (slug, name, kind, protocol, endpoint, model,
-                    api_key_env, api_key, headers, timeout_s, promoted,
-                    supports_tools, use_for_codegen, daily_token_budget,
-                    daily_request_budget, notes, builtin,
-                    created_at, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON DUPLICATE KEY UPDATE
-                     name=VALUES(name), kind=VALUES(kind),
-                     protocol=VALUES(protocol), endpoint=VALUES(endpoint),
-                     model=VALUES(model), api_key_env=VALUES(api_key_env),
-                     api_key=VALUES(api_key), headers=VALUES(headers),
-                     timeout_s=VALUES(timeout_s), promoted=VALUES(promoted),
-                     supports_tools=VALUES(supports_tools),
-                     use_for_codegen=VALUES(use_for_codegen),
-                     daily_token_budget=VALUES(daily_token_budget),
-                     daily_request_budget=VALUES(daily_request_budget),
-                     notes=VALUES(notes), builtin=VALUES(builtin),
-                     updated_at=VALUES(updated_at)""",
-                (
-                    d.get("slug", ""),
-                    d.get("name", ""),
-                    d.get("kind", "chat"),
-                    d.get("protocol", "openai"),
-                    d.get("endpoint", ""),
-                    d.get("model", ""),
-                    d.get("api_key_env", ""),
-                    d.get("api_key", ""),
-                    _json_dumps(d.get("headers", {})),
-                    d.get("timeout_s", 120),
-                    1 if d.get("promoted") else 0,
-                    1 if d.get("supports_tools", True) else 0,
-                    1 if d.get("use_for_codegen") else 0,
-                    d.get("daily_token_budget", 0),
-                    d.get("daily_request_budget", 0),
-                    d.get("notes", ""),
-                    1 if d.get("builtin") else 0,
-                    _parse_dt(d.get("created_at")),
-                    _parse_dt(d.get("updated_at")),
-                ),
+            # Try the new shape with cost columns first; fall back to the
+            # legacy SHAPE when old MariaDB schemas reject the columns.
+            params_new = (
+                d.get("slug", ""),
+                d.get("name", ""),
+                d.get("kind", "chat"),
+                d.get("protocol", "openai"),
+                d.get("endpoint", ""),
+                d.get("model", ""),
+                d.get("api_key_env", ""),
+                d.get("api_key", ""),
+                _json_dumps(d.get("headers", {})),
+                d.get("timeout_s", 120),
+                1 if d.get("promoted") else 0,
+                1 if d.get("supports_tools", True) else 0,
+                1 if d.get("use_for_codegen") else 0,
+                d.get("daily_token_budget", 0),
+                d.get("daily_request_budget", 0),
+                float(d.get("cost_input_per_1m_jpy", 0) or 0),
+                float(d.get("cost_output_per_1m_jpy", 0) or 0),
+                d.get("notes", ""),
+                1 if d.get("builtin") else 0,
+                _parse_dt(d.get("created_at")),
+                _parse_dt(d.get("updated_at")),
             )
+            try:
+                await cur.execute(
+                    """INSERT INTO engines
+                       (slug, name, kind, protocol, endpoint, model,
+                        api_key_env, api_key, headers, timeout_s, promoted,
+                        supports_tools, use_for_codegen, daily_token_budget,
+                        daily_request_budget, cost_input_per_1m_jpy,
+                        cost_output_per_1m_jpy, notes, builtin,
+                        created_at, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON DUPLICATE KEY UPDATE
+                         name=VALUES(name), kind=VALUES(kind),
+                         protocol=VALUES(protocol), endpoint=VALUES(endpoint),
+                         model=VALUES(model), api_key_env=VALUES(api_key_env),
+                         api_key=VALUES(api_key), headers=VALUES(headers),
+                         timeout_s=VALUES(timeout_s), promoted=VALUES(promoted),
+                         supports_tools=VALUES(supports_tools),
+                         use_for_codegen=VALUES(use_for_codegen),
+                         daily_token_budget=VALUES(daily_token_budget),
+                         daily_request_budget=VALUES(daily_request_budget),
+                         cost_input_per_1m_jpy=VALUES(cost_input_per_1m_jpy),
+                         cost_output_per_1m_jpy=VALUES(cost_output_per_1m_jpy),
+                         notes=VALUES(notes), builtin=VALUES(builtin),
+                         updated_at=VALUES(updated_at)""",
+                    params_new,
+                )
+            except Exception as e:
+                if "1054" in str(e) or "Unknown column" in str(e):
+                    # Legacy MariaDB schema -- write without cost cols.
+                    legacy_params = params_new[:15] + params_new[17:]
+                    await cur.execute(
+                        """INSERT INTO engines
+                           (slug, name, kind, protocol, endpoint, model,
+                            api_key_env, api_key, headers, timeout_s, promoted,
+                            supports_tools, use_for_codegen, daily_token_budget,
+                            daily_request_budget, notes, builtin,
+                            created_at, updated_at)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                           ON DUPLICATE KEY UPDATE
+                             name=VALUES(name), kind=VALUES(kind),
+                             protocol=VALUES(protocol), endpoint=VALUES(endpoint),
+                             model=VALUES(model), api_key_env=VALUES(api_key_env),
+                             api_key=VALUES(api_key), headers=VALUES(headers),
+                             timeout_s=VALUES(timeout_s), promoted=VALUES(promoted),
+                             supports_tools=VALUES(supports_tools),
+                             use_for_codegen=VALUES(use_for_codegen),
+                             daily_token_budget=VALUES(daily_token_budget),
+                             daily_request_budget=VALUES(daily_request_budget),
+                             notes=VALUES(notes), builtin=VALUES(builtin),
+                             updated_at=VALUES(updated_at)""",
+                        legacy_params,
+                    )
+                else:
+                    raise
 
 
 async def delete_engine_row(pool: Any, slug: str) -> None:
