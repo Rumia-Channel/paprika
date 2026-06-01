@@ -19,7 +19,7 @@
 // session action -> POST /sessions/{id}/ext {cmd,args}; thin typed
 // wrappers live in the Python client (_page.py).
 
-const AGENT_VERSION = "0.4.1";
+const AGENT_VERSION = "0.4.2";
 
 async function activeTab() {
   let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -303,14 +303,36 @@ const HANDLERS = {
     // just stores the event without the clip.
     const wantClip = !!args.__captureClip;
     delete args.__captureClip;
-    const bbox = args && args.target && args.target.bbox;
-    if (wantClip && bbox && bbox.w > 0 && bbox.h > 0) {
-      try {
-        const tabId = sender && sender.tab && sender.tab.id;
-        const clip = await _captureBboxClip(tabId, bbox, args.viewport);
-        if (clip) args.clip = clip;
-      } catch (_e) {
-        // swallow — clip is purely a nice-to-have
+    if (wantClip) {
+      const tgt = (args && args.target) || {};
+      const bbox = tgt.bbox;
+      // Prefer the element's bbox. Some sites use absolutely-positioned
+      // elements (CSS transforms, transparent overlays for video player
+      // hit-boxes -- e.g. supjav.com's #vserver play button) whose
+      // getBoundingClientRect returns 0x0. Fall back to a small square
+      // around the cursor so the visual neighbourhood is still
+      // captured -- this is "what the operator was looking at" rather
+      // than "what the engine thought the element was".
+      let clipRect = null;
+      if (bbox && bbox.w > 0 && bbox.h > 0) {
+        clipRect = bbox;
+      } else if (args.cursor && Number.isFinite(args.cursor.x) && Number.isFinite(args.cursor.y)) {
+        const r = 80;
+        clipRect = {
+          x: Math.max(0, args.cursor.x - r),
+          y: Math.max(0, args.cursor.y - r),
+          w: r * 2,
+          h: r * 2,
+        };
+      }
+      if (clipRect) {
+        try {
+          const tabId = sender && sender.tab && sender.tab.id;
+          const clip = await _captureBboxClip(tabId, clipRect, args.viewport);
+          if (clip) args.clip = clip;
+        } catch (_e) {
+          // swallow — clip is purely a nice-to-have
+        }
       }
     }
     const cur = (await chrome.storage.session.get(OP_EVT_KEY))[OP_EVT_KEY] || [];
