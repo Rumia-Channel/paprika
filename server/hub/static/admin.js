@@ -1366,20 +1366,25 @@ async function _refreshJson(url, fallback) {
 
 async function refresh() {
   try {
-    // Only the Jobs tab needs the full job list (status-count chips +
-    // paginated table). Everywhere else (Live panel, Workers, etc.) the
-    // header just needs the total count, so fetch ?limit=1 instead of
-    // hydrating all ~3000 jobs every ~2s -- that was a ~17MB response +
-    // one get_job_info DB query PER job, per poll. The {total} in the
-    // envelope still gives the header count cheaply.
     const _tab = (location.hash || '').replace(/^#/, '').split('/')[0];
     const jobsTabActive = (_tab === '' || _tab === 'jobs');
-    const [h, workers, jobs, sessions] = await Promise.all([
-      _refreshJson('/health', { store: '?', workers: '?' }),
-      _refreshJson('/workers', { count: 0, workers: [] }),
-      _refreshJson(jobsTabActive ? '/jobs' : '/jobs?limit=1', { total: 0, jobs: [] }),
-      _refreshJson('/sessions', { count: 0, sessions: [] }),
-    ]);
+    // ONE consolidated poll (/overview) instead of 4 separate requests
+    // (/health + /workers + /jobs + /sessions) every ~2s. /overview returns
+    // the job COUNT only (no per-job hydration); the Jobs tab fetches the
+    // full paginated /jobs itself when it's open.
+    const ov = await _refreshJson('/overview', {
+      health: { store: '?', workers: '?' },
+      workers: { count: 0, workers: [] },
+      jobs: { total: 0 },
+      sessions: { count: 0, sessions: [] },
+    });
+    const h = ov.health || { store: '?', workers: '?' };
+    const workers = ov.workers || { count: 0, workers: [] };
+    const sessions = ov.sessions || { count: 0, sessions: [] };
+    let jobs = ov.jobs || { total: 0 };
+    if (jobsTabActive) {
+      jobs = await _refreshJson('/jobs', { total: 0, jobs: [] });
+    }
     const wcount = workers.count || 0;
     const jcount = jobs.total ?? (jobs.jobs || jobs).length;
     const scount = sessions.count || 0;

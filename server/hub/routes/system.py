@@ -245,6 +245,40 @@ async def health() -> dict:
 
 
 
+@router.get("/overview")
+async def overview() -> dict:
+    """Aggregated admin-poll snapshot in ONE response: health + workers +
+    sessions + job COUNT. The admin header polls this every ~2s instead of
+    hitting /health + /workers + /sessions + /jobs separately (4 requests
+    -> 1). Returns the job *count* only -- the Jobs tab fetches the
+    paginated /jobs itself when it's open, so this stays cheap (no
+    per-job hydration).
+    """
+    h = await health()
+    # Lazy imports: these handlers live in sibling route modules; importing
+    # them at module load would risk a circular import via the router wiring.
+    try:
+        from server.hub.routes.workers import list_workers
+        workers = await list_workers()
+    except Exception:
+        workers = {"count": 0, "workers": []}
+    try:
+        jobs_total = await state.store.count_jobs()
+    except Exception:
+        jobs_total = 0
+    try:
+        from server.hub.routes.sessions import list_sessions
+        sessions = await list_sessions()
+    except Exception:
+        sessions = {"count": 0, "sessions": []}
+    return {
+        "health": h,
+        "workers": workers,
+        "jobs": {"total": jobs_total},
+        "sessions": sessions,
+    }
+
+
 # ============================================================================
 # Admin UI shell + screenshots page (#2B-G3-partial)
 # ============================================================================
