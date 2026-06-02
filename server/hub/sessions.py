@@ -12,6 +12,7 @@ V1 is in-memory only -- sessions die with the hub process. Persistence
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -101,15 +102,75 @@ class SessionRegistry:
     def __init__(self) -> None:
         self._sessions: dict[str, SessionInfo] = {}
         self._lock = asyncio.Lock()
+        # Multi-hub foundation: optional Redis-backed Session Map
+        # (sid -> {worker_id, hub}). Mirrors the in-memory map so a
+        # future Hub→Hub forwarding layer running behind nginx can,
+        # on a hub that does NOT hold the session, look up which hub
+        # owns the worker and forward the action there. Bound at
+        # lifespan via bind_redis(); None (and fully dormant) for
+        # single-hub deployments and tests.
+        self._r = None  # redis.asyncio.Redis | None
+        self._hub_id = ""
+
+    def bind_redis(self, redis_client, hub_id: str) -> None:
+        """Attach a redis client + this hub's id so add/remove mirror the
+        Session Map to Redis. Safe no-op shape when ``redis_client`` is
+        None. Writes only; nothing reads the map back until a Hub→Hub
+        forwarding layer is built, so this never changes single-hub
+        behaviour."""
+        self._r = redis_client
+        self._hub_id = hub_id or ""
+
+    @staticmethod
+    def _k_session(session_id: str) -> str:
+        return f"paprika:session:{session_id}"
+
+    def _schedule(self, coro) -> None:
+        """Fire-and-forget a Redis mirror op on the running loop. If
+        there's no loop (sync test context) close the coro cleanly so
+        Python doesn't warn about a never-awaited coroutine."""
+        if self._r is None:
+            coro.close()
+            return
+        try:
+            asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+
+    async def _redis_put(self, session_id: str, worker_id: str, ttl: int) -> None:
+        try:
+            await self._r.set(
+                self._k_session(session_id),
+                json.dumps({"worker_id": worker_id, "hub": self._hub_id}),
+                ex=max(60, ttl),
+            )
+        except Exception:
+            pass
+
+    async def _redis_del(self, session_id: str) -> None:
+        try:
+            await self._r.delete(self._k_session(session_id))
+        except Exception:
+            pass
 
     def add(self, info: SessionInfo) -> None:
         self._sessions[info.session_id] = info
+        # Mirror to Redis with a TTL a bit beyond the session's absolute
+        # TTL so a missed remove() self-heals instead of leaking a key.
+        self._schedule(
+            self._redis_put(
+                info.session_id, info.worker_id, int(info.absolute_ttl_s) + 60,
+            )
+        )
 
     def get(self, session_id: str) -> SessionInfo | None:
         return self._sessions.get(session_id)
 
     def remove(self, session_id: str) -> SessionInfo | None:
-        return self._sessions.pop(session_id, None)
+        info = self._sessions.pop(session_id, None)
+        if info is not None:
+            self._schedule(self._redis_del(session_id))
+        return info
 
     def all(self) -> list[SessionInfo]:
         return list(self._sessions.values())
@@ -129,5 +190,6 @@ class SessionRegistry:
         for sid, info in list(self._sessions.items()):
             if info.worker_id == worker_id:
                 self._sessions.pop(sid, None)
+                self._schedule(self._redis_del(sid))
                 dropped.append(sid)
         return dropped

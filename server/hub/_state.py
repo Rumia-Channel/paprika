@@ -15,6 +15,8 @@ until they're migrated module by module.
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
 from pathlib import Path
 
 from server.hub.conventions import ConventionRegistry
@@ -44,6 +46,14 @@ class HubConfig:
     redis_url: str | None = None
     public_base_url: str | None = None  # how workers reach this hub
     worker_secret: str | None = None  # shared secret for worker auth
+    # Stable identifier for THIS hub process / replica. Records which
+    # hub owns a worker's control WebSocket and tags the Redis Session
+    # Map — the foundation for multi-hub (nginx + Hub×N) routing.
+    # Defaults to $HUB_ID, else the container / host name. Completely
+    # dormant for single-hub deployments (nothing reads it back until a
+    # Hub→Hub forwarding layer is added), so writing it is side-effect
+    # free. In a compose scale-out, set ``HUB_ID`` per replica.
+    hub_id: str = os.environ.get("HUB_ID") or socket.gethostname()
 
 
 config = HubConfig()

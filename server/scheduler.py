@@ -59,6 +59,28 @@ def _k_online(worker_id: str) -> str:
     return f"paprika:worker:{worker_id}:online"
 
 
+def _k_owner(worker_id: str) -> str:
+    """Which hub replica currently holds this worker's control WS.
+
+    Multi-hub foundation: when several hubs sit behind nginx, a session
+    request can land on a hub that does NOT own the target worker's WS.
+    The owning hub records its ``hub_id`` here (TTL-refreshed on
+    register + heartbeat) so a future Hub→Hub forwarding layer can look
+    up where to forward. Dormant for single-hub: written but never read.
+    """
+    return f"paprika:worker:{worker_id}:owner"
+
+
+# Atomic compare-and-delete: only drop the owner key if it still points
+# at US. Guards the race where a worker's WS flaps from hub A to hub B
+# (B's register sets owner=B) and A's delayed unregister would otherwise
+# wipe B's valid ownership.
+_OWNER_CAD_LUA = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] "
+    "then return redis.call('del', KEYS[1]) else return 0 end"
+)
+
+
 WorkerStatus = str  # "active" | "drain" | "standby"
 ALLOWED_STATUSES = {"active", "drain", "standby"}
 
@@ -391,9 +413,13 @@ class WorkerRegistry:
     """Tracks connected workers. Persistent details go to Redis; live WS
     handles stay in process memory."""
 
-    def __init__(self, redis_client=None):
+    def __init__(self, redis_client=None, hub_id: str = ""):
         # redis_client: redis.asyncio.Redis | None
         self._r = redis_client
+        # Stable id of THIS hub replica (see _k_owner). Empty string in
+        # single-hub / tests; ownership writes still happen but are
+        # never consulted, so the value is immaterial there.
+        self._hub_id = hub_id or ""
         # worker_id -> ConnectedWorker
         self.connections: dict[str, ConnectedWorker] = {}
         # worker_id -> set of job_ids currently assigned by this hub
@@ -434,6 +460,8 @@ class WorkerRegistry:
                 ),
             )
             await self._r.set(_k_online(worker_id), "1", ex=WORKER_TTL)
+            # Claim WS ownership for this hub (multi-hub foundation).
+            await self._r.set(_k_owner(worker_id), self._hub_id, ex=WORKER_TTL)
         return worker
 
     async def unregister(self, worker_id: str) -> None:
@@ -442,6 +470,11 @@ class WorkerRegistry:
         if self._r is not None:
             try:
                 await self._r.delete(_k_online(worker_id))
+                # Release WS ownership, but only if it still points at us
+                # (a reconnect to another hub may already own it).
+                await self._r.eval(
+                    _OWNER_CAD_LUA, 1, _k_owner(worker_id), self._hub_id,
+                )
                 # Keep the worker row + index entry so operators can see history.
                 # If you want to fully remove, use:
                 # await self._r.delete(_k_worker(worker_id))
@@ -459,6 +492,10 @@ class WorkerRegistry:
             try:
                 await self._r.zadd(_k_index(), {worker_id: time.time()})
                 await self._r.set(_k_online(worker_id), "1", ex=WORKER_TTL)
+                # Refresh WS-ownership lease (multi-hub foundation).
+                await self._r.set(
+                    _k_owner(worker_id), self._hub_id, ex=WORKER_TTL,
+                )
                 await self._r.hset(
                     _k_worker(worker_id) + ":counts",
                     mapping={
@@ -468,6 +505,20 @@ class WorkerRegistry:
                 )
             except Exception:
                 pass
+
+    async def owner_of(self, worker_id: str) -> str | None:
+        """Return the hub_id currently owning ``worker_id``'s control WS,
+        or None if unknown / Redis-less. Foundation for Hub→Hub routing;
+        unused while running a single hub."""
+        if self._r is None:
+            return None
+        try:
+            raw = await self._r.get(_k_owner(worker_id))
+        except Exception:
+            return None
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, bytes) else str(raw)
 
     # ----- queries ---------------------------------------------------------
 

@@ -228,9 +228,15 @@ async def lifespan(app: FastAPI):
 
         state.log_batcher = LogBatcher(state.store)
 
-    # Worker registry — pass the redis client if we have one
+    # Worker registry — pass the redis client if we have one. hub_id
+    # records WS ownership in Redis (multi-hub foundation; dormant for
+    # single hub).
     redis_client = getattr(state.store, "_r", None)
-    state.registry = WorkerRegistry(redis_client=redis_client)
+    state.registry = WorkerRegistry(redis_client=redis_client, hub_id=config.hub_id)
+    # Mirror the Session Map (sid -> worker/hub) to the same Redis so a
+    # future Hub→Hub forwarding layer can route session actions across
+    # replicas. Writes only; nothing reads it back yet.
+    state.sessions.bind_redis(redis_client, config.hub_id)
 
     # Background reaper that evicts idle / aged sessions (RFC-001 §11).
     # Otherwise a client that forgets to DELETE leaks a Lane forever.
