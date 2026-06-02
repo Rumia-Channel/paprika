@@ -78,6 +78,16 @@ windows/bin/vnc/
 # Internal-only docs / notes (contains real site names, IPs, etc.)
 internal/
 
+# Private keys (CRX signing keys, TLS keys, SSH keys, …). The CRX
+# signing key for the Paprika Agent extension used to live at
+# server/web/extensions/paprika-agent.pem — keep it OUT of git from
+# now on (operator stores it in a secrets vault and supplies it only
+# when re-packing a new CRX).
+*.pem
+*.key
+*.p12
+*.pfx
+
 # Scratch / one-off / temp dumps. These accumulate in the repo root
 # during exploratory work; never check them in.
 tmp_*.json

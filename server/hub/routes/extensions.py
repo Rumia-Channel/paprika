@@ -32,9 +32,10 @@ from server.hub.extensions import (
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["Extensions"])
 
-# Built-in Paprika Agent extension: deterministic ID (derived from the
-# committed signing key server/web/extensions/paprika-agent.pem) so the
-# worker's force-install policy can reference it. Served as a CRX +
+# Built-in Paprika Agent extension: deterministic ID derived from the
+# CRX signing key. The signing key itself (paprika-agent.pem) is NOT in
+# the repo — it is operator-held (secrets vault), used only when re-
+# packing a new CRX so the extension ID stays stable. Served as a CRX +
 # update manifest below; workers force-install it via an enterprise
 # policy (Chrome 148 ignores --load-extension for unpacked extensions).
 PAPRIKA_AGENT_ID = "gmhfgiloilioklcofcinlemifjjaeppe"
