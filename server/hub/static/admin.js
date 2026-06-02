@@ -4669,6 +4669,10 @@ asyncio.run(main())
 // ephemeral per-download progress lines that drive the progress widget
 // instead of being appended to the scroll log.
 const LJP_PROGRESS_MARKER = '[[paprika:progress]] ';
+// Sentinel prefix (must match server.protocol.NET_CAPTURE_MARKER) for
+// ephemeral network-capture deltas that ride the log channel and feed the
+// Network tab in real time -- replaces the page.network() pull that 504s.
+const LJP_NETCAP_MARKER = '[[paprika:netcap]] ';
 const LJP = {
   jobId: null,
   ws: null,
@@ -4737,6 +4741,15 @@ function ljpAppendLine(text, cls) {
   // count toward the replay offset).
   if (typeof text === 'string' && text.startsWith(LJP_PROGRESS_MARKER)) {
     try { ljpUpdateProgress(JSON.parse(text.slice(LJP_PROGRESS_MARKER.length))); }
+    catch (_) { /* malformed marker -- ignore */ }
+    return;
+  }
+  // --- ephemeral network-capture marker ------------------------------
+  // Captured-URL deltas streamed from the fetch engine: feed the Network
+  // tab cache + re-render. Like progress markers these are never persisted
+  // and must NOT count toward the seenLines replay cursor.
+  if (typeof text === 'string' && text.startsWith(LJP_NETCAP_MARKER)) {
+    try { ljpNetIngest(JSON.parse(text.slice(LJP_NETCAP_MARKER.length))); }
     catch (_) { /* malformed marker -- ignore */ }
     return;
   }
@@ -6889,6 +6902,38 @@ function ljpNetResetTimer() {
   const sec = parseInt(sel.value, 10);
   if (sec > 0) {
     LJP_NET.timer = setInterval(ljpNetRefresh, sec * 1000);
+  }
+}
+
+// Ingest a streamed network-capture delta ([[paprika:netcap]] marker) into
+// the SAME LJP_NET.cache the Network tab renders, then re-render. This is
+// the push path that replaces the page.network() pull (which 504s on
+// streaming pages): the fetch engine emits newly-captured URLs once per
+// poll cycle over the one /events pipe, and we merge them in live (dedup
+// by URL). ljpNetRender() no-ops when the tab isn't mounted, so the cache
+// simply accumulates until the operator opens the Network tab.
+function ljpNetIngest(payload) {
+  if (!payload || !Array.isArray(payload.net) || payload.net.length === 0) return;
+  const seen = new Set(LJP_NET.cache.map(e => e.url));
+  let added = 0;
+  for (const e of payload.net) {
+    if (!e || !e.url || seen.has(e.url)) continue;
+    seen.add(e.url);
+    LJP_NET.cache.push({
+      url: e.url,
+      mime: e.mime || '',
+      size: (e.size == null ? null : e.size),
+      saved: !!e.saved || LJP_NET.savedUrls.has(e.url),
+      document_url: '',
+      timestamp: Date.now() / 1000,
+      _sid: '(live)',
+    });
+    added++;
+  }
+  if (added) {
+    const cnt = document.getElementById('ljpNetCount');
+    if (cnt) cnt.textContent = String(LJP_NET.cache.length);
+    if (typeof ljpNetRender === 'function') ljpNetRender();
   }
 }
 

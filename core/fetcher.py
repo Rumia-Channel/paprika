@@ -1841,6 +1841,11 @@ async def fetch(opts: FetchOptions) -> FetchResult:
             _hook_seen_urls: set = set()
             _hook_poll_n = [0]
             _hook_total = [0]
+            # Cursor into _net_log: index of the first entry not yet
+            # streamed to the Live panel's Network tab (see netcap emit
+            # below). Covers BOTH capture surfaces (on_response + this
+            # hook) since both append to the shared _net_log.
+            _net_emit_idx = [0]
 
             async def _fetch_url_capture_poller():
                 await asyncio.sleep(2.0)
@@ -1907,6 +1912,33 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                         ):
                             if u not in result.video_urls_seen:
                                 result.video_urls_seen.append(u)
+                    # Stream the batch of newly-captured network entries to
+                    # the Live panel's Network tab as an EPHEMERAL delta that
+                    # rides the WorkerJobLog channel (hub broadcasts, does not
+                    # persist). One emit per poll cycle keeps it cheap and
+                    # replaces the page.network() pull that 504s on streaming
+                    # pages. Literal prefix must match
+                    # server.protocol.NET_CAPTURE_MARKER.
+                    if len(_net_log) > _net_emit_idx[0]:
+                        _net_delta = _net_log[_net_emit_idx[0]:]
+                        _net_emit_idx[0] = len(_net_log)
+                        try:
+                            log("[[paprika:netcap]] " + json.dumps(
+                                {"net": [
+                                    {
+                                        "url": _e.get("url", ""),
+                                        "mime": _e.get("mime", ""),
+                                        "size": _e.get("size"),
+                                        "saved": bool(_e.get("saved")),
+                                        "source": _e.get("source", ""),
+                                    }
+                                    for _e in _net_delta
+                                    if isinstance(_e, dict) and _e.get("url")
+                                ]},
+                                ensure_ascii=False,
+                            ))
+                        except Exception:
+                            pass
                     try:
                         await asyncio.sleep(1.5)
                     except asyncio.CancelledError:

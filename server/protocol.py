@@ -466,6 +466,19 @@ class WorkerJobAccepted(BaseModel):
 # phase / asset counts and IS persisted.
 JOB_PROGRESS_MARKER = "[[paprika:progress]] "
 
+# Sentinel prefix for EPHEMERAL network-capture deltas that ride the same
+# WorkerJobLog channel (identical mechanism to JOB_PROGRESS_MARKER). The
+# fetch engine emits "NET_CAPTURE_MARKER + json" with the batch of newly-
+# captured network URLs once per poll cycle; the hub BROADCASTS them to
+# /events viewers WITHOUT persisting (per-poll deltas would flood the log),
+# and the admin Live panel intercepts them to populate the Network tab in
+# real time -- replacing the page.network() pull that 504s on streaming
+# pages. Everything streams over the ONE /events pipe, demuxed by prefix.
+#   * core/fetcher.py  _fetch_url_capture_poller   (emit; literal must match)
+#   * server/hub/routes/workers.py  WorkerJobLog    (ephemeral branch)
+#   * server/hub/static/admin.js  ljpAppendLine     (render)
+NET_CAPTURE_MARKER = "[[paprika:netcap]] "
+
 
 class WorkerJobProgress(BaseModel):
     type: Literal["progress"] = "progress"

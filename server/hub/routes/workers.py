@@ -518,6 +518,7 @@ from server.hub.routes.profiles import _sync_all_profiles_to_worker
 from server.hub.sessions import SessionInfo
 from server.protocol import (
     JOB_PROGRESS_MARKER,
+    NET_CAPTURE_MARKER,
     HubRegistered,
     JobResult,
     JobStatus,
@@ -1071,14 +1072,18 @@ async def _handle_worker_message(worker, msg) -> None:
         return
 
     if isinstance(msg, WorkerJobLog):
-        # EPHEMERAL per-download progress markers: broadcast to live
-        # /events viewers (so the Live panel's progress bars update) but
-        # do NOT persist them -- a per-second progress JSON would flood
-        # log.txt and the per-worker ring buffer, re-creating the very
-        # noise we filter out elsewhere.  publish_log (no append_log_line,
-        # no ring mirror) is broadcast-only; markers are never replayed on
-        # reconnect because they're not in the stored log.
-        if msg.line.startswith(JOB_PROGRESS_MARKER):
+        # EPHEMERAL markers: broadcast to live /events viewers (progress
+        # bars, the Network tab) but do NOT persist them -- per-poll JSON
+        # deltas would flood log.txt and the per-worker ring buffer,
+        # re-creating the very noise we filter out elsewhere.  publish_log
+        # (no append_log_line, no ring mirror) is broadcast-only; markers
+        # are never replayed on reconnect because they're not in the
+        # stored log.
+        #   * JOB_PROGRESS_MARKER -> per-download progress bars
+        #   * NET_CAPTURE_MARKER  -> live Network tab (captured URLs)
+        if msg.line.startswith(JOB_PROGRESS_MARKER) or msg.line.startswith(
+            NET_CAPTURE_MARKER
+        ):
             try:
                 await state.store.publish_log(msg.job_id, msg.line)
             except Exception:
