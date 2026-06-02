@@ -604,6 +604,38 @@ async def _soft_resolve_job(
     return None
 
 
+def _append_network_jsonl(job_dir: Path, entries: list, sid: str) -> int:
+    """Blocking JSONL append for network logs. Runs in a worker thread
+    (see ``asyncio.to_thread`` call site) so slow storage IO never stalls
+    the hub event loop."""
+    job_dir.mkdir(parents=True, exist_ok=True)
+    out_path = job_dir / "network.jsonl"
+    written = 0
+    with out_path.open("a", encoding="utf-8") as f:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            # Stamp the session_id into each entry so the Live panel UI
+            # can show "which tab/session made this request" when the
+            # parent job had multiple sessions.
+            entry_out = dict(entry)
+            entry_out.setdefault("session_id", sid)
+            f.write(json.dumps(entry_out, ensure_ascii=False))
+            f.write("\n")
+            written += 1
+    return written
+
+
+def _append_line(job_dir: Path, filename: str, line: str) -> None:
+    """Blocking single-line append. Runs in a worker thread so slow
+    storage IO never stalls the hub event loop."""
+    job_dir.mkdir(parents=True, exist_ok=True)
+    out_path = job_dir / filename
+    with out_path.open("a", encoding="utf-8") as f:
+        f.write(line)
+        f.write("\n")
+
+
 @router.post("/jobs/{job_id}/network")
 async def upload_session_network(job_id: str, body: dict) -> dict:
     """Worker -> hub. Append a session's network log to
@@ -630,21 +662,10 @@ async def upload_session_network(job_id: str, body: dict) -> dict:
     await _soft_resolve_job(job_id)
     job_dir = get_storage_dir() / job_id
 
-    job_dir.mkdir(parents=True, exist_ok=True)
-    out_path = job_dir / "network.jsonl"
-    written = 0
-    with out_path.open("a", encoding="utf-8") as f:
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            # Stamp the session_id into each entry so the Live panel UI
-            # can show "which tab/session made this request" when the
-            # parent job had multiple sessions.
-            entry_out = dict(entry)
-            entry_out.setdefault("session_id", sid)
-            f.write(json.dumps(entry_out, ensure_ascii=False))
-            f.write("\n")
-            written += 1
+    # Offload the blocking open()/write() (incl. mkdir/stat) to a worker
+    # thread so a slow storage backend (e.g. SMB/CIFS mount) cannot stall
+    # the single hub event loop and starve every worker's heartbeat/pong.
+    written = await asyncio.to_thread(_append_network_jsonl, job_dir, entries, sid)
     return {"ok": True, "job_id": job_id, "session_id": sid, "written": written}
 
 
@@ -703,8 +724,6 @@ async def upload_session_links_snapshot(job_id: str, body: dict) -> dict:
 
     await _soft_resolve_job(job_id)
     job_dir = get_storage_dir() / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    out_path = job_dir / "links_snapshot.jsonl"
     line = json.dumps(
         {
             "session_id": sid,
@@ -722,9 +741,9 @@ async def upload_session_links_snapshot(job_id: str, body: dict) -> dict:
         },
         ensure_ascii=False,
     )
-    with out_path.open("a", encoding="utf-8") as f:
-        f.write(line)
-        f.write("\n")
+    # Offload the blocking open()/write() (incl. mkdir/stat) to a worker
+    # thread so a slow storage backend cannot stall the hub event loop.
+    await asyncio.to_thread(_append_line, job_dir, "links_snapshot.jsonl", line)
     return {"ok": True, "job_id": job_id, "session_id": sid, "count": len(links)}
 
 
