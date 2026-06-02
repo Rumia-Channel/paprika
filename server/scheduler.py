@@ -244,15 +244,15 @@ class ConnectedWorker:
             await self.send(req)
             try:
                 return await asyncio.wait_for(fut, timeout=timeout)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                # Best-effort diagnostic RPC. A worker that never replies
-                # (timeout) or a caller torn down mid-capture (e.g. a
-                # codegen-loop attempt finishing -> the screenshot task is
-                # cancelled) should yield "no screenshot", NOT a noisy
-                # traceback in the caller (_capture_attempt_screenshot
-                # already treats a falsy reply as "skip"). Returning None
-                # here stops the recurring request_screenshot
-                # CancelledError tracebacks.
+            except asyncio.CancelledError:
+                # Mid-capture cancellation (e.g. a codegen-loop attempt
+                # finishing -> the screenshot task is cancelled) yields
+                # "no screenshot" instead of a noisy CancelledError
+                # traceback in the caller. TimeoutError is deliberately
+                # NOT caught here: it must propagate so callers hit their
+                # own `except TimeoutError` -> 504, instead of receiving
+                # None and crashing on `reply.error` (the live-preview grid
+                # calls this ~20x/poll and times out often on busy workers).
                 return None
         finally:
             self.pending_screenshots.pop(req_id, None)

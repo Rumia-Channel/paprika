@@ -456,6 +456,10 @@ async def worker_lane_preview(
         raise HTTPException(504, f"screenshot timed out for lane {lane_idx}")
     except Exception as e:
         raise HTTPException(502, f"screenshot send failed: {e}")
+    if reply is None:
+        # request_screenshot returns None when the capture was cancelled
+        # mid-flight (a timeout raises instead). No frame to serve.
+        raise HTTPException(504, f"screenshot unavailable for lane {lane_idx}")
     if reply.error:
         raise HTTPException(502, f"worker error: {reply.error}")
     import base64
