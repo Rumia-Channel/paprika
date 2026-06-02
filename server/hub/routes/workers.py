@@ -679,7 +679,20 @@ async def worker_link(ws: WebSocket, worker_id: str):
     # Record the worker's source IP so the admin UI can show "which
     # box is this?" alongside the (otherwise opaque) worker_id.
     try:
-        worker.client_address = ws.client.host if ws.client else None
+        # Behind the multi-hub nginx front the WS peer is nginx itself,
+        # so ws.client.host is the proxy IP (172.18.x.x). Prefer the real
+        # client IP from the headers nginx sets (X-Real-IP, or the first
+        # X-Forwarded-For hop); fall back to the socket peer for direct
+        # (no-proxy) connections. client_address feeds the noVNC proxy
+        # target (_resolve_session_novnc_target) and the clone-collision
+        # check, so it MUST be the worker's routable LAN IP -- not nginx's
+        # -- or noVNC proxies to the wrong host (502) and clone detection
+        # can't tell two hosts apart.
+        _real_ip = (
+            ws.headers.get("x-real-ip")
+            or (ws.headers.get("x-forwarded-for") or "").split(",")[0]
+        ).strip()
+        worker.client_address = _real_ip or (ws.client.host if ws.client else None)
     except Exception:
         worker.client_address = None
     log.info(
