@@ -2862,34 +2862,99 @@ function ssCurrentSize() {
   };
 }
 
-function refreshScreenshots() {
+// One batch is in flight at a time; AbortController lets us cancel the
+// stream when the operator disables Live Preview (or the tab is left).
+let _ssInFlight = false;
+let _ssAbort = null;
+
+// Apply one NDJSON frame record {wid, lane, jpeg_b64 | error} to its tile.
+function ssApplyPreviewFrame(rec) {
+  if (!rec || rec.wid == null || rec.lane == null) return;
+  const tile = ssTiles.get(rec.wid + '/' + rec.lane);
+  if (!tile) return;
+  if (rec.error) {
+    // Mirror the <img> onerror path so the .sserr overlay + loading-state
+    // clearing stay consistent with single-tile failures.
+    if (tile.err) {
+      tile.err.textContent = 'capture failed (' + rec.error + ')';
+      tile.err.style.display = 'block';
+    }
+    tile.wrap.classList.remove('loading');
+    return;
+  }
+  if (!rec.jpeg_b64) return;
+  const dataUrl = 'data:image/jpeg;base64,' + rec.jpeg_b64;
+  // Double-buffer via an off-screen decode so the visible tile never
+  // flashes to blank between frames (same intent as the old probe Image,
+  // but a data URL has no network round-trip).
+  const probe = new Image();
+  probe.onload = () => {
+    tile.img.src = dataUrl;        // already decoded -> instant swap
+    if (tile.err) tile.err.style.display = 'none';
+    tile.wrap.classList.remove('loading');
+  };
+  probe.onerror = () => {
+    if (tile.err) {
+      tile.err.textContent = 'capture failed (decode error)';
+      tile.err.style.display = 'block';
+    }
+    tile.wrap.classList.remove('loading');
+  };
+  probe.src = dataUrl;
+}
+
+// Refresh every tile in ONE request. POST /workers/previews takes the whole
+// lane set; the hub fans the screenshot RPCs out (bounded) and streams each
+// frame back as an NDJSON line the moment it's ready, so tiles fill in
+// progressively just like the old per-tile parallelism -- but over a single
+// connection instead of ~20 (which on HTTP/1.1 starved the conn pool).
+async function refreshScreenshots() {
   if (!document.getElementById('ssEnabled').checked) return;
-  const t = Date.now();
+  // One batch at a time: if the previous stream hasn't finished, skip this
+  // tick rather than stacking a second request (replaces the per-tile
+  // _loading guard, hoisted to the whole grid).
+  if (_ssInFlight) return;
   const { width, quality } = ssCurrentSize();
-  for (const [key, tile] of ssTiles) {
-    // Skip tiles that are still loading from the previous cycle.
-    if (tile._loading) continue;
-    const [wid, lane] = key.split('/');
-    const url =
-      `/workers/${encodeURIComponent(wid)}/lanes/${encodeURIComponent(lane)}/preview` +
-      `?width=${width}&quality=${quality}&t=${t}`;
-    // Double-buffer: preload the new frame off-screen, then swap only
-    // after it's fully decoded. This avoids the flash-to-blank that
-    // happens when img.src is assigned directly (browser clears the
-    // old pixels before the new response arrives).
-    const probe = new Image();
-    tile._loading = true;
-    probe.onload = () => {
-      tile.img.src = probe.src;   // instant swap — already cached
-      tile._loading = false;
-    };
-    probe.onerror = () => {
-      // Surface the error on the visible img so the existing
-      // error-overlay logic (sserr) fires.
-      tile.img.src = url;
-      tile._loading = false;
-    };
-    probe.src = url;
+  const lanes = [];
+  for (const key of ssTiles.keys()) {
+    const i = key.lastIndexOf('/');
+    if (i < 0) continue;
+    lanes.push({ wid: key.slice(0, i), lane: parseInt(key.slice(i + 1), 10) || 0 });
+  }
+  if (!lanes.length) return;
+
+  _ssInFlight = true;
+  _ssAbort = new AbortController();
+  try {
+    const resp = await fetch('/workers/previews', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lanes, width, quality }),
+      signal: _ssAbort.signal,
+    });
+    if (!resp.ok || !resp.body) return;  // grid-level failure; next tick retries
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let rec;
+        try { rec = JSON.parse(line); } catch (_) { continue; }
+        ssApplyPreviewFrame(rec);
+      }
+    }
+  } catch (_) {
+    // AbortError (tab-leave / disable) or a transient network blip --
+    // swallow; the interval fires another batch next tick.
+  } finally {
+    _ssInFlight = false;
   }
 }
 function resetScreenshotTimer() {
@@ -2911,7 +2976,10 @@ function applyCols() {
 document.getElementById('ssInterval').addEventListener('change', resetScreenshotTimer);
 document.getElementById('ssEnabled').addEventListener('change', () => {
   if (document.getElementById('ssEnabled').checked) resetScreenshotTimer();
-  else if (ssTimer) { clearInterval(ssTimer); ssTimer = null; }
+  else {
+    if (ssTimer) { clearInterval(ssTimer); ssTimer = null; }
+    if (_ssAbort) { try { _ssAbort.abort(); } catch (_) {} }  // kill in-flight stream
+  }
 });
 document.getElementById('ssCols').addEventListener('change', applyCols);
 // Sort change: re-sort immediately, persist to localStorage.

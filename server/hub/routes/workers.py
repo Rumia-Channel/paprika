@@ -505,6 +505,192 @@ async def worker_lane_preview_legacy(
 
 
 # ============================================================================
+# Batched lane-preview streaming: one POST -> NDJSON stream of many frames
+# ----------------------------------------------------------------------------
+# The Live Preview grid used to fire one GET /lanes/{i}/preview per tile --
+# ~20 requests every few seconds. The admin UI is served over plain HTTP/1.1
+# (nginx, no TLS/h2 on :8000), so the browser's ~6-connections-per-host cap
+# makes those requests queue in waves AND starve other admin XHRs (e.g. the
+# /overview poll) behind the preview flood.
+#
+# This endpoint takes the whole tile set in ONE POST, fans the screenshot
+# RPCs out across workers (bounded by a semaphore), and streams each frame
+# back as an NDJSON line the instant its RPC resolves -- a slow/busy lane
+# never blocks the fast ones (no head-of-line). A short-TTL frame cache plus
+# in-flight coalescing protect the workers: repeat asks for the same
+# (worker, lane, size) within the TTL reuse one capture instead of triggering
+# a fresh ffmpeg encode per viewer / per overlapping poll. The single-tile
+# GET endpoints above are untouched (still used by each Live panel's preview
+# tab) -- this is purely additive.
+# ============================================================================
+
+import json as _json
+
+from fastapi import Request as _Request
+from fastapi.responses import StreamingResponse as _StreamingResponse
+
+# (wid, lane, width, ffmpeg_q) -> (monotonic_ts, jpeg_b64)
+_PREVIEW_FRAME_CACHE = {}
+# (wid, lane, width, ffmpeg_q) -> in-flight capture asyncio.Task (coalesce)
+_PREVIEW_INFLIGHT = {}
+_PREVIEW_CACHE_TTL = 1.5        # secs a frame stays "live enough" to reuse
+_PREVIEW_MAX_CONCURRENCY = 8    # simultaneous screenshot RPCs across the fleet
+_PREVIEW_MAX_LANES = 96         # hard cap on lanes per batch (abuse guard)
+_preview_sem = None             # lazily bound to the running loop
+
+
+def _preview_semaphore():
+    # Created lazily so it binds to uvicorn's running event loop, not the
+    # (possibly different) import-time loop.
+    global _preview_sem
+    if _preview_sem is None:
+        _preview_sem = asyncio.Semaphore(_PREVIEW_MAX_CONCURRENCY)
+    return _preview_sem
+
+
+async def _do_capture_frame(key):
+    """Actually capture one lane frame. Returns (jpeg_b64, error_str) with
+    exactly one non-None. Never raises -- a single bad lane must not tear
+    down the whole batch stream. Result is cached on success."""
+    wid, lane, width, ffmpeg_q = key
+    if state.registry is None:
+        return None, "registry not ready"
+    worker = state.registry.connections.get(wid)
+    if worker is None:
+        return None, "worker not connected"
+    async with _preview_semaphore():
+        try:
+            reply = await worker.request_screenshot(
+                lane, max_width=width, quality=ffmpeg_q,
+            )
+        except TimeoutError:
+            return None, "timeout"
+        except Exception as e:
+            return None, f"send failed: {e}"
+    if reply is None:
+        # request_screenshot returns None on mid-flight cancellation.
+        return None, "cancelled"
+    if reply.error:
+        return None, reply.error
+    b64 = reply.jpeg_b64 or ""
+    _PREVIEW_FRAME_CACHE[key] = (time.monotonic(), b64)
+    return b64, None
+
+
+async def _capture_one_frame(key):
+    """Cache-first, coalescing wrapper around _do_capture_frame."""
+    hit = _PREVIEW_FRAME_CACHE.get(key)
+    if hit is not None and (time.monotonic() - hit[0]) <= _PREVIEW_CACHE_TTL:
+        return hit[1], None
+    task = _PREVIEW_INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.ensure_future(_do_capture_frame(key))
+        _PREVIEW_INFLIGHT[key] = task
+        task.add_done_callback(lambda t, k=key: _PREVIEW_INFLIGHT.pop(k, None))
+    # shield: if THIS request's client disconnects, our awaiter is cancelled
+    # but the shared capture task keeps running -> it still populates the
+    # cache for the next poll, and any coalesced waiters aren't torn down.
+    return await asyncio.shield(task)
+
+
+async def _preview_line(wid, lane, width, ffmpeg_q):
+    """Produce one NDJSON line for a lane (capture + serialize)."""
+    b64, err = await _capture_one_frame((wid, lane, width, ffmpeg_q))
+    rec = {"wid": wid, "lane": lane}
+    if err:
+        rec["error"] = err
+    else:
+        rec["jpeg_b64"] = b64
+    return _json.dumps(rec, separators=(",", ":")) + "\n"
+
+
+@router.post("/workers/previews")
+async def workers_previews_batch(request: _Request):
+    """**BATCH PREVIEW**: one POST -> NDJSON stream of lane frames.
+
+    Body::
+
+        {"lanes": [{"wid": "<worker_id>", "lane": 0}, ...],
+         "width": 320, "quality": 30}
+
+    Streams one JSON object per line (``application/x-ndjson``) as each
+    lane's capture resolves::
+
+        {"wid": "...", "lane": 0, "jpeg_b64": "..."}     # success
+        {"wid": "...", "lane": 1, "error": "timeout"}    # failure
+
+    ``quality`` is the 0-100 perceptual scale (same as the single-tile GET
+    endpoint); the hub converts it to ffmpeg's q internally. Replaces the
+    grid's ~20-GETs-per-tick with a single request.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid JSON body")
+    lanes_in = body.get("lanes") if isinstance(body, dict) else None
+    if not isinstance(lanes_in, list) or not lanes_in:
+        raise HTTPException(400, "body.lanes must be a non-empty array")
+    if len(lanes_in) > _PREVIEW_MAX_LANES:
+        raise HTTPException(413, f"too many lanes (max {_PREVIEW_MAX_LANES})")
+    width = max(80, min(1920, int(body.get("width", 320) or 320)))
+    quality_pct = max(0, min(100, int(body.get("quality", 30) or 30)))
+    ffmpeg_q = _ffmpeg_q_from_quality_pct(quality_pct)
+
+    # Parse + dedupe (a duplicate (wid,lane) would emit two identical lines).
+    seen = set()
+    targets = []
+    for item in lanes_in:
+        if not isinstance(item, dict):
+            continue
+        wid = item.get("wid") or item.get("worker_id")
+        lane = item.get("lane")
+        if lane is None:
+            lane = item.get("lane_idx")
+        if not wid or lane is None:
+            continue
+        try:
+            lane = int(lane)
+        except (TypeError, ValueError):
+            continue
+        k = (str(wid), lane)
+        if k in seen:
+            continue
+        seen.add(k)
+        targets.append(k)
+    if not targets:
+        raise HTTPException(400, "no valid {wid, lane} entries in body.lanes")
+
+    async def _stream():
+        # Fan all captures out at once; the semaphore inside _do_capture_frame
+        # bounds how many actually hit workers concurrently. as_completed
+        # yields each as soon as it resolves -> progressive, no head-of-line.
+        tasks = [
+            asyncio.ensure_future(_preview_line(wid, lane, width, ffmpeg_q))
+            for (wid, lane) in targets
+        ]
+        try:
+            for fut in asyncio.as_completed(tasks):
+                yield await fut
+        finally:
+            # Client disconnected (or closed the stream) before all frames
+            # arrived: drop our awaiters. The shared capture tasks behind
+            # _capture_one_frame are shielded, so they finish + cache on
+            # their own; we only stop forwarding.
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+
+    return _StreamingResponse(
+        _stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-Accel-Buffering": "no",  # don't let nginx buffer the stream
+        },
+    )
+
+
+# ============================================================================
 # Worker WebSocket control channel (#2B-G3-partial)
 # ----------------------------------------------------------------------------
 # The full worker protocol loop: register handshake, message dispatch,
