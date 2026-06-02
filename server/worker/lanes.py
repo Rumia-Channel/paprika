@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import urllib.request
@@ -320,6 +321,12 @@ class Lane:
             chrome_args,
             env=self._env,
             stdout=subprocess.DEVNULL,
+            # Own session/process group so _kill_chrome_proc can SIGKILL
+            # the whole tree. Without this, .kill() drops only the main
+            # process and Chrome's children (renderers/zygotes/gpu) get
+            # reparented to the container's PID 1 (the worker python,
+            # which doesn't reap them) and accumulate as zombies.
+            start_new_session=True,
         )
         ok = await _wait_http(
             f"http://localhost:{self.chrome_port}/json/version",
@@ -491,17 +498,39 @@ class Lane:
         except asyncio.CancelledError:
             return
 
+    def _kill_chrome_proc(self) -> None:
+        """SIGKILL the lane's Chrome AND its whole process group so the
+        child processes (renderers, zygotes, gpu, utility) die with it.
+
+        Chrome is launched with ``start_new_session=True`` so it leads its
+        own process group; ``os.killpg`` then takes the whole tree down at
+        once. The old ``self._chrome_proc.kill()`` dropped only the main
+        process, leaving the children to be reparented to the container's
+        PID 1 -- the worker python, which doesn't reap them -- so they
+        piled up as zombies (hundreds observed in production). Safe to call
+        when no Chrome is running. Blocks briefly to reap the main proc."""
+        proc = self._chrome_proc
+        self._chrome_proc = None
+        if proc is None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
     def stop(self) -> None:
         self._stopping = True
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             self._watchdog_task = None
-        if self._chrome_proc is not None:
-            try:
-                self._chrome_proc.kill()
-            except Exception:
-                pass
-            self._chrome_proc = None
+        self._kill_chrome_proc()
         for p in self.processes:
             try:
                 p.kill()
@@ -543,13 +572,7 @@ class Lane:
                 pass
             self._watchdog_task = None
         # Stop Chrome.
-        if self._chrome_proc is not None:
-            try:
-                self._chrome_proc.kill()
-                self._chrome_proc.wait(timeout=5)
-            except Exception:
-                pass
-            self._chrome_proc = None
+        self._kill_chrome_proc()
         # Move the lane's current profile aside. If a previous swap
         # crashed mid-way and left a stale .lane-default, remove it
         # first -- the running lane_dir is the authoritative state.
@@ -633,13 +656,7 @@ class Lane:
             except (asyncio.CancelledError, Exception):
                 pass
             self._watchdog_task = None
-        if self._chrome_proc is not None:
-            try:
-                self._chrome_proc.kill()
-                self._chrome_proc.wait(timeout=5)
-            except Exception:
-                pass
-            self._chrome_proc = None
+        self._kill_chrome_proc()
         # Replace lane_dir's content. Unlike use_profile() we do NOT
         # back up the previous content -- the operator explicitly
         # asked for this profile to be the default; the previous
@@ -693,13 +710,7 @@ class Lane:
             except (asyncio.CancelledError, Exception):
                 pass
             self._watchdog_task = None
-        if self._chrome_proc is not None:
-            try:
-                self._chrome_proc.kill()
-                self._chrome_proc.wait(timeout=5)
-            except Exception:
-                pass
-            self._chrome_proc = None
+        self._kill_chrome_proc()
         if lane_dir.exists():
             shutil.rmtree(lane_dir, ignore_errors=True)
         lane_dir.mkdir(parents=True, exist_ok=True)
@@ -739,13 +750,7 @@ class Lane:
             except (asyncio.CancelledError, Exception):
                 pass
             self._watchdog_task = None
-        if self._chrome_proc is not None:
-            try:
-                self._chrome_proc.kill()
-                self._chrome_proc.wait(timeout=5)
-            except Exception:
-                pass
-            self._chrome_proc = None
+        self._kill_chrome_proc()
         # Discard the operator profile -- any cookies / state set
         # during the job stay confined to that scratch dir.
         if lane_dir.exists():
@@ -807,15 +812,8 @@ class Lane:
             timeout=3.0,
         ):
             return
-        # Unresponsive: kill any stale/zombie process, then respawn.
-        proc = self._chrome_proc
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.kill()
-                proc.wait(timeout=5)
-            except Exception:
-                pass
-        self._chrome_proc = None
+        # Unresponsive: kill any stale/zombie process group, then respawn.
+        self._kill_chrome_proc()
         _log(
             self.lane_idx,
             f"acquire: Chrome :{self.chrome_port} not answering; "

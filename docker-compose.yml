@@ -190,6 +190,10 @@ services:
       dockerfile: docker/worker/Dockerfile
     restart: unless-stopped
     depends_on: [hub, agent]
+    # Run tini as PID 1 so reparented Chrome children are reaped instead
+    # of accumulating as zombies (the worker python is the app, not an
+    # init). See docker-compose-worker.yml worker.init comment.
+    init: true
     shm_size: "2gb"
     # NET_ADMIN lets entrypoint-egress-firewall.sh install iptables
     # OUTPUT rules. The script is a no-op unless

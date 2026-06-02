@@ -17,6 +17,11 @@ services:
       dockerfile: docker/worker/Dockerfile
     image: paprika-worker:latest
     restart: unless-stopped
+    # Run tini as PID 1 so reparented Chrome children (renderers/zygotes
+    # killed via process-group kill, plus any stragglers) are reaped
+    # instead of piling up as zombies. The worker python is the app, not
+    # an init, and doesn't waitpid() arbitrary orphans.
+    init: true
     shm_size: "2gb"
     # See docker-compose.yml worker.cap_add comment -- needed for the
     # opt-in egress firewall (PAPRIKA_WORKER_EGRESS_FIREWALL=1).
