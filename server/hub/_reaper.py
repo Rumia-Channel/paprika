@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from datetime import datetime
 
@@ -182,8 +183,13 @@ async def _session_reaper_loop():
 # ``_DEAD_WORKER_MAX_AGE_S``. Live, currently-connected workers are
 # never touched (they're not even on the Redis path -- live entries
 # come straight from registry.connections).
-_DEAD_WORKER_MAX_AGE_S = 7 * 86400  # 7 days
-_DEAD_WORKER_REAPER_INTERVAL_S = 6 * 3600  # 6 hours
+# How long a worker's last heartbeat may be stale before its (dead,
+# disconnected) registration is auto-pruned, and how often we scan.
+# Lowered from the old 7-day / 6-hour values so restart churn / ghost
+# entries vanish within minutes instead of lingering for days. Live,
+# currently-connected workers are never pruned (the loop skips alive=true).
+_DEAD_WORKER_MAX_AGE_S = float(os.environ.get("WORKER_STALE_REAP_S", "300"))
+_DEAD_WORKER_REAPER_INTERVAL_S = float(os.environ.get("WORKER_REAP_INTERVAL_S", "60"))
 
 
 async def _dead_worker_reaper_loop():
@@ -235,9 +241,9 @@ async def _dead_worker_reaper_loop():
         if pruned:
             log.info(
                 "dead-worker reaper: pruned %d stale registration(s) "
-                "(age > %d days)",
+                "(heartbeat older than %ds)",
                 pruned,
-                _DEAD_WORKER_MAX_AGE_S // 86400,
+                int(_DEAD_WORKER_MAX_AGE_S),
             )
 
 

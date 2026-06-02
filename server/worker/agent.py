@@ -2022,6 +2022,28 @@ class WorkerAgent:
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._sem = asyncio.Semaphore(max_concurrent)
         self._in_flight = 0
+        # --- self-recycle (drain-after-N) ---------------------------------
+        # After this many completed assignments, stop accepting new jobs,
+        # let in-flight finish, then exit so docker restarts us fresh --
+        # clears any leaked processes / memory the way Selenium Grid's
+        # SE_DRAIN_AFTER_SESSION_COUNT does. 0 disables.
+        self._jobs_done = 0
+        self._draining = False
+        try:
+            self._recycle_after = int(os.environ.get("WORKER_RECYCLE_AFTER_JOBS", "200"))
+        except (TypeError, ValueError):
+            self._recycle_after = 200
+        # --- self-heal (shutdown-on-failure) ------------------------------
+        # If we can't keep a live hub link for this many seconds, exit so
+        # docker restarts us clean instead of flapping/ghosting in place
+        # (cf. Selenium SE_NODE_REGISTER_PERIOD + SHUTDOWN_ON_FAILURE).
+        # _last_link_ok is the monotonic time of the last successful
+        # heartbeat (= proof the WS to the hub is alive). 0 disables.
+        try:
+            self._reconnect_giveup_s = float(os.environ.get("WORKER_RECONNECT_GIVEUP_S", "120"))
+        except (TypeError, ValueError):
+            self._reconnect_giveup_s = 120.0
+        self._last_link_ok = 0.0
         # Active session_id -> SessionState. Sessions hold the
         # nodriver browser/tab attached to a Lane between actions.
         self._sessions: dict[str, SessionState] = {}
@@ -2210,6 +2232,9 @@ class WorkerAgent:
             await self.lane_pool.start_all()
 
         backoff = 1.0
+        # Seed the link-alive clock so the shutdown-on-failure window
+        # covers the very first connect attempts too.
+        self._last_link_ok = time.monotonic()
         async with httpx.AsyncClient(timeout=60.0) as http:
             self._http = http
             while True:
@@ -2280,6 +2305,21 @@ class WorkerAgent:
                             f"[worker {self.worker_id}] WS-drop cleanup failed: "
                             f"{type(e).__name__}: {e}",
                         )
+                # Shutdown-on-failure: if we've had no live hub link for
+                # longer than the give-up window, stop flapping in place --
+                # exit so docker restarts us clean and we re-register fresh.
+                # The hub's reaper prunes the stale registration.
+                if (
+                    self._reconnect_giveup_s > 0
+                    and (time.monotonic() - self._last_link_ok)
+                    > self._reconnect_giveup_s
+                ):
+                    _logger.warning(
+                        f"[worker {self.worker_id}] no hub link for "
+                        f"{self._reconnect_giveup_s:.0f}s; exiting for a fresh "
+                        f"restart (docker restart policy)",
+                    )
+                    os._exit(1)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
@@ -2530,13 +2570,31 @@ class WorkerAgent:
                             )
                             for n, e in self._profile_cache.items()
                         ]
+                    # While draining (recycle), report the worker as full
+                    # so the hub stops assigning; real in-flight still drives
+                    # the exit check below.
+                    eff_in_flight = (
+                        self.max_concurrent if self._draining else self._in_flight
+                    )
                     await self._send(
                         WorkerHeartbeat(
-                            in_flight=self._in_flight,
+                            in_flight=eff_in_flight,
                             capacity=self.max_concurrent,
                             profiles_cached=cached,
                         )
                     )
+                    # A successful heartbeat == the hub link is alive.
+                    # Drives the shutdown-on-failure timer in run().
+                    self._last_link_ok = time.monotonic()
+                    # Recycle: once the drain has emptied in-flight, exit so
+                    # docker restarts us fresh.
+                    if self._draining and self._in_flight <= 0:
+                        _logger.info(
+                            f"[worker {self.worker_id}] drained after "
+                            f"{self._jobs_done} job(s); exiting for recycle "
+                            f"(docker will restart)",
+                        )
+                        os._exit(0)
                 except Exception:
                     return
         except asyncio.CancelledError:
@@ -2847,9 +2905,37 @@ class WorkerAgent:
         except Exception:
             return None
 
+    def _on_job_task_done(self, task) -> None:
+        """Fires once per finished assignment (success, failure, or early
+        return). Counts it and trips the recycle drain at the threshold."""
+        try:
+            exc = task.exception()
+        except BaseException:
+            # cancelled (CancelledError is BaseException) or not-done; either
+            # way we still count the assignment as finished below.
+            exc = None
+        if exc is not None:
+            _logger.info(
+                f"[worker {self.worker_id}] job task ended with "
+                f"{type(exc).__name__}: {exc}",
+            )
+        self._jobs_done += 1
+        if (
+            self._recycle_after > 0
+            and not self._draining
+            and self._jobs_done >= self._recycle_after
+        ):
+            self._draining = True
+            _logger.info(
+                f"[worker {self.worker_id}] recycle threshold reached "
+                f"({self._jobs_done} >= {self._recycle_after}); draining "
+                f"(no new jobs) then exiting for a fresh restart",
+            )
+
     async def _handle_hub_message(self, msg) -> None:
         if isinstance(msg, HubAssignJob):
-            asyncio.create_task(self._run_assigned_job(msg))
+            t = asyncio.create_task(self._run_assigned_job(msg))
+            t.add_done_callback(self._on_job_task_done)
             return
         if isinstance(msg, HubScreenshotRequest):
             # Don't block the recv loop on ffmpeg; fan out to a task.
