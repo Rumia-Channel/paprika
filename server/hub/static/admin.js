@@ -1383,7 +1383,12 @@ async function refresh() {
     const sessions = ov.sessions || { count: 0, sessions: [] };
     let jobs = ov.jobs || { total: 0 };
     if (jobsTabActive) {
-      jobs = await _refreshJson('/jobs', { total: 0, jobs: [] });
+      // "最近のジョブ" = Recent Jobs: fetch a bounded recent window, not all
+      // ~3000 (which hydrated EVERY job server-side = a multi-MB response +
+      // N get_job_info DB queries per ~2s poll). The header count stays
+      // accurate (envelope .total = full store count); the tab shows /
+      // paginates the most recent N.
+      jobs = await _refreshJson('/jobs?limit=300', { total: 0, jobs: [] });
     }
     const wcount = workers.count || 0;
     const jcount = jobs.total ?? (jobs.jobs || jobs).length;
@@ -6432,6 +6437,15 @@ function ljpShotRefreshLive() {
   const img   = document.getElementById('ljpShotLiveImg');
   const empty = document.getElementById('ljpShotLiveEmpty');
   if (!img || !empty) return;
+  // Job is terminal (lane torn down) -> there's no live lane to preview.
+  // Don't keep hitting /preview: each request just cancels (no lane),
+  // which was the ~2s "(canceled)" preview spam in DevTools. The saved-
+  // screenshots sub-view (screenshots.json) still works.
+  if (LJP._terminalStopped) {
+    empty.style.display = '';
+    img.style.display = 'none';
+    return;
+  }
   if (!LJP_SHOT.workerId || LJP_SHOT.laneIdx == null) {
     // Maybe the job's lane just got assigned -- re-probe.
     ljpShotProbeLane().then(() => {
