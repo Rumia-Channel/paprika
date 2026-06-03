@@ -60,8 +60,17 @@ from server.store import make_store
 # ----------------------------------------------------------------------------
 
 
+# Admin/management role (defined as HubConfig.admin_mode in _state.py): when
+# PAPRIKA_ROLE=admin this process serves the admin UI + reads the shared stores
+# but runs NO worker WS, NO job dispatch, NO reapers / leases / orphan-recovery.
+# Local alias so the lifespan reads it cheaply.
+_ADMIN_MODE = config.admin_mode
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if _ADMIN_MODE:
+        log.info("role=admin — management service (no WS / dispatch / reapers)")
     config.data_dir.mkdir(parents=True, exist_ok=True)
     state.sessions = SessionRegistry()
     # Per-host cookie store lives next to the per-job state files, under
@@ -165,17 +174,21 @@ async def lifespan(app: FastAPI):
                 #    Catches first-time-connect and engines created while
                 #    MariaDB was unreachable. After step 1, files are
                 #    already a subset (or exact mirror) of MariaDB, so
-                #    most rows here are no-ops.
-                migrated = await auto_migrate_all(
-                    _mdb_pool,
-                    redis_url=config.redis_url,
-                    host_registry=state.hosts,
-                    visited_registry=state.host_visited,
-                    skill_registry=state.skills,
-                    convention_registry=state.conventions,
-                    engine_registry=state.engines,
-                    preset_registry=state.presets,
-                )
+                #    most rows here are no-ops. SKIPPED in admin role — a
+                #    read-only management service must never push its
+                #    (empty/stale) files into the shared DB.
+                migrated = None
+                if not _ADMIN_MODE:
+                    migrated = await auto_migrate_all(
+                        _mdb_pool,
+                        redis_url=config.redis_url,
+                        host_registry=state.hosts,
+                        visited_registry=state.host_visited,
+                        skill_registry=state.skills,
+                        convention_registry=state.conventions,
+                        engine_registry=state.engines,
+                        preset_registry=state.presets,
+                    )
                 if migrated:
                     log.info("MariaDB auto-migrate: %s", migrated)
 
@@ -195,7 +208,9 @@ async def lifespan(app: FastAPI):
     # only touches engines whose cost fields are still 0.0. Idempotent.
     try:
         from server.hub.engines import seed_default_pricing as _seed_pricing
-        _n_priced = _seed_pricing(state.engines)
+        # Skipped in admin role (it mutates the engine registry + writes
+        # through to the shared MariaDB).
+        _n_priced = 0 if _ADMIN_MODE else _seed_pricing(state.engines)
         if _n_priced:
             log.info("engines: auto-priced %d engine(s) with default ¥/1M rates", _n_priced)
             # Push the freshly-priced records to MariaDB so the next
@@ -234,7 +249,7 @@ async def lifespan(app: FastAPI):
     # inline in the WS loop (which otherwise stalls session-action
     # forwarding -- e.g. page.network() -- under heavy log volume).
     # No-op for InMemoryJobStore (already zero-cost).
-    if state.store_kind in ("redis", "mariadb"):
+    if state.store_kind in ("redis", "mariadb") and not _ADMIN_MODE:
         from server.hub._log_batcher import LogBatcher
 
         state.log_batcher = LogBatcher(state.store)
@@ -276,35 +291,30 @@ async def lifespan(app: FastAPI):
             public_base=config.public_base_url or "",
             version=_ver,
         )
-        state.hubs.start()
+        # Admin role reads peers via HubRegistry but must NOT heartbeat
+        # itself as a job hub.
+        if not _ADMIN_MODE:
+            state.hubs.start()
     except Exception as e:
         log.warning("HubRegistry init failed: %s", e)
         state.hubs = None
 
-    # Background reaper that evicts idle / aged sessions (RFC-001 §11).
-    # Otherwise a client that forgets to DELETE leaks a Lane forever.
-    reaper_task = asyncio.create_task(_session_reaper_loop())
+    # Background hub loops: idle-session reaper (RFC-001 §11), skill/convention
+    # retire (hourly fitness-based prune of auto-tier duds/zombies), dead-worker
+    # reaper (prune stale Redis registrations), job-lease loop (multi-hub
+    # dead-hub recovery, gated by PAPRIKA_JOB_LEASE_ENABLED). ALL SKIPPED in
+    # admin role: a read-only management service must never evict sessions,
+    # delete records, prune the registry, or re-dispatch jobs.
+    reaper_task = retire_task = dead_worker_task = job_lease_task = None
+    if not _ADMIN_MODE:
+        reaper_task = asyncio.create_task(_session_reaper_loop())
+        retire_task = asyncio.create_task(_skill_convention_reaper_loop())
+        from server.hub._reaper import _dead_worker_reaper_loop
 
-    # Selection-loop retire phase: hourly, drop auto-tier skills/conventions
-    # that the fitness signal (success_count/use_count) shows are duds or
-    # zombies. Curated is never auto-touched; auto deletion is gated by the
-    # ``auto_retire_enabled`` setting (default off -> dry-run logs only).
-    retire_task = asyncio.create_task(_skill_convention_reaper_loop())
+        dead_worker_task = asyncio.create_task(_dead_worker_reaper_loop())
+        from server.hub._reaper import _job_lease_loop
 
-    # Dead-worker reaper: drop Redis registrations for workers that
-    # haven't heartbeated in > 7 days. Stops the Workers tab from
-    # silting up with stale entries every time the fleet churns
-    # (clone-collision burst, version-mismatch loop, redeploy).
-    from server.hub._reaper import _dead_worker_reaper_loop
-    dead_worker_task = asyncio.create_task(_dead_worker_reaper_loop())
-
-    # Job-lease loop (multi-hub control-plane phase 4: dead-hub recovery).
-    # Refreshes leases for this hub's in-flight codegen-loop/rerun jobs and
-    # re-dispatches jobs orphaned by a crashed peer. Gated by
-    # PAPRIKA_JOB_LEASE_ENABLED (default OFF) -- the loop returns immediately
-    # when off, so single-hub behaviour is unchanged.
-    from server.hub._reaper import _job_lease_loop
-    job_lease_task = asyncio.create_task(_job_lease_loop())
+        job_lease_task = asyncio.create_task(_job_lease_loop())
 
     # SMB storage: a cifs mount does not survive a restart, so re-mount
     # the configured share NOW (before the first job needs storage_dir)
@@ -320,7 +330,13 @@ async def lifespan(app: FastAPI):
             smb_watchdog_loop,
         )
 
-        if state.settings is not None and smb_is_configured(state.settings):
+        # Skipped in admin role: a management service reads artifacts from the
+        # object store (MinIO) and never needs the privileged CIFS mount.
+        if (
+            not _ADMIN_MODE
+            and state.settings is not None
+            and smb_is_configured(state.settings)
+        ):
             ok, msg = await asyncio.to_thread(ensure_smb_mounted, state.settings)
             if ok:
                 log.info("SMB: share mounted at startup (%s)", msg)
@@ -329,7 +345,8 @@ async def lifespan(app: FastAPI):
                     "SMB: startup mount skipped/failed (%s); watchdog will retry",
                     msg,
                 )
-        smb_watchdog_task = asyncio.create_task(smb_watchdog_loop())
+        if not _ADMIN_MODE:
+            smb_watchdog_task = asyncio.create_task(smb_watchdog_loop())
     except Exception:
         log.exception("SMB startup mount / watchdog launch failed")
 
@@ -338,7 +355,9 @@ async def lifespan(app: FastAPI):
     # orphan from a killed orchestrator. Mark it failed so it doesn't
     # stay "running" forever in the admin UI.
     try:
-        recovered = await _recover_orphan_running_jobs()
+        # SKIPPED in admin role — this blanket-fails every status=running job
+        # in the (shared) store; a management process must never touch it.
+        recovered = 0 if _ADMIN_MODE else await _recover_orphan_running_jobs()
         if recovered:
             log.info(
                 "recovery: marked %d orphan running job(s) as failed "
@@ -356,7 +375,7 @@ async def lifespan(app: FastAPI):
     try:
         from server.hub.runner import sweep_orphan_runners
 
-        n_runners = await sweep_orphan_runners()
+        n_runners = 0 if _ADMIN_MODE else await sweep_orphan_runners()
         if n_runners:
             log.info(
                 "recovery: killed %d orphan paprika-runner container(s) "
@@ -376,10 +395,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    reaper_task.cancel()
-    retire_task.cancel()
-    dead_worker_task.cancel()
-    job_lease_task.cancel()
+    for _t in (reaper_task, retire_task, dead_worker_task, job_lease_task):
+        if _t is not None:
+            _t.cancel()
     if smb_watchdog_task is not None:
         smb_watchdog_task.cancel()
     # Stop hub heartbeat + drop the registry row so peers see us as

@@ -921,6 +921,10 @@ async def worker_link(ws: WebSocket, worker_id: str):
       3. Loop: hub may send HubAssignJob/HubCancelJob/HubPing; worker sends
          heartbeat/progress/log/complete/failed.
     """
+    if config.admin_mode:
+        # Admin/management process never owns worker control channels.
+        await ws.close(code=1013, reason="admin service: no worker WS here")
+        return
     await ws.accept()
     assert state.registry is not None and state.store is not None
 

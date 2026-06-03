@@ -3,6 +3,8 @@
 Modes:
   --mode all    : single-process hub + (optional) in-process worker
   --mode hub    : hub only (API + WS endpoint)
+  --mode admin  : read-only management UI/API over the shared stores
+                  (no worker WS, no job dispatch, no reapers)
   --mode worker : worker only — connects to hub, runs jobs
                   Add --lane-pool N to pre-spawn N dedicated browser lanes
                   (per-job Chrome + noVNC). Without --lane-pool the worker
@@ -28,9 +30,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m server")
     parser.add_argument(
         "--mode",
-        choices=["all", "hub", "worker"],
+        choices=["all", "hub", "worker", "admin"],
         default="all",
-        help="Run mode (default: all = single-process hub + worker).",
+        help="Run mode (default: all). admin = read-only management UI/API "
+        "(no worker WS, no job dispatch, no reapers) over the shared stores.",
     )
     parser.add_argument(
         "--host",
@@ -194,6 +197,23 @@ def _run_hub_only(args) -> int:
     return 0
 
 
+def _run_admin(args) -> int:
+    """Dedicated read-only management service. Serves the admin UI + API over
+    the SHARED stores (MariaDB jobs+registries, Redis workers/sessions, MinIO
+    assets) but runs NO worker WS, NO job dispatch, NO reapers/leases/orphan-
+    recovery. Gives one stable admin URL decoupled from the compute hubs.
+    PAPRIKA_ROLE=admin is read at app-import time (server/hub/app.py)."""
+    import os
+
+    os.environ["PAPRIKA_ROLE"] = "admin"
+    log.info(
+        "mode=admin  http://%s:%d  (read-only management service)",
+        args.host,
+        args.port,
+    )
+    return _run_hub_only(args)
+
+
 def _run_all(args) -> int:
     """Same as --mode hub. (Phase 3+ doesn't need an in-process worker;
     jobs run via local fallback when no remote worker is connected.)"""
@@ -261,6 +281,8 @@ def main() -> int:
         return _run_all(args)
     if args.mode == "hub":
         return _run_hub_only(args)
+    if args.mode == "admin":
+        return _run_admin(args)
     if args.mode == "worker":
         return _run_worker(args)
     parser.error(f"unknown mode: {args.mode}")

@@ -705,12 +705,20 @@ class WorkerRegistry:
             except Exception:
                 continue
             caps = data.get("capabilities") or {}
+            # Cross-hub presence: a worker NOT connected to THIS process may
+            # still be live on a peer hub. Judge "alive" by redis heartbeat
+            # freshness (same WORKER_TTL window stats() uses for local
+            # connections) instead of hardcoding offline -- else a read-only
+            # admin / a peer hub shows the whole fleet as offline. Dispatch
+            # (pick_worker -> alive_workers -> self.connections) is unaffected;
+            # this only changes the DISPLAY of redis-known rows.
+            _alive = bool(last_ts) and (time.time() - float(last_ts)) < WORKER_TTL
             out.append({
                 "worker_id": wid,
                 "in_flight": 0,
                 "capacity": int(caps.get("max_concurrent") or 1),
                 "labels": dict(caps.get("labels") or {}),
-                "alive": False,
+                "alive": _alive,
                 "age_seconds": (
                     int(time.time() - float(last_ts)) if last_ts else None
                 ),
@@ -719,7 +727,10 @@ class WorkerRegistry:
                 "slot_novnc_urls": [],
                 "profiles_cached": [],
                 "version": caps.get("version") or "",
-                "status": "offline",
+                "status": (
+                    str(data["status"]) if data.get("status")
+                    else ("active" if _alive else "offline")
+                ),
                 # Surface the last-known IP for offline workers (persisted
                 # to the worker row on heartbeat, see heartbeat() above).
                 # Empty string when this worker has never heartbeated

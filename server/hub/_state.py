@@ -54,6 +54,12 @@ class HubConfig:
     # Hub→Hub forwarding layer is added), so writing it is side-effect
     # free. In a compose scale-out, set ``HUB_ID`` per replica.
     hub_id: str = os.environ.get("HUB_ID") or socket.gethostname()
+    # Process role. When PAPRIKA_ROLE=admin this is a read-only management
+    # service (serves the admin UI + reads the shared stores) that runs NO
+    # worker WS, NO job dispatch, NO reapers / leases / orphan-recovery. Read
+    # once at import — the CLI entrypoint (_run_admin) sets the env before the
+    # hub app is imported. Default ("" / "hub" / "all") = full hub, unchanged.
+    admin_mode: bool = (os.environ.get("PAPRIKA_ROLE") or "").strip().lower() == "admin"
 
 
 config = HubConfig()
