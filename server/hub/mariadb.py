@@ -1537,6 +1537,243 @@ async def delete_engine_row(pool: Any, slug: str) -> None:
             await cur.execute("DELETE FROM engines WHERE slug=%s", (slug,))
 
 
+# ---------------------------------------------------------------------------
+# Per-record write-through (cross-hub config sharing — Phase B)
+#
+# Mirror upsert_engine_row for the operator-managed registries so an edit on
+# one hub is persisted to MariaDB *immediately*. The migrate_* paths above use
+# INSERT IGNORE (bulk one-time import); these use ON DUPLICATE KEY UPDATE so an
+# edit to an EXISTING row sticks. Column lists are kept verbatim-aligned with
+# the matching migrate_* (so the table schema is the single source of truth);
+# ``created_at`` is deliberately NOT in the UPDATE clause (preserve original).
+# Paired with server/hub/_invalidate.py, which surgically replays each change
+# on peer hubs. ``success_count`` / ``last_success_at`` are omitted for skills
+# and conventions — they're on the dataclass but not the table.
+# ---------------------------------------------------------------------------
+
+
+async def upsert_skill_row(pool: Any, rec: Any) -> None:
+    """INSERT-or-UPDATE one skill row (PK=slug)."""
+    from dataclasses import asdict
+    d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
+    params = (
+        d.get("slug", ""),
+        d.get("tier", "auto"),
+        d.get("name", ""),
+        d.get("description"),
+        d.get("code_template"),
+        d.get("llm_instructions"),
+        _json_dumps(d.get("applicable_when", [])),
+        _json_dumps(d.get("tags", [])),
+        1 if d.get("auto_extracted", True) else 0,
+        _json_dumps(d.get("extracted_from", [])),
+        d.get("use_count", 0),
+        _parse_dt(d.get("created_at")),
+        _parse_dt(d.get("updated_at")),
+        _parse_dt(d.get("last_used_at")),
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """INSERT INTO skills
+                   (slug, tier, name, description,
+                    code_template, llm_instructions,
+                    applicable_when, tags, auto_extracted,
+                    extracted_from, use_count,
+                    created_at, updated_at, last_used_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                     tier=VALUES(tier), name=VALUES(name),
+                     description=VALUES(description),
+                     code_template=VALUES(code_template),
+                     llm_instructions=VALUES(llm_instructions),
+                     applicable_when=VALUES(applicable_when),
+                     tags=VALUES(tags), auto_extracted=VALUES(auto_extracted),
+                     extracted_from=VALUES(extracted_from),
+                     use_count=VALUES(use_count),
+                     updated_at=VALUES(updated_at),
+                     last_used_at=VALUES(last_used_at)""",
+                params,
+            )
+
+
+async def delete_skill_row(pool: Any, slug: str) -> None:
+    """DELETE one skill row (PK=slug). No-op when absent."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM skills WHERE slug=%s", (slug,))
+
+
+async def upsert_convention_row(pool: Any, rec: Any) -> None:
+    """INSERT-or-UPDATE one convention row (PK=slug)."""
+    from dataclasses import asdict
+    d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
+    params = (
+        d.get("slug", ""),
+        d.get("tier", "auto"),
+        d.get("name", ""),
+        d.get("advice"),
+        d.get("rationale"),
+        d.get("bad_example"),
+        d.get("good_example"),
+        _json_dumps(d.get("applicable_when", [])),
+        _json_dumps(d.get("tags", [])),
+        _json_dumps(d.get("extracted_from", [])),
+        d.get("use_count", 0),
+        _parse_dt(d.get("created_at")),
+        _parse_dt(d.get("updated_at")),
+        _parse_dt(d.get("last_used_at")),
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """INSERT INTO conventions
+                   (slug, tier, name, advice, rationale,
+                    bad_example, good_example,
+                    applicable_when, tags, extracted_from,
+                    use_count, created_at, updated_at,
+                    last_used_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                     tier=VALUES(tier), name=VALUES(name),
+                     advice=VALUES(advice), rationale=VALUES(rationale),
+                     bad_example=VALUES(bad_example),
+                     good_example=VALUES(good_example),
+                     applicable_when=VALUES(applicable_when),
+                     tags=VALUES(tags), extracted_from=VALUES(extracted_from),
+                     use_count=VALUES(use_count),
+                     updated_at=VALUES(updated_at),
+                     last_used_at=VALUES(last_used_at)""",
+                params,
+            )
+
+
+async def delete_convention_row(pool: Any, slug: str) -> None:
+    """DELETE one convention row (PK=slug). No-op when absent."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM conventions WHERE slug=%s", (slug,))
+
+
+async def upsert_preset_row(pool: Any, rec: Any) -> None:
+    """INSERT-or-UPDATE one preset row (PK=name)."""
+    from dataclasses import asdict
+    d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
+    params = (
+        d.get("name", ""),
+        d.get("category", ""),
+        d.get("description", ""),
+        d.get("ui_mode", "fetch"),
+        d.get("ai_engine", "codegen"),
+        d.get("url", ""),
+        d.get("goal", ""),
+        _json_dumps(d.get("simple_rows", [])),
+        d.get("code_script", ""),
+        d.get("max_attempts", 3),
+        d.get("attempt_timeout_s", 86400),
+        d.get("attempt_timeout_simple_s", 600),
+        1 if d.get("host_dedup", True) else 0,
+        _json_dumps(d.get("options", {})),
+        _parse_dt(d.get("created_at")),
+        _parse_dt(d.get("updated_at")),
+        _parse_dt(d.get("last_used_at")),
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """INSERT INTO presets
+                   (name, category, description, ui_mode,
+                    ai_engine, url, goal, simple_rows,
+                    code_script, max_attempts,
+                    attempt_timeout_s, attempt_timeout_simple_s,
+                    host_dedup, options,
+                    created_at, updated_at, last_used_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                     category=VALUES(category), description=VALUES(description),
+                     ui_mode=VALUES(ui_mode), ai_engine=VALUES(ai_engine),
+                     url=VALUES(url), goal=VALUES(goal),
+                     simple_rows=VALUES(simple_rows),
+                     code_script=VALUES(code_script),
+                     max_attempts=VALUES(max_attempts),
+                     attempt_timeout_s=VALUES(attempt_timeout_s),
+                     attempt_timeout_simple_s=VALUES(attempt_timeout_simple_s),
+                     host_dedup=VALUES(host_dedup), options=VALUES(options),
+                     updated_at=VALUES(updated_at),
+                     last_used_at=VALUES(last_used_at)""",
+                params,
+            )
+
+
+async def delete_preset_row(pool: Any, name: str) -> None:
+    """DELETE one preset row (PK=name). No-op when absent."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM presets WHERE name=%s", (name,))
+
+
+async def upsert_host_row(pool: Any, rec: Any) -> None:
+    """INSERT-or-UPDATE one host row (PK=host). Recipes normalised to plain
+    dicts exactly as migrate_hosts does. The caller passes a record whose
+    ``host`` is already normalised (the registry normalises on upsert)."""
+    from dataclasses import asdict
+    d = asdict(rec) if hasattr(rec, "__dataclass_fields__") else rec
+    recipe_dicts: list = []
+    for r in (d.get("fetch_recipes", []) or []):
+        if hasattr(r, "to_json"):
+            recipe_dicts.append(r.to_json())
+        elif isinstance(r, dict):
+            recipe_dicts.append(r)
+        else:
+            recipe_dicts.append(asdict(r))
+    params = (
+        d.get("host", ""),
+        _json_dumps(d.get("cookies", [])),
+        d.get("notes"),
+        _json_dumps(d.get("recrawl_patterns", [])),
+        d.get("popup_policy", "kill"),
+        d.get("login_url"),
+        d.get("login_goal"),
+        d.get("login_check"),
+        d.get("login_refresh_ttl_s", 900),
+        _parse_dt(d.get("last_login_at")),
+        _json_dumps(recipe_dicts),
+        _parse_dt(d.get("created_at")),
+        _parse_dt(d.get("updated_at")),
+        _parse_dt(d.get("last_used_at")),
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """INSERT INTO hosts
+                   (host, cookies, notes, recrawl_patterns,
+                    popup_policy, login_url, login_goal,
+                    login_check, login_refresh_ttl_s,
+                    last_login_at, fetch_recipes,
+                    created_at, updated_at, last_used_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                     cookies=VALUES(cookies), notes=VALUES(notes),
+                     recrawl_patterns=VALUES(recrawl_patterns),
+                     popup_policy=VALUES(popup_policy),
+                     login_url=VALUES(login_url), login_goal=VALUES(login_goal),
+                     login_check=VALUES(login_check),
+                     login_refresh_ttl_s=VALUES(login_refresh_ttl_s),
+                     last_login_at=VALUES(last_login_at),
+                     fetch_recipes=VALUES(fetch_recipes),
+                     updated_at=VALUES(updated_at),
+                     last_used_at=VALUES(last_used_at)""",
+                params,
+            )
+
+
+async def delete_host_row(pool: Any, host: str) -> None:
+    """DELETE one host row (PK=host). No-op when absent."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM hosts WHERE host=%s", (host,))
+
+
 async def restore_presets(pool: Any, preset_registry: Any) -> int:
     """Mirror MariaDB ``presets`` table to the file-backed
     PresetRegistry. Presets are keyed by ``name`` only (no tier)."""

@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 
 from server.hub._state import state
+from server.hub._invalidate import share_delete, share_upsert
 from server.hub.presets import PresetRecord, PresetRegistry
 from server.protocol import JobInfo, JobOptions, JobRequest
 
@@ -125,6 +126,7 @@ async def put_preset(name: str, body: dict) -> dict:
         saved = pr.upsert(rec)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    await share_upsert("presets", pr, saved)
     return saved.to_json()
 
 
@@ -134,6 +136,7 @@ async def delete_preset(name: str) -> dict:
     ok = pr.delete(name)
     if not ok:
         raise HTTPException(404, f"preset '{name}' not found")
+    await share_delete("presets", name)
     return {"ok": True, "deleted": name}
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from server.hub._state import state
+from server.hub._invalidate import share_delete, share_upsert
 from server.hub.conventions import (
     ConventionRegistry,
 )
@@ -109,6 +110,7 @@ async def put_convention(slug: str, body: dict) -> dict:
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    await share_upsert("conventions", reg, rec)
     return _convention_to_dict(rec, include_body=True)
 
 
@@ -118,6 +120,7 @@ async def delete_convention(slug: str) -> dict:
     ok = reg.delete(slug)
     if not ok:
         raise HTTPException(404, f"convention '{slug}' not found")
+    await share_delete("conventions", normalise_convention_slug(slug))
     return {"slug": normalise_convention_slug(slug), "deleted": True}
 
 
@@ -129,6 +132,7 @@ async def promote_convention(slug: str) -> dict:
     rec = reg.promote(slug)
     if rec is None:
         raise HTTPException(404, f"convention '{slug}' not found in auto/")
+    await share_upsert("conventions", reg, rec)
     return _convention_to_dict(rec, include_body=True)
 
 
@@ -139,6 +143,7 @@ async def demote_convention(slug: str) -> dict:
     rec = reg.demote(slug)
     if rec is None:
         raise HTTPException(404, f"convention '{slug}' not found in curated/")
+    await share_upsert("conventions", reg, rec)
     return _convention_to_dict(rec, include_body=True)
 
 
@@ -156,4 +161,7 @@ async def merge_conventions(body: dict) -> dict:
     rec = reg.merge(keep, drops)
     if rec is None:
         raise HTTPException(404, f"keep convention '{keep}' not found in auto/")
+    await share_upsert("conventions", reg, rec)
+    for _drop in drops:
+        await share_delete("conventions", normalise_convention_slug(_drop))
     return _convention_to_dict(rec, include_body=False)

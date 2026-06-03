@@ -385,6 +385,16 @@ async def lifespan(app: FastAPI):
 
         job_lease_task = asyncio.create_task(_job_lease_loop())
 
+    # Cross-hub config/knowledge propagation (Phase B): subscribe to the
+    # registry-invalidation channel and surgically apply peer edits to the
+    # local file registries. Runs in BOTH roles (read-side sync — the admin
+    # service also needs a live view); no-op without a shared Redis.
+    invalidate_task = None
+    if state.store_kind in ("redis", "mariadb"):
+        from server.hub._invalidate import run_invalidation_subscriber
+
+        invalidate_task = asyncio.create_task(run_invalidation_subscriber())
+
     # SMB storage: a cifs mount does not survive a restart, so re-mount
     # the configured share NOW (before the first job needs storage_dir)
     # and spawn a watchdog that re-mounts it if it ever drops (NAS
@@ -464,7 +474,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    for _t in (reaper_task, retire_task, dead_worker_task, job_lease_task):
+    for _t in (reaper_task, retire_task, dead_worker_task, job_lease_task,
+               invalidate_task):
         if _t is not None:
             _t.cancel()
     if smb_watchdog_task is not None:

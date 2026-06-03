@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from server.hub._state import state
+from server.hub._invalidate import share_delete, share_upsert
 from server.hub.skills import SkillRegistry, normalise_slug
 
 router = APIRouter(tags=["Skills"])
@@ -123,6 +124,7 @@ async def put_skill(slug: str, body: dict) -> dict:
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    await share_upsert("skills", reg, rec)
     return _skill_to_dict(rec, include_body=True)
 
 
@@ -132,6 +134,7 @@ async def delete_skill(slug: str) -> dict:
     ok = reg.delete(slug)
     if not ok:
         raise HTTPException(404, f"skill '{slug}' not found")
+    await share_delete("skills", normalise_slug(slug))
     return {"slug": normalise_slug(slug), "deleted": True}
 
 
@@ -144,6 +147,7 @@ async def promote_skill(slug: str) -> dict:
     rec = reg.promote(slug)
     if rec is None:
         raise HTTPException(404, f"skill '{slug}' not found in auto/")
+    await share_upsert("skills", reg, rec)
     return _skill_to_dict(rec, include_body=True)
 
 
@@ -154,6 +158,7 @@ async def demote_skill(slug: str) -> dict:
     rec = reg.demote(slug)
     if rec is None:
         raise HTTPException(404, f"skill '{slug}' not found in curated/")
+    await share_upsert("skills", reg, rec)
     return _skill_to_dict(rec, include_body=True)
 
 
@@ -171,6 +176,9 @@ async def merge_skills(body: dict) -> dict:
     rec = reg.merge(keep, drops)
     if rec is None:
         raise HTTPException(404, f"keep skill '{keep}' not found in auto/")
+    await share_upsert("skills", reg, rec)
+    for _drop in drops:
+        await share_delete("skills", normalise_slug(_drop))
     return _skill_to_dict(rec, include_body=False)
 
 
