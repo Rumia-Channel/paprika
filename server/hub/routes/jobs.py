@@ -2099,9 +2099,18 @@ async def get_jobs_summary() -> dict:
                 age_s: float | None = None
                 if started is not None:
                     try:
+                        # JobInfo.started_at can be a naive datetime
+                        # (the worker side writes datetime.utcnow() in
+                        # several places). Treat tz-less timestamps as
+                        # UTC so the subtraction below doesn't raise
+                        # "can't subtract naive from aware".
+                        s_aware = (
+                            started if started.tzinfo is not None
+                            else started.replace(tzinfo=timezone.utc)
+                        )
                         age_s = max(
                             0.0,
-                            (datetime.now(timezone.utc) - started).total_seconds(),
+                            (datetime.now(timezone.utc) - s_aware).total_seconds(),
                         )
                     except Exception:
                         age_s = None
