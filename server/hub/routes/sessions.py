@@ -147,13 +147,24 @@ def _route_to_page(
 
 
 def _hub_internal_url(hub_id: str, path: str) -> str:
-    """Internal base URL of a sibling hub. ``hub_id`` doubles as the
-    resolvable service/host name in the scale compose (hub-a/b/c), so the
-    default ``http://{hub}:8000`` Just Works there; override the shape via
-    PAPRIKA_HUB_INTERNAL_FMT for other topologies."""
-    fmt = os.environ.get("PAPRIKA_HUB_INTERNAL_FMT") or "http://{hub}:8000"
-    base = fmt.format(hub=hub_id).rstrip("/")
-    return f"{base}{path}"
+    """Internal base URL of a sibling hub, for cross-host session / noVNC
+    forwarding. Resolution order:
+
+      1. ``PAPRIKA_HUB_INTERNAL_FMT`` -- explicit override (``{hub}`` placeholder).
+      2. IP-encoded hub_id (``hub-36`` -> ``http://<subnet>.36:<port>``). The
+         clone-safe scheme derives hub_id from the host LAN IP (see app.py
+         ``_resolve_hub_id_from_host_ip``), so forwarding to a peer Just Works
+         with no per-hub config / extra_hosts. Subnet + port via env.
+      3. Legacy default ``http://{hub}:8000`` (in-compose service name)."""
+    fmt = os.environ.get("PAPRIKA_HUB_INTERNAL_FMT")
+    if fmt:
+        return f"{fmt.format(hub=hub_id).rstrip('/')}{path}"
+    m = _re.match(r"^hub-(\d{1,3})$", hub_id or "")
+    if m:
+        subnet = os.environ.get("PAPRIKA_HUB_SUBNET", "10.10.50")
+        port = os.environ.get("PAPRIKA_HUB_INTERNAL_PORT", "8100")
+        return f"http://{subnet}.{m.group(1)}:{port}{path}"
+    return f"http://{hub_id}:8000{path}"
 
 
 async def _forward_session_action(

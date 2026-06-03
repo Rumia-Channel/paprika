@@ -67,14 +67,16 @@ from server.store import make_store
 _ADMIN_MODE = config.admin_mode
 
 
-async def _resolve_hub_id_from_host_ip(redis_client) -> str | None:
-    """Per-VM-unique hub_id derived from the host LAN IP as Redis sees it.
+async def _host_lan_ip_via_redis(redis_client) -> str | None:
+    """The host's LAN IP as Redis sees it -- used to derive a per-VM-unique
+    hub_id AND to publish the hub's backend address in the presence registry
+    (the nginx reconciler reads it).
 
     A bridge-net container's outbound traffic is SNAT'd to its host's LAN IP,
     so Redis reports .35 / .36 (not the 172.x container IP) in ``CLIENT INFO``'s
-    ``addr`` field. This lets a CLONED hub VM auto-pick a distinct hub_id with
-    zero per-clone config -- just give the clone its own IP. Returns
-    ``hub-<last-octet>`` or None (caller then keeps the import-time default).
+    ``addr`` field. This lets a CLONED hub VM auto-pick a distinct identity with
+    zero per-clone config -- just give the clone its own IP. Returns the dotted
+    IPv4 (e.g. ``10.10.50.36``) or None.
     """
     if redis_client is None:
         return None
@@ -105,7 +107,7 @@ async def _resolve_hub_id_from_host_ip(redis_client) -> str | None:
             o[0] == 172 and 16 <= o[1] <= 31
         ):
             return None
-        return f"hub-{o[3]}"
+        return ip
     except Exception:
         return None
 
@@ -306,11 +308,17 @@ async def lifespan(app: FastAPI):
     # IP) becomes a distinct hub with no per-clone config. Resolved BEFORE the
     # registries below consume config.hub_id. Falls back to the import-time
     # default (hostname) when discovery isn't possible.
-    if not os.environ.get("HUB_ID"):
-        _derived = await _resolve_hub_id_from_host_ip(redis_client)
-        if _derived and _derived != config.hub_id:
+    # Discover the host LAN IP (Redis CLIENT INFO addr) once: it gives both a
+    # per-VM-unique hub_id (clone-safety) and the backend address we publish in
+    # the presence registry for the nginx reconciler. Computed regardless of a
+    # pinned HUB_ID so the reconciler always gets a real IP.
+    _host_ip = await _host_lan_ip_via_redis(redis_client)
+    if _host_ip and not os.environ.get("HUB_ID"):
+        _derived = "hub-" + _host_ip.rsplit(".", 1)[-1]
+        if _derived != config.hub_id:
             log.info(
-                "hub_id auto-derived from host LAN IP: %s (was %s)",
+                "hub_id auto-derived from host LAN IP %s: %s (was %s)",
+                _host_ip,
                 _derived,
                 config.hub_id,
             )
@@ -348,6 +356,10 @@ async def lifespan(app: FastAPI):
             public_base=config.public_base_url or "",
             version=_ver,
         )
+        # Publish the host LAN IP so the nginx reconciler can address this hub
+        # by its real backend, with no subnet-hardcoded guess from the hub_id.
+        if _host_ip:
+            state.hubs.update(ip=_host_ip)
         # Admin role reads peers via HubRegistry but must NOT heartbeat
         # itself as a job hub.
         if not _ADMIN_MODE:
