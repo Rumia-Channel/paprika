@@ -2509,8 +2509,7 @@ class WorkerAgent:
                     # out of this loop -> the worker PROCESS exited and docker had
                     # to rebuild every lane (and any in-flight job was orphaned).
                     # Treat any ws-level / socket error as a transient drop:
-                    # log + backoff + retry. Genuinely persistent failures still
-                    # hit the `no hub link for Ns` give-up exit below.
+                    # log + backoff + retry indefinitely (reconnect-in-place).
                     _logger.info(
                         f"[worker {self.worker_id}] hub link down ({e}); "
                         f"reconnecting in {backoff:.1f}s",
@@ -2542,21 +2541,16 @@ class WorkerAgent:
                             f"[worker {self.worker_id}] WS-drop cleanup failed: "
                             f"{type(e).__name__}: {e}",
                         )
-                # Shutdown-on-failure: if we've had no live hub link for
-                # longer than the give-up window, stop flapping in place --
-                # exit so docker restarts us clean and we re-register fresh.
-                # The hub's reaper prunes the stale registration.
-                if (
-                    self._reconnect_giveup_s > 0
-                    and (time.monotonic() - self._last_link_ok)
-                    > self._reconnect_giveup_s
-                ):
-                    _logger.warning(
-                        f"[worker {self.worker_id}] no hub link for "
-                        f"{self._reconnect_giveup_s:.0f}s; exiting for a fresh "
-                        f"restart (docker restart policy)",
-                    )
-                    os._exit(1)
+                # NOTE: a "shutdown-on-failure" self-exit (exit after
+                # WORKER_RECONNECT_GIVEUP_S of no hub link) was removed. It
+                # also fired on transient event-loop starvation under heavy
+                # load -- a busy worker can miss heartbeats for 120s while
+                # the WS is otherwise fine -- turning a recoverable
+                # reconnect into a destructive process restart, and an
+                # all-at-once deploy made it storm fleet-wide. Reconnect-in-
+                # place is the safer default. A future version may re-add it
+                # gated ONLY on genuine connect failures (never-registered),
+                # like Selenium's SE_NODE_REGISTER_PERIOD + SHUTDOWN_ON_FAILURE.
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
