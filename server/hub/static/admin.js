@@ -1385,19 +1385,11 @@ async function refresh() {
     if (jobsTabActive) {
       // "最近のジョブ" = Recent Jobs. Server-side filter + pagination so
       // each status sub-tab can show ALL matching jobs (not just the
-      // 300-newest window the table used to cap at). The previous
-      // "fetch top 300, filter client-side" path silently capped every
-      // sub-tab at 300 total entries even when the store had thousands
-      // of completed / failed jobs -- the symptom that prompted this
-      // rewrite ("3000 件あるのに全部のサブタブで 300 件しか出てこない").
-      //
-      // Trade-off accepted: ``jobs.total`` is now the FILTERED count for
-      // the active tab (e.g. completed count when on 完成 tab). The
-      // sub-tab counters update only for the currently-active filter;
-      // other tabs keep their last-known count from the last time the
-      // operator opened that tab. After tapping through all 4 tabs once
-      // every counter is exact. Adding a /jobs/counts endpoint would
-      // close this gap in a single round-trip; tracked as follow-up.
+      // 300-newest window the table used to cap at). Counts come from
+      // /jobs/counts (single round-trip, all 4 sub-tab badges accurate
+      // every poll). The previous "fetch top 300, filter client-side"
+      // path silently capped every sub-tab at 300 total entries even
+      // when the store had thousands of completed / failed jobs.
       const _f = _jobsStatusFilter || 'all';
       const _ps = _jobsPageSize();
       const _off = (_jobsPage || 0) * _ps;
@@ -1410,7 +1402,28 @@ async function refresh() {
       } else if (_f !== 'all') {
         _q += '&status=' + encodeURIComponent(_f);
       }
-      jobs = await _refreshJson('/jobs' + _q, { total: 0, jobs: [] });
+      // Issue the page + the counts call in parallel so the only
+      // wall-clock cost is whichever is slower. /jobs/counts is
+      // memoised server-side (2s TTL) so a 2s admin poll touches the
+      // slow path at most once per tick. Cache fallback `null` keeps
+      // the rest of refresh() going if the counts call hiccups.
+      const [pageRes, countsRes] = await Promise.all([
+        _refreshJson('/jobs' + _q, { total: 0, jobs: [] }),
+        _refreshJson('/jobs/counts', null),
+      ]);
+      jobs = pageRes;
+      if (countsRes && countsRes.by_status) {
+        const _bs = countsRes.by_status;
+        const _setCnt = (id, n) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = n;
+        };
+        _setCnt('jobsCntAll',     countsRes.total ?? 0);
+        _setCnt('jobsCntSuccess', _bs.completed ?? 0);
+        _setCnt('jobsCntError',   _bs.failed ?? 0);
+        // "実行中" folds queued + running to match the sub-tab filter.
+        _setCnt('jobsCntRunning', (_bs.running ?? 0) + (_bs.queued ?? 0));
+      }
     }
     const wcount = workers.count || 0;
     const jcount = jobs.total ?? (jobs.jobs || jobs).length;
@@ -1597,20 +1610,10 @@ async function refresh() {
     // for the current filter, not the unfiltered ~300 the old path
     // fetched. Sort defensively in case the store returns out of order.
     const sortedAll = [...jobList].sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
-    // Status sub-tab counters. With server-side filtering the response's
-    // ``total`` is the exact count for the active filter -- update only
-    // that filter's counter. Other counters keep their last-known value
-    // until the operator selects them (= the response.total then
-    // updates that one). After a single round through the 4 tabs every
-    // counter is exact. Follow-up: a /jobs/counts endpoint can populate
-    // all four in one round-trip if the staleness matters.
+    // Sub-tab counters are now populated by the /jobs/counts call
+    // above (all 4 in one round-trip). Just resolve _filter so the
+    // visSig downstream can include it; no per-tab update needed here.
     const _filter = _jobsStatusFilter || 'all';
-    const _filterTotal = jobs.total ?? sortedAll.length;
-    const _setCnt = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
-    if (_filter === 'all')        _setCnt('jobsCntAll', _filterTotal);
-    else if (_filter === 'completed') _setCnt('jobsCntSuccess', _filterTotal);
-    else if (_filter === 'failed')    _setCnt('jobsCntError', _filterTotal);
-    else if (_filter === 'running')   _setCnt('jobsCntRunning', _filterTotal);
     // Server already filtered + paginated; no client-side filter step
     // remains. ``sorted`` is the page to render as-is.
     const sorted = sortedAll;

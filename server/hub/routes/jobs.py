@@ -1919,6 +1919,90 @@ async def list_jobs(
     }
 
 
+# Tiny in-process memoisation for /jobs/counts. The admin UI polls
+# every ~2s and the count call hydrates every JobInfo, so without a
+# cache a 3000-job store costs 3000 store.get_job_info() calls per
+# 2 seconds for every operator who has the Jobs tab open. A 2s TTL
+# coalesces back-to-back hits to a single pass without making the
+# counters perceptibly stale.
+_JOBS_COUNTS_CACHE: dict = {"ts": 0.0, "value": None}
+_JOBS_COUNTS_TTL_S = 2.0
+
+
+@router.get("/jobs/counts")
+async def get_jobs_counts() -> dict:
+    """Per-status and per-mode job-count summary in one round-trip.
+
+    Returned shape::
+
+        {
+          "total":     3067,
+          "by_status": {
+            "queued":    0,
+            "running":   5,
+            "completed": 1222,
+            "failed":    1828,
+            "cancelled": 12
+          },
+          "by_mode": {
+            "fetch":         2800,
+            "codegen-loop":  200,
+            "vision-agent":  50,
+            "rerun":         17
+          }
+        }
+
+    Companion to ``GET /jobs``: the admin UI's Jobs sub-tabs (全部
+    / 成功 / エラー / 実行中) read the per-status counts from this
+    endpoint so each tab's badge stays accurate even when the
+    paginated /jobs view is locked to one filter at a time.
+
+    Implementation hydrates every job to count by ``status`` / ``mode``
+    -- intentionally a flat O(N) walk because that's also exactly what
+    ``GET /jobs?status=...`` does under the hood; co-locating both
+    paths makes the math predictable. A 2s in-process memo cache
+    keeps a 2s admin poll on the slow path at most once per tick.
+    For multi-tenant deployments where the iterate cost becomes a
+    bottleneck, the next step is a store-side counter (Redis sorted-
+    set per status, or SQL ``GROUP BY status``).
+    """
+    import time as _time
+
+    now = _time.monotonic()
+    cached = _JOBS_COUNTS_CACHE.get("value")
+    if cached is not None and (now - _JOBS_COUNTS_CACHE.get("ts", 0.0)) < _JOBS_COUNTS_TTL_S:
+        return cached
+
+    assert state.store is not None
+    ids = await state.store.list_job_ids()
+    by_status: dict[str, int] = {}
+    by_mode: dict[str, int] = {}
+    for jid in ids:
+        info = await state.store.get_job_info(jid)
+        if info is None:
+            continue
+        # JobStatus enum -> value string (queued / running / completed /
+        # failed / cancelled / succeeded); fall back to str(...) so an
+        # unexpected shape doesn't crash the counter.
+        s = getattr(info.status, "value", None) or str(info.status)
+        by_status[s] = by_status.get(s, 0) + 1
+        opts = info.options
+        if isinstance(opts, dict):
+            mode = opts.get("mode") or "fetch"
+        else:
+            mode = getattr(opts, "mode", "fetch") or "fetch"
+        by_mode[mode] = by_mode.get(mode, 0) + 1
+
+    result = {
+        "total": len(ids),
+        "by_status": by_status,
+        "by_mode": by_mode,
+    }
+    _JOBS_COUNTS_CACHE["ts"] = now
+    _JOBS_COUNTS_CACHE["value"] = result
+    return result
+
+
 @router.get("/jobs/{job_id}", response_model=JobInfo)
 async def get_job(job_id: str, request: Request) -> JobInfo:
     info = await _require_job_info(job_id)
