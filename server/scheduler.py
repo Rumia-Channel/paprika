@@ -522,6 +522,28 @@ class WorkerRegistry:
                         "capacity": worker.capabilities.max_concurrent,
                     },
                 )
+                # Persist client_address into the worker row so the admin
+                # UI shows the IP for offline workers too. _fetch_known_workers
+                # picks it up when reconstructing the disconnected list.
+                # We do this on heartbeat (not just register) because
+                # client_address is assigned by the route handler AFTER
+                # register() returns -- doing it here catches the value
+                # on the first heartbeat at the latest.
+                addr = (worker.client_address or "").strip()
+                if addr:
+                    raw = await self._r.get(_k_worker(worker_id))
+                    if raw:
+                        try:
+                            d = json.loads(
+                                raw.decode() if isinstance(raw, bytes) else raw
+                            )
+                        except Exception:
+                            d = None
+                        if isinstance(d, dict) and d.get("address") != addr:
+                            d["address"] = addr
+                            await self._r.set(
+                                _k_worker(worker_id), json.dumps(d),
+                            )
             except Exception:
                 pass
 
@@ -698,7 +720,11 @@ class WorkerRegistry:
                 "profiles_cached": [],
                 "version": caps.get("version") or "",
                 "status": "offline",
-                "address": "",
+                # Surface the last-known IP for offline workers (persisted
+                # to the worker row on heartbeat, see heartbeat() above).
+                # Empty string when this worker has never heartbeated
+                # against the current redis schema (= pre-fix legacy row).
+                "address": str(data.get("address") or ""),
             })
         return out
 

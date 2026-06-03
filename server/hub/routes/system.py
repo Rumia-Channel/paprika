@@ -8,7 +8,7 @@ to a Jinja2/StaticFiles template in a later round).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 from server.hub._state import config, state
@@ -243,6 +243,76 @@ async def health() -> dict:
         "reasoning_engine": reasoning_engine,
     }
 
+
+
+@router.get("/hubs")
+async def list_hubs() -> dict:
+    """Enumerate every hub that has heartbeated against shared Redis.
+
+    Each hub writes a TTL'd row (``paprika:hubs:{hub_id}`` ex=90 s)
+    every 30 s and keeps an index ZSET ``paprika:hubs:index`` -- so
+    a fresh ``hub-b`` container started anywhere with the same
+    ``REDIS_URL`` shows up here on its first heartbeat (~0–30 s).
+    Rows past the 90 s TTL are listed as ``alive=False`` with the
+    last_seen timestamp from the index, mirroring how the Workers
+    list keeps disconnected workers visible.
+
+    Single-host deploys without Redis get a one-element synthetic
+    list of just the local hub (so the admin UI's Hubs sub-tab
+    always has *something* to render).
+    """
+    if state.hubs is None:
+        return {"count": 1, "hubs": [{
+            "hub_id": "(unknown)",
+            "alive": True,
+            "local": True,
+        }]}
+    items = await state.hubs.list_all()
+    return {"count": len(items), "hubs": items}
+
+
+@router.delete("/hubs/{hub_id}")
+async def forget_hub(hub_id: str) -> dict:
+    """Drop an offline hub from the registry index. Refuses to forget
+    the running hub (the next heartbeat would just re-add it).
+    Operators reach this from the admin UI's Hubs sub-tab to clean
+    up entries from decommissioned hosts."""
+    if state.hubs is None:
+        raise HTTPException(503, "hub registry not initialised")
+    ok = await state.hubs.forget(hub_id)
+    if not ok:
+        raise HTTPException(
+            400, f"refusing to forget '{hub_id}' (running hub or not in registry)",
+        )
+    return {"forgotten": True, "hub_id": hub_id}
+
+
+@router.post("/admin/self-restart")
+async def admin_self_restart() -> dict:
+    """Self-restart this hub by exiting with code 42; the docker
+    ``restart: unless-stopped`` policy then brings a fresh container
+    up which picks up bind-mounted code changes (e.g. after
+    ``git pull`` on the host). The 200-ms delay lets the HTTP
+    response actually flush back to the operator before the
+    interpreter dies.
+
+    Operators use this from the Workers tab's 機能 sub-tab to apply
+    a hub-side code change without SSH'ing in. No auth gate yet --
+    the admin UI itself is on a private LAN; add WORKER_SECRET-style
+    gating if exposing outside.
+    """
+    import asyncio as _asyncio
+    import os as _os
+
+    async def _exit_after_delay() -> None:
+        await _asyncio.sleep(0.2)
+        # _exit (not sys.exit) — bypasses Python finalisation so we
+        # don't deadlock on the lifespan shutdown waiting for our own
+        # request handler to complete.
+        _os._exit(42)
+
+    _asyncio.create_task(_exit_after_delay())
+    return {"restarting": True, "exit_code": 42}
 
 
 @router.get("/overview")

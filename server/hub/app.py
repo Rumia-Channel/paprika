@@ -249,6 +249,38 @@ async def lifespan(app: FastAPI):
     # replicas. Writes only; nothing reads it back yet.
     state.sessions.bind_redis(redis_client, config.hub_id)
 
+    # Hub-presence registry: write a TTL'd row under
+    # ``paprika:hubs:{hub_id}`` every 30 s so multi-hub deploys can
+    # enumerate live peers from any hub. With shared Redis, a fresh
+    # ``hub-b`` container shows up in the admin UI's Hubs sub-tab on
+    # its own heartbeat -- no manual register step. Single-hub deploys
+    # (no Redis) get a synthetic local-only one-element list.
+    try:
+        from server.hub._hubs import HubRegistry
+
+        # Version: env var first (set in compose), then the VERSION file
+        # the deploy.sh writes. Best-effort; empty string is fine when
+        # neither is available.
+        _ver = os.environ.get("PAPRIKA_VERSION", "").strip()
+        if not _ver:
+            try:
+                from pathlib import Path as _Path
+                _vp = _Path("/app/VERSION")
+                if _vp.exists():
+                    _ver = _vp.read_text(encoding="utf-8").strip()
+            except Exception:
+                _ver = ""
+        state.hubs = HubRegistry(
+            redis_client=redis_client,
+            hub_id=config.hub_id,
+            public_base=config.public_base_url or "",
+            version=_ver,
+        )
+        state.hubs.start()
+    except Exception as e:
+        log.warning("HubRegistry init failed: %s", e)
+        state.hubs = None
+
     # Background reaper that evicts idle / aged sessions (RFC-001 §11).
     # Otherwise a client that forgets to DELETE leaks a Lane forever.
     reaper_task = asyncio.create_task(_session_reaper_loop())
@@ -350,6 +382,13 @@ async def lifespan(app: FastAPI):
     job_lease_task.cancel()
     if smb_watchdog_task is not None:
         smb_watchdog_task.cancel()
+    # Stop hub heartbeat + drop the registry row so peers see us as
+    # offline within ~1 minute instead of waiting for the 90s TTL.
+    if state.hubs is not None:
+        try:
+            await state.hubs.stop()
+        except Exception:
+            pass
     for t in list(state.local_tasks.values()):
         if not t.done():
             t.cancel()

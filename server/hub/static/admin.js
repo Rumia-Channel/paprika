@@ -60,6 +60,28 @@ const I18N_RESOURCES = {
     "workers.th.labels":   "ラベル",
     "workers.th.actions":  "操作",
     "workers.empty":       "接続中のワーカーなし",
+    // Workers panel sub-tabs (Workers / Hubs / Features)
+    "workers.subtab.workers":  "ワーカー",
+    "workers.subtab.hubs":     "ハブ",
+    "workers.subtab.features": "機能",
+    // Hubs sub-tab
+    "hubs.heading":         "ハブ",
+    "hubs.refresh":         "再読み込み",
+    "hubs.refresh.title":   "ハブ一覧を再取得",
+    "hubs.intro":           "共有 Redis を介して各ハブが自分を 30 秒ごとに登録します。TTL は 90 秒なので、停止したハブは ~1 分でオフラインになります。別ホストで hub-b 等を起動すると、同じ Redis に向けるだけで自動的にこの一覧に出現します (設定不要)。",
+    "hubs.th.id":           "hub_id",
+    "hubs.th.status":       "ステータス",
+    "hubs.th.public_base":  "public_base",
+    "hubs.th.version":      "バージョン",
+    "hubs.th.last_seen":    "最終ハートビート",
+    "hubs.th.actions":      "操作",
+    "hubs.empty":           "登録されているハブなし",
+    // Features sub-tab
+    "features.heading":          "機能",
+    "features.intro":            "これまで scripts/deploy.sh を SSH 経由で叩いていたオペレーションを admin UI から実行できるようにする場所。",
+    "features.restart.title":    "このハブを再起動",
+    "features.restart.btn":      "このハブを再起動",
+    "features.restart.help":     "ハブの Python プロセスを os._exit(42) で落とし、docker の restart: unless-stopped ポリシーで再起動させます。ホストの ./server bind-mount に反映済みの変更 (= git pull 後) はこの再起動でピックアップされます。10〜20 秒で接続が戻ります。",
     // Jobs panel
     "jobs.cleanup":      "古いジョブを削除…",
     "jobs.deleteall":    "すべて削除",
@@ -451,6 +473,28 @@ const I18N_RESOURCES = {
     "submit.edithost":     "Edit host",
     "submit.dedup":        "Dedup",
     // Workers panel
+    // Workers panel sub-tabs
+    "workers.subtab.workers":  "Workers",
+    "workers.subtab.hubs":     "Hubs",
+    "workers.subtab.features": "Features",
+    // Hubs sub-tab
+    "hubs.heading":         "Hubs",
+    "hubs.refresh":         "Refresh",
+    "hubs.refresh.title":   "Reload hubs list",
+    "hubs.intro":           "Each hub heartbeats itself into shared Redis every 30 s (TTL 90 s). Stopped hubs go offline within ~1 minute. Starting a new hub (hub-b, etc.) on another host with the same Redis auto-registers it here -- no config needed.",
+    "hubs.th.id":           "hub_id",
+    "hubs.th.status":       "status",
+    "hubs.th.public_base":  "public_base",
+    "hubs.th.version":      "version",
+    "hubs.th.last_seen":    "last seen",
+    "hubs.th.actions":      "actions",
+    "hubs.empty":           "no hubs registered",
+    // Features sub-tab
+    "features.heading":          "Features",
+    "features.intro":            "Admin operations that used to need scripts/deploy.sh + SSH, exposed in the admin UI.",
+    "features.restart.title":    "Restart this hub",
+    "features.restart.btn":      "Restart this hub",
+    "features.restart.help":     "Exits the hub Python process with code 42; docker's restart policy brings it back up on the latest bind-mounted code (so `git pull` + this button = apply update without SSH). 10-20 s of downtime.",
     "workers.th.id":       "worker_id",
     "workers.th.address":  "address",
     "workers.th.status":   "status",
@@ -12496,3 +12540,175 @@ if (_orig_renderHosts_for_url_info) {
     return result;
   };
 }
+
+// =====================================================================
+// Workers panel sub-tabs (Workers / Hubs / 機能)
+// =====================================================================
+// Three panes inside the Workers tab:
+//   * workers — existing #workersTable (rendered by refresh())
+//   * hubs    — multi-hub presence list from /hubs (auto-populated via
+//               Redis-backed hub-heartbeat; refresh on tab activation)
+//   * features — admin operations that used to need SSH + deploy.sh
+//                (only one button so far: self-restart this hub).
+// State (active sub-tab) persisted to localStorage for refresh survival.
+
+function setWorkersSubtab(name) {
+  if (!['workers', 'hubs', 'features'].includes(name)) name = 'workers';
+  try { localStorage.setItem('paprika.workersSubtab', name); } catch (_) {}
+  document.querySelectorAll('#workersSubtabs .ai-subtab').forEach(t => {
+    const on = t.dataset.workersSubtab === name;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('.workers-subpane').forEach(p => {
+    p.style.display = (p.dataset.workersSubpane === name) ? '' : 'none';
+  });
+  // Lazy refresh per sub-tab so we don't hammer endpoints when the
+  // operator's on a different sub-tab (or different top-level tab).
+  if (name === 'hubs') {
+    try { refreshHubsTable(); } catch (_) {}
+  }
+}
+
+(function wireWorkersSubtabs() {
+  document.querySelectorAll('#workersSubtabs .ai-subtab').forEach(btn => {
+    btn.addEventListener('click', () => setWorkersSubtab(btn.dataset.workersSubtab));
+  });
+  let initial = 'workers';
+  try {
+    const saved = localStorage.getItem('paprika.workersSubtab');
+    if (saved && ['workers', 'hubs', 'features'].includes(saved)) initial = saved;
+  } catch (_) {}
+  setWorkersSubtab(initial);
+})();
+
+// ---- Hubs sub-tab ----------------------------------------------------
+
+async function refreshHubsTable() {
+  const tbody = document.querySelector('#hubsTable tbody');
+  if (!tbody) return;
+  let payload = null;
+  try {
+    const r = await fetch('/hubs');
+    if (r.ok) payload = await r.json();
+  } catch (_) { /* network noise */ }
+  const hubs = (payload && payload.hubs) || [];
+  const cntEl = document.getElementById('hubsCount');
+  if (cntEl) cntEl.textContent = String(hubs.length);
+  const subtabCnt = document.getElementById('workersSubtabCntHubs');
+  if (subtabCnt) subtabCnt.textContent = String(hubs.length);
+  if (hubs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan=6 class="empty">no hubs registered</td></tr>';
+    return;
+  }
+  const rows = hubs.map(h => {
+    const aliveDot = h.alive
+      ? '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#3a8c3a; margin-right:6px;"></span>'
+      : '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#bbb; margin-right:6px;"></span>';
+    const statusText = h.alive ? 'alive' : 'offline';
+    const localBadge = h.local
+      ? ' <span style="background:#eef0ff; color:#3a5ca8; padding:1px 6px; border-radius:8px; font-size:.78em; margin-left:4px;">this hub</span>'
+      : '';
+    const pubBase = h.public_base
+      ? `<a href="${esc(h.public_base)}" target="_blank" rel="noopener"><code>${esc(h.public_base)}</code></a>`
+      : '<span class="empty">—</span>';
+    const ver = h.version ? `<code>${esc(h.version)}</code>` : '<span class="empty">—</span>';
+    const tsSec = h.ts || h.last_seen;
+    const lastSeen = tsSec
+      ? new Date(tsSec * 1000).toLocaleString()
+      : '—';
+    const forgetBtn = (!h.alive && !h.local)
+      ? `<button class="pill" style="--la-bg:#fee; --la-bd:#c88; --la-fg:#933; padding:2px 8px; font-size:.85em;" onclick="forgetHub('${esc(h.hub_id)}')"><iconify-icon icon="lucide:trash-2"></iconify-icon> forget</button>`
+      : '';
+    return `<tr>
+      <td><code>${esc(h.hub_id || '')}</code>${localBadge}</td>
+      <td>${aliveDot}${esc(statusText)}</td>
+      <td>${pubBase}</td>
+      <td>${ver}</td>
+      <td>${esc(lastSeen)}</td>
+      <td>${forgetBtn}</td>
+    </tr>`;
+  }).join('');
+  tbody.innerHTML = rows;
+}
+
+window.forgetHub = async function(hubId) {
+  if (!confirm(`Forget hub "${hubId}"?\n\nDrops it from the registry index. If the hub is still running anywhere with the same Redis, its next heartbeat (~30s) will re-add it.`)) return;
+  try {
+    const r = await fetch('/hubs/' + encodeURIComponent(hubId), { method: 'DELETE' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert('forget failed: ' + (d.detail || r.status));
+    }
+  } catch (e) {
+    alert('forget failed: ' + e);
+  }
+  refreshHubsTable();
+};
+
+const hubsRefreshBtn = document.getElementById('hubsRefreshBtn');
+if (hubsRefreshBtn) hubsRefreshBtn.addEventListener('click', refreshHubsTable);
+
+// ---- 機能 sub-tab: self-restart button -------------------------------
+
+(function wireFeatureRestartBtn() {
+  const btn = document.getElementById('featureRestartHubBtn');
+  const status = document.getElementById('featureRestartStatus');
+  if (!btn || !status) return;
+  btn.addEventListener('click', async () => {
+    if (!confirm('このハブを再起動しますか？\n\n進行中のジョブは中断され、約 10-20 秒接続が切れます (docker restart policy で自動復帰)。')) return;
+    btn.disabled = true;
+    status.style.color = '#666';
+    status.textContent = '再起動を要求中...';
+    try {
+      const r = await fetch('/admin/self-restart', { method: 'POST' });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        status.style.color = '#a00';
+        status.textContent = '失敗: ' + (d.detail || r.status);
+        btn.disabled = false;
+        return;
+      }
+      status.style.color = '#196b2c';
+      status.textContent = '✓ 再起動シグナル送信。接続復帰を待機中...';
+      // Poll /health until the hub comes back. Up to ~60s.
+      const t0 = Date.now();
+      const poll = async () => {
+        try {
+          const h = await fetch('/health');
+          if (h.ok) {
+            status.style.color = '#196b2c';
+            status.textContent = '✓ 再起動完了 (' + Math.round((Date.now() - t0) / 1000) + 's)';
+            btn.disabled = false;
+            return;
+          }
+        } catch (_) {}
+        if (Date.now() - t0 > 60000) {
+          status.style.color = '#a00';
+          status.textContent = '× 60s 経過しても /health が復活しません。ホストで `docker logs hub-a` を確認してください。';
+          btn.disabled = false;
+          return;
+        }
+        setTimeout(poll, 1500);
+      };
+      // Brief delay before the first poll -- the hub needs time to actually exit.
+      setTimeout(poll, 1500);
+    } catch (e) {
+      status.style.color = '#a00';
+      status.textContent = '失敗: ' + e;
+      btn.disabled = false;
+    }
+  });
+})();
+
+// Bump workers sub-tab count whenever the workers list refreshes
+// (refresh() sets #workerCount; mirror it into the sub-tab pill).
+(function wireWorkersSubtabCount() {
+  const target = document.getElementById('workerCount');
+  if (!target) return;
+  const cnt = document.getElementById('workersSubtabCntWorkers');
+  if (!cnt) return;
+  new MutationObserver(() => {
+    cnt.textContent = target.textContent || '0';
+  }).observe(target, { childList: true, characterData: true, subtree: true });
+})();

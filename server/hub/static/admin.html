@@ -1015,19 +1015,107 @@ asyncio.run(main())"
 
 <div class="panel" data-panel="workers">
   <section>
-    <h2><span data-i18n="tab.workers">Workers</span> (<span id="workerCount">0</span>)</h2>
-    <table id="workersTable"><thead>
-      <tr>
-        <th data-i18n="workers.th.id">worker_id</th>
-        <th data-i18n="workers.th.address">address</th>
-        <th data-i18n="workers.th.status">status</th>
-        <th data-i18n="workers.th.load">load</th>
-        <th data-i18n="workers.th.profiles" title="Chrome profiles prefetched on this worker (from /profiles registry)">profiles</th>
-        <th data-i18n="workers.th.version">version</th>
-        <th data-i18n="workers.th.labels">labels</th>
-        <th data-i18n="workers.th.actions">actions</th>
-      </tr>
-    </thead><tbody><tr><td colspan=8 class="empty" data-i18n="workers.empty">no workers connected</td></tr></tbody></table>
+    <!-- Workers panel sub-tabs: Worker / Hub / Feature.
+         * Workers — the per-worker control-plane table (existing UI)
+         * Hubs    — multi-hub presence (Redis-backed heartbeat,
+                     populated by HubRegistry; offline hubs stay
+                     visible with last_seen)
+         * 機能    — admin operations that used to live in deploy.sh
+                     (currently: self-restart this hub). -->
+    <div id="workersSubtabs" class="ai-subtabs" role="tablist" style="margin-bottom:10px;">
+      <button type="button" class="ai-subtab active" data-workers-subtab="workers" role="tab" aria-selected="true">
+        <iconify-icon icon="lucide:cpu"></iconify-icon>
+        <span data-i18n="workers.subtab.workers">ワーカー</span>
+        <span class="count" id="workersSubtabCntWorkers">0</span>
+      </button>
+      <button type="button" class="ai-subtab" data-workers-subtab="hubs" role="tab" aria-selected="false">
+        <iconify-icon icon="lucide:server"></iconify-icon>
+        <span data-i18n="workers.subtab.hubs">ハブ</span>
+        <span class="count" id="workersSubtabCntHubs">0</span>
+      </button>
+      <button type="button" class="ai-subtab" data-workers-subtab="features" role="tab" aria-selected="false">
+        <iconify-icon icon="lucide:settings-2"></iconify-icon>
+        <span data-i18n="workers.subtab.features">機能</span>
+      </button>
+    </div>
+
+    <!-- Workers sub-pane: existing table (unchanged behaviour). -->
+    <div class="workers-subpane" data-workers-subpane="workers">
+      <h2 style="margin-top:0;"><span data-i18n="tab.workers">Workers</span> (<span id="workerCount">0</span>)</h2>
+      <table id="workersTable"><thead>
+        <tr>
+          <th data-i18n="workers.th.id">worker_id</th>
+          <th data-i18n="workers.th.address">address</th>
+          <th data-i18n="workers.th.status">status</th>
+          <th data-i18n="workers.th.load">load</th>
+          <th data-i18n="workers.th.profiles" title="Chrome profiles prefetched on this worker (from /profiles registry)">profiles</th>
+          <th data-i18n="workers.th.version">version</th>
+          <th data-i18n="workers.th.labels">labels</th>
+          <th data-i18n="workers.th.actions">actions</th>
+        </tr>
+      </thead><tbody><tr><td colspan=8 class="empty" data-i18n="workers.empty">no workers connected</td></tr></tbody></table>
+    </div>
+
+    <!-- Hubs sub-pane: multi-hub presence list. Each hub heartbeats
+         itself into shared Redis every 30s (TTL 90s); offline rows
+         (TTL-expired but still in index) stay visible. -->
+    <div class="workers-subpane" data-workers-subpane="hubs" style="display:none;">
+      <h2 style="margin-top:0;">
+        <span data-i18n="hubs.heading">ハブ</span>
+        (<span id="hubsCount">0</span>)
+        <span class="hctrl flat-actions">
+          <button id="hubsRefreshBtn" class="pill" style="--la-bg:#eef0ff; --la-bd:#6a8ec7; --la-fg:#3a5ca8;" data-i18n-title="hubs.refresh.title" title="ハブ一覧を再取得"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> <span data-i18n="hubs.refresh">再読み込み</span></button>
+        </span>
+      </h2>
+      <p class="help" style="margin:4px 0 12px; font-size:.88em; color:#666;" data-i18n="hubs.intro">
+        共有 Redis を介して各ハブが自分を 30 秒ごとに登録します。
+        TTL は 90 秒なので、停止したハブは ~1 分でオフラインになります。
+        別ホストで <code>hub-b</code> 等を起動すると、同じ Redis に向けるだけで
+        自動的にこの一覧に出現します (設定不要)。
+      </p>
+      <table id="hubsTable"><thead>
+        <tr>
+          <th data-i18n="hubs.th.id">hub_id</th>
+          <th data-i18n="hubs.th.status">status</th>
+          <th data-i18n="hubs.th.public_base">public_base</th>
+          <th data-i18n="hubs.th.version">version</th>
+          <th data-i18n="hubs.th.last_seen">last_seen</th>
+          <th data-i18n="hubs.th.actions">actions</th>
+        </tr>
+      </thead><tbody><tr><td colspan=6 class="empty" data-i18n="hubs.empty">no hubs registered</td></tr></tbody></table>
+    </div>
+
+    <!-- Feature sub-pane: GUI for admin operations that used to need
+         SSH + deploy.sh. Currently: self-restart the running hub
+         (process exits 42, docker restart policy brings it back up
+         on the latest bind-mounted code -- so `git pull` on the host
+         + this button = "apply update without SSH"). -->
+    <div class="workers-subpane" data-workers-subpane="features" style="display:none;">
+      <h2 style="margin-top:0;" data-i18n="features.heading">機能</h2>
+      <p class="help" style="margin:4px 0 12px; font-size:.88em; color:#666;" data-i18n="features.intro">
+        これまで <code>scripts/deploy.sh</code> を SSH 経由で叩いていた
+        オペレーションを admin UI から実行できるようにする場所。
+        現状は単発の「このハブを再起動」のみ。再起動すると、
+        ホスト側で <code>git pull</code> 済みのコードが docker restart で
+        反映されます (= デプロイの hub-restart フェーズ相当)。
+      </p>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div style="padding:12px 16px; background:#fff; border:1px solid #d4cfca; border-radius:8px;">
+          <div style="font-weight:600; margin-bottom:4px;" data-i18n="features.restart.title">このハブを再起動</div>
+          <div style="font-size:.85em; color:#666; margin-bottom:10px;" data-i18n="features.restart.help">
+            ハブの Python プロセスを <code>os._exit(42)</code> で落とし、
+            docker の <code>restart: unless-stopped</code> ポリシーで
+            再起動させます。ホストの <code>./server</code> bind-mount に
+            反映済みの変更 (= <code>git pull</code> 後) はこの再起動で
+            ピックアップされます。10〜20 秒で接続が戻ります。
+          </div>
+          <button id="featureRestartHubBtn" class="pill" style="--la-bg:#fee; --la-bd:#c88; --la-fg:#933;">
+            <iconify-icon icon="lucide:rotate-cw"></iconify-icon> <span data-i18n="features.restart.btn">このハブを再起動</span>
+          </button>
+          <span id="featureRestartStatus" style="margin-left:10px; font-size:.85em; color:#666;"></span>
+        </div>
+      </div>
+    </div>
   </section>
 </div>
 

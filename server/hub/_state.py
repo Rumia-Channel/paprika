@@ -140,6 +140,12 @@ class AppState:
     # None when MariaDB is not configured or the pool hasn't been
     # created yet. See server/hub/mariadb.py.
     mariadb_pool: object | None = None  # aiomysql.Pool | None (lazy)
+    # Hub-presence registry: each hub heartbeats itself into Redis
+    # (TTL 90 s) so multi-hub deploys can enumerate live peers from
+    # the admin UI without explicit per-hub configuration. None when
+    # Redis isn't wired (single-host in-memory deploys); list_all()
+    # then returns a one-element synthetic local view. See _hubs.py.
+    hubs: object | None = None  # HubRegistry | None (lazy)
 
 
 state = AppState()
