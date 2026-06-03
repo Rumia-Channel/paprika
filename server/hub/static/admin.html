@@ -4161,6 +4161,16 @@ table.aitbl code { font-size:0.95em; }
 </dialog>
 
 </main>
-<script src="/static/admin.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<!-- admin.js was split into feature files (2026-06; ordered = original execution order, defer keeps them in order; byte-for-byte equivalent to the old single file). -->
+<script src="/static/admin-core.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-dashboard.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-livepreview.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-builder-presets.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-livepanel.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-jobtabs.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-joblist.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-hosts.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-presets-engines.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-settings.js?v=@@PAPRIKA_VERSION@@" defer></script>
 </body>
 </html>
