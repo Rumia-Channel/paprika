@@ -724,6 +724,43 @@ def run_ytdlp(
     cmd += ["--", url]
     lines: list[str] = []
     deadline = time.monotonic() + timeout
+
+    # ------------------------------------------------------------------
+    # Stall / slow-download early-kill knobs.
+    # ------------------------------------------------------------------
+    # Observed on 10.10.50.143 / .152: yt-dlp dribbling a 34 MB mp4 at
+    # 20 KiB/s -> ETA 24 minutes, asyncio thread pool stuck the whole
+    # time, worker heartbeat blocked, hub TTL'd the worker. The plain
+    # ``timeout`` (1 hour) doesn't trip because yt-dlp KEEPS emitting
+    # progress lines -- it's not hung, just glacial. Need stall AND
+    # min-rate gates to abort early.
+    #
+    # PAPRIKA_YTDLP_NO_PROGRESS_S
+    #   Kill if the download percentage has not advanced (by >=0.1%)
+    #   for this long. Catches a yt-dlp that's stuck on a CDN that
+    #   accepted the request but stopped serving bytes -- the rate
+    #   gate below won't fire (rate doesn't change either) so the
+    #   stall gate is the canonical "yt-dlp is alive but the bytes
+    #   aren't moving" detector. Default 90s.
+    #
+    # PAPRIKA_YTDLP_MIN_RATE_KIBS
+    #   Minimum acceptable download rate in KiB/s. Default 50.
+    #
+    # PAPRIKA_YTDLP_MIN_RATE_GRACE_S
+    #   Don't kill on low rate until the rate has been below the floor
+    #   for at least this many continuous seconds. A short blip on a
+    #   wobbly link shouldn't abort. Default 60s.
+    #
+    # All three are disabled by setting to 0 (= old behaviour: only
+    # the wall-clock ``timeout`` kills).
+    _no_progress_s = float(os.environ.get("PAPRIKA_YTDLP_NO_PROGRESS_S", "90"))
+    _min_rate_kibs = float(os.environ.get("PAPRIKA_YTDLP_MIN_RATE_KIBS", "50"))
+    _min_rate_grace_s = float(os.environ.get("PAPRIKA_YTDLP_MIN_RATE_GRACE_S", "60"))
+
+    _last_pct: Optional[float] = None
+    _last_pct_at = time.monotonic()
+    _slow_rate_since: Optional[float] = None
+
     returncode = -1
     try:
         with subprocess.Popen(
@@ -742,9 +779,45 @@ def run_ytdlp(
                     continue
                 lines.append(line)
                 log(line)
-                if time.monotonic() > deadline:
+                now_m = time.monotonic()
+
+                # Wall-clock timeout (the original gate).
+                if now_m > deadline:
                     proc.kill()
                     return False, f"timeout after {timeout}s"
+
+                # Parse progress + rate from this line, if any.
+                pct, rate_kibs = _parse_ytdlp_progress_line(line)
+
+                # ---- Stall gate (percentage didn't advance) ----
+                if _no_progress_s > 0 and pct is not None:
+                    if _last_pct is None or pct - _last_pct >= 0.1:
+                        _last_pct = pct
+                        _last_pct_at = now_m
+                    elif now_m - _last_pct_at > _no_progress_s:
+                        proc.kill()
+                        return False, (
+                            f"stalled: download stuck at {_last_pct:.1f}% "
+                            f"for {_no_progress_s:.0f}s "
+                            f"(PAPRIKA_YTDLP_NO_PROGRESS_S)"
+                        )
+
+                # ---- Min-rate gate (download too slow for too long) ----
+                if _min_rate_kibs > 0 and rate_kibs is not None:
+                    if rate_kibs < _min_rate_kibs:
+                        if _slow_rate_since is None:
+                            _slow_rate_since = now_m
+                        elif now_m - _slow_rate_since > _min_rate_grace_s:
+                            proc.kill()
+                            return False, (
+                                f"too slow: {rate_kibs:.1f} KiB/s < "
+                                f"{_min_rate_kibs:.0f} KiB/s for "
+                                f"{_min_rate_grace_s:.0f}s "
+                                f"(PAPRIKA_YTDLP_MIN_RATE_KIBS / GRACE_S)"
+                            )
+                    else:
+                        # Rate recovered above the floor; reset the grace.
+                        _slow_rate_since = None
             proc.wait()
             returncode = proc.returncode
     except Exception as e:
@@ -755,6 +828,49 @@ def run_ytdlp(
         return True, last[0]
     err_tail = lines[-3:]
     return False, "\n".join(err_tail) if err_tail else f"exit={returncode}"
+
+
+# Progress line parser used by the inline run_ytdlp stall / rate gates.
+# Matches yt-dlp's standard --newline progress format::
+#
+#   [download]  45.2% of  1.20GiB at  5.00MiB/s ETA 00:30
+#   [download]  20.3% of   34.48MiB at   21.67KiB/s ETA 21:38
+#
+# Returns ``(percent, rate_in_KiB_per_second)`` -- both ``None`` on a
+# line that isn't a progress marker. Rate is normalised to KiB/s
+# regardless of yt-dlp's reported unit (B / KiB / MiB / GiB).
+_YTDLP_PROGRESS_RE = re.compile(
+    r"\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+"
+    r"[\d.]+\s*[KMGT]?i?B(?:[^\s]*)\s+at\s+"
+    r"([\d.]+)\s*([KMGT]?)i?B/s"
+)
+_RATE_UNIT_TO_KIBS: dict[str, float] = {
+    "":  1.0 / 1024.0,  # bytes/s -> KiB/s
+    "K": 1.0,
+    "M": 1024.0,
+    "G": 1024.0 * 1024.0,
+    "T": 1024.0 * 1024.0 * 1024.0,
+}
+
+
+def _parse_ytdlp_progress_line(line: str) -> tuple[Optional[float], Optional[float]]:
+    """Extract ``(percent, rate_KiB/s)`` from a yt-dlp progress line.
+
+    Returns ``(None, None)`` for non-progress lines so the caller can
+    use plain ``is not None`` checks. Defensive: any parsing error
+    falls back to ``(None, None)`` rather than raising.
+    """
+    try:
+        m = _YTDLP_PROGRESS_RE.search(line)
+        if not m:
+            return None, None
+        pct = float(m.group(1))
+        rate_val = float(m.group(2))
+        unit = m.group(3)
+        rate_kibs = rate_val * _RATE_UNIT_TO_KIBS.get(unit, 1.0)
+        return pct, rate_kibs
+    except Exception:
+        return None, None
 
 
 def pick_stream_urls(urls: list[str]) -> list[str]:
