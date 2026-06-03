@@ -1632,8 +1632,19 @@ async def fetch(opts: FetchOptions) -> FetchResult:
     global _BROWSER_USER_AGENT
     try:
         _ver = await browser.send(cdp.browser.get_version())
-        _BROWSER_USER_AGENT = _ver.user_agent
-        log(f"  ... Chrome UA: {_BROWSER_USER_AGENT}")
+        # cdp.browser.get_version() returns a 5-tuple in this nodriver build
+        # (protocolVersion, product, revision, userAgent, jsVersion) -- NOT an
+        # object -- so `_ver.user_agent` raised AttributeError and we silently
+        # fell back to a default UA. Token+UA-gated video CDNs then 403 every
+        # fragment (the av01.media failure). Handle both shapes.
+        _ua = getattr(_ver, "user_agent", None)
+        if _ua is None and isinstance(_ver, (tuple, list)) and len(_ver) > 3:
+            _ua = _ver[3]
+        if _ua:
+            _BROWSER_USER_AGENT = _ua
+            log(f"  ... Chrome UA: {_BROWSER_USER_AGENT}")
+        else:
+            log(f"  !! Chrome UA unavailable (get_version -> {type(_ver).__name__})")
     except Exception as _e:
         log(f"  !! could not read Chrome UA: {_e}")
 

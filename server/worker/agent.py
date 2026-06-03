@@ -98,7 +98,12 @@ async def _get_browser_user_agent(browser) -> str | None:
     try:
         from nodriver import cdp as _cdp
         ver = await browser.send(_cdp.browser.get_version())
-        return ver.user_agent
+        # get_version() returns a 5-tuple (userAgent at index 3) in this
+        # nodriver build, not an object -- ver.user_agent would AttributeError.
+        ua = getattr(ver, "user_agent", None)
+        if ua is None and isinstance(ver, (tuple, list)) and len(ver) > 3:
+            ua = ver[3]
+        return ua
     except Exception:
         return None
 
