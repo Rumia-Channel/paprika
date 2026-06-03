@@ -1383,12 +1383,34 @@ async function refresh() {
     const sessions = ov.sessions || { count: 0, sessions: [] };
     let jobs = ov.jobs || { total: 0 };
     if (jobsTabActive) {
-      // "最近のジョブ" = Recent Jobs: fetch a bounded recent window, not all
-      // ~3000 (which hydrated EVERY job server-side = a multi-MB response +
-      // N get_job_info DB queries per ~2s poll). The header count stays
-      // accurate (envelope .total = full store count); the tab shows /
-      // paginates the most recent N.
-      jobs = await _refreshJson('/jobs?limit=300', { total: 0, jobs: [] });
+      // "最近のジョブ" = Recent Jobs. Server-side filter + pagination so
+      // each status sub-tab can show ALL matching jobs (not just the
+      // 300-newest window the table used to cap at). The previous
+      // "fetch top 300, filter client-side" path silently capped every
+      // sub-tab at 300 total entries even when the store had thousands
+      // of completed / failed jobs -- the symptom that prompted this
+      // rewrite ("3000 件あるのに全部のサブタブで 300 件しか出てこない").
+      //
+      // Trade-off accepted: ``jobs.total`` is now the FILTERED count for
+      // the active tab (e.g. completed count when on 完成 tab). The
+      // sub-tab counters update only for the currently-active filter;
+      // other tabs keep their last-known count from the last time the
+      // operator opened that tab. After tapping through all 4 tabs once
+      // every counter is exact. Adding a /jobs/counts endpoint would
+      // close this gap in a single round-trip; tracked as follow-up.
+      const _f = _jobsStatusFilter || 'all';
+      const _ps = _jobsPageSize();
+      const _off = (_jobsPage || 0) * _ps;
+      let _q = `?limit=${_ps}&offset=${_off}`;
+      if (_f === 'running') {
+        // "実行中" tab folds queued + running so the operator sees both
+        // pre-dispatch and in-flight jobs together. Server accepts a
+        // comma-separated status list.
+        _q += '&status=running,queued';
+      } else if (_f !== 'all') {
+        _q += '&status=' + encodeURIComponent(_f);
+      }
+      jobs = await _refreshJson('/jobs' + _q, { total: 0, jobs: [] });
     }
     const wcount = workers.count || 0;
     const jcount = jobs.total ?? (jobs.jobs || jobs).length;
@@ -1571,43 +1593,47 @@ async function refresh() {
     // jobs table -- skip rebuild while a row's actions menu is open,
     // otherwise the 2-second refresh would tear it down underneath the
     // user. Counts in the tab header still tick.
+    // ``jobList`` is now a single server-paginated page (e.g. 20 rows)
+    // for the current filter, not the unfiltered ~300 the old path
+    // fetched. Sort defensively in case the store returns out of order.
     const sortedAll = [...jobList].sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
-    // W: status filter tabs. Counts always reflect the unfiltered list
-    // so the operator can see at a glance how many errors exist even
-    // while looking at a different tab.
-    const _cntAll = sortedAll.length;
-    let _cntSuccess = 0, _cntError = 0, _cntRunning = 0;
-    for (const _j of sortedAll) {
-      const _st = _j.status;
-      if (_st === 'completed') _cntSuccess++;
-      else if (_st === 'failed') _cntError++;
-      else if (_st === 'running' || _st === 'queued') _cntRunning++;
-    }
-    const _setCnt = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
-    _setCnt('jobsCntAll',     _cntAll);
-    _setCnt('jobsCntSuccess', _cntSuccess);
-    _setCnt('jobsCntError',   _cntError);
-    _setCnt('jobsCntRunning', _cntRunning);
-    // Apply the current filter to derive the rendered list.
+    // Status sub-tab counters. With server-side filtering the response's
+    // ``total`` is the exact count for the active filter -- update only
+    // that filter's counter. Other counters keep their last-known value
+    // until the operator selects them (= the response.total then
+    // updates that one). After a single round through the 4 tabs every
+    // counter is exact. Follow-up: a /jobs/counts endpoint can populate
+    // all four in one round-trip if the staleness matters.
     const _filter = _jobsStatusFilter || 'all';
-    let sorted;
-    if (_filter === 'completed') sorted = sortedAll.filter(j => j.status === 'completed');
-    else if (_filter === 'failed') sorted = sortedAll.filter(j => j.status === 'failed');
-    else if (_filter === 'running') sorted = sortedAll.filter(j => j.status === 'running' || j.status === 'queued');
-    else sorted = sortedAll;
+    const _filterTotal = jobs.total ?? sortedAll.length;
+    const _setCnt = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
+    if (_filter === 'all')        _setCnt('jobsCntAll', _filterTotal);
+    else if (_filter === 'completed') _setCnt('jobsCntSuccess', _filterTotal);
+    else if (_filter === 'failed')    _setCnt('jobsCntError', _filterTotal);
+    else if (_filter === 'running')   _setCnt('jobsCntRunning', _filterTotal);
+    // Server already filtered + paginated; no client-side filter step
+    // remains. ``sorted`` is the page to render as-is.
+    const sorted = sortedAll;
     const jtbody = document.querySelector('#jobsTable tbody');
     const menuOpen = !!document.querySelector('#jobsTable .menu.open');
     // Pager state: page index + page size persist across refresh()
     // ticks. _jobsPagerTotal is restamped so the pager UI rebuild
     // below can read it without re-sorting.
     const pageSize = _jobsPageSize();
-    const total = sorted.length;
+    // Total = filtered-store total returned by the server (e.g. 2900
+    // completed when on the 完成 sub-tab). Use this for max-page
+    // calculation so the pager spans the full filtered set, not just
+    // the page that's currently in memory.
+    const total = jobs.total ?? sorted.length;
     const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
     if (_jobsPage > maxPage) _jobsPage = maxPage;     // clamp when total shrinks
     if (_jobsPage < 0)       _jobsPage = 0;
+    // The server already sliced to the requested page, so ``sorted``
+    // IS the visible window. The startIdx / endIdx values below are
+    // for display only (= "21-40 / 2900" in the pager footer).
     const startIdx = _jobsPage * pageSize;
-    const endIdx   = Math.min(startIdx + pageSize, total);
-    const visible  = sorted.slice(startIdx, endIdx);
+    const endIdx   = startIdx + sorted.length;
+    const visible  = sorted;
 
     // Signature of the rendered set. Excludes duration (time-based) so
     // a tick that only advances the running-job clocks doesn't bust
