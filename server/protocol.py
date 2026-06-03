@@ -627,6 +627,29 @@ class SessionStateSnapshot(BaseModel):
     is_fetch_owned: bool = False
 
 
+class WorkerDraining(BaseModel):
+    """Worker signals that it has detected a version mismatch and is
+    entering drain mode prior to a self-update + exit(42).
+
+    The hub records this in registry as ``draining=True`` so the
+    scheduler stops handing it new jobs / sessions. The worker then
+    waits for in-flight work to complete (up to ``DRAIN_DEADLINE_S``)
+    and, gated by the hub's response (HubUpdateGate), pulls the source
+    tarball and exits to let docker restart pick up the new code.
+
+    Replaces the previous "every worker self-updates as soon as it
+    sees the new expected version" thundering-herd pattern -- the hub
+    now controls update concurrency so the fleet rolls forward instead
+    of going dark simultaneously.
+    """
+
+    type: Literal["draining"] = "draining"
+    to_version: str = Field(
+        description="The hub-advertised version this worker is moving to."
+    )
+    reason: str = "version_mismatch"
+
+
 class WorkerSessionAnnounce(BaseModel):
     """Sent by the worker right after the WS handshake. Lists every
     session the worker is currently holding so the hub can:
@@ -663,6 +686,7 @@ WorkerToHubMsg = Annotated[
         WorkerSessionEndAck,
         WorkerSessionAgentResult,
         WorkerSessionAnnounce,
+        WorkerDraining,
     ],
     Field(discriminator="type"),
 ]
@@ -1025,6 +1049,28 @@ class HubProfileDelete(BaseModel):
     name: str
 
 
+class HubUpdateGate(BaseModel):
+    """Hub's response to a WorkerDraining: either grant a "you may
+    proceed with the source fetch + exit now" green light, or hold
+    the worker in drain mode a little longer because the fleet's
+    concurrent-update budget is currently full.
+
+    The hub limits concurrent source-fetch + restart cycles to
+    ``PAPRIKA_ROLLING_UPDATE_MAX_PARALLEL`` (default 3) so the fleet
+    rolls forward in batches rather than all going dark at once.
+    Workers that get ``allow_now=False`` keep draining (no new work
+    accepted) and the hub sends another HubUpdateGate when a slot
+    opens up. ``jitter_s`` (when allow_now=True) is an additional
+    randomised delay the hub picks so even within one batch the
+    actual fetch + restart times spread out.
+    """
+
+    type: Literal["update_gate"] = "update_gate"
+    allow_now: bool
+    why: str = ""
+    jitter_s: float = 0.0
+
+
 class HubSessionInteraction(BaseModel):
     """Notify the worker that an operator is actively driving a session
     via noVNC (RFB KeyEvent / PointerEvent / ClientCutText detected
@@ -1062,6 +1108,7 @@ HubToWorkerMsg = Annotated[
         HubProfileSync,
         HubProfileDelete,
         HubSessionInteraction,
+        HubUpdateGate,
     ],
     Field(discriminator="type"),
 ]

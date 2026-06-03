@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import tarfile
 import time
 from pathlib import Path
@@ -722,6 +723,8 @@ from server.protocol import (
     HubRegistered,
     JobResult,
     JobStatus,
+    HubUpdateGate,
+    WorkerDraining,
     WorkerHeartbeat,
     WorkerJobAccepted,
     WorkerJobComplete,
@@ -765,6 +768,110 @@ def _worker_dialled_base_url(ws: WebSocket) -> str:
         return (config.public_base_url or "http://hub:8000").rstrip("/")
     scheme = "https" if ws.url.scheme == "wss" else "http"
     return f"{scheme}://{host}".rstrip("/")
+
+
+# ----------------------------------------------------------------------------
+# Rolling-update slot manager
+#
+# Replaces the previous "every worker self-updates as soon as it sees a new
+# expected_worker_version" thundering herd, where 20+ workers would fetch the
+# tarball + exit(42) within the same second, causing the entire fleet to be
+# offline for 15-30s while every container restarted in lockstep.
+#
+# Now: workers send WorkerDraining on mismatch and wait. The hub grants at
+# most ``_UPDATE_MAX_PARALLEL`` simultaneous "go ahead, fetch + exit" slots
+# at a time so the fleet rolls forward in batches. Each grant also carries
+# a randomised ``jitter_s`` (0..30s) so even within one batch the fetch +
+# restart times don't perfectly align. When a granted worker disconnects
+# (= it's about to restart on new code), its slot is freed and the next
+# queued updater gets a green light.
+#
+# Self-healing: a granted worker that never disconnects (crash before
+# restart, machine wedged) has its slot reclaimed after
+# ``_UPDATE_SLOT_TIMEOUT_S`` so the queue can't deadlock indefinitely.
+# ----------------------------------------------------------------------------
+_UPDATE_MAX_PARALLEL = int(os.environ.get("PAPRIKA_ROLLING_UPDATE_MAX_PARALLEL", "3"))
+_UPDATE_SLOT_TIMEOUT_S = float(os.environ.get("PAPRIKA_ROLLING_UPDATE_SLOT_TIMEOUT_S", "600"))
+_UPDATE_JITTER_MAX_S = float(os.environ.get("PAPRIKA_ROLLING_UPDATE_JITTER_MAX_S", "30"))
+
+# worker_id -> time.time() when its slot was granted. Capacity check uses
+# len(_active_update_slots); reclaim happens lazily on the next attempt.
+_active_update_slots: dict[str, float] = {}
+
+# Workers waiting for a slot. FIFO so the order in which workers detected
+# the mismatch is the order in which they're allowed to update.
+# Entry: (worker_id, to_version, requested_at).
+_update_queue: list[tuple[str, str, float]] = []
+
+
+def _gc_active_update_slots() -> None:
+    """Reclaim slots held longer than the timeout. Lazy GC -- runs
+    whenever we touch the slot map, no separate task needed."""
+    now = time.time()
+    for wid, t in list(_active_update_slots.items()):
+        if now - t > _UPDATE_SLOT_TIMEOUT_S:
+            log.warning(
+                "rolling-update: reclaiming slot for %s "
+                "(held %.0fs > %.0fs timeout); worker likely never restarted",
+                wid, now - t, _UPDATE_SLOT_TIMEOUT_S,
+            )
+            _active_update_slots.pop(wid, None)
+
+
+def _try_grant_update_slot(worker_id: str) -> tuple[bool, str]:
+    """Try to grab one of the ``_UPDATE_MAX_PARALLEL`` slots. If the
+    worker already holds one (re-sent WorkerDraining), keep it."""
+    _gc_active_update_slots()
+    if worker_id in _active_update_slots:
+        return True, "already holding a slot"
+    if len(_active_update_slots) >= _UPDATE_MAX_PARALLEL:
+        return False, (
+            f"queue full ({len(_active_update_slots)}/{_UPDATE_MAX_PARALLEL})"
+        )
+    _active_update_slots[worker_id] = time.time()
+    return True, f"granted ({len(_active_update_slots)}/{_UPDATE_MAX_PARALLEL})"
+
+
+def _release_update_slot(worker_id: str) -> None:
+    """Free a worker's slot (called on WS disconnect). No-op if the
+    worker wasn't holding one."""
+    if _active_update_slots.pop(worker_id, None) is not None:
+        # Drop any queue entries for this worker too (it's gone).
+        global _update_queue
+        _update_queue = [e for e in _update_queue if e[0] != worker_id]
+
+
+async def _drain_update_queue() -> None:
+    """Try to grant slots to FIFO-queued updaters. Called after a
+    slot is freed and right after enqueueing a new request."""
+    import random as _rand
+    while _update_queue:
+        wid, to_ver, _req_at = _update_queue[0]
+        ok, why = _try_grant_update_slot(wid)
+        if not ok:
+            return  # still full, leave the queue head pending
+        _update_queue.pop(0)
+        conn = state.registry.connections.get(wid)
+        if conn is None:
+            # Worker disconnected while queued -- release the slot we
+            # just grabbed and try the next one.
+            _active_update_slots.pop(wid, None)
+            continue
+        jitter = _rand.uniform(0, _UPDATE_JITTER_MAX_S)
+        try:
+            await conn.send(
+                HubUpdateGate(allow_now=True, why=why, jitter_s=jitter)
+            )
+            log.info(
+                "rolling-update: granted slot to %s -> %s (jitter %.1fs); %s",
+                wid, to_ver[:12], jitter, why,
+            )
+        except Exception:
+            log.warning(
+                "rolling-update: failed to send grant to %s",
+                wid, exc_info=True,
+            )
+            _active_update_slots.pop(wid, None)
 
 
 def _mint_unique_worker_id(registry: WorkerRegistry, hint: str) -> str:
@@ -951,6 +1058,16 @@ async def worker_link(ws: WebSocket, worker_id: str):
     except Exception:
         log.warning("[%s] WS loop error", worker_id, exc_info=True)
     finally:
+        # Free any rolling-update slot this worker was holding so the
+        # next queued updater can proceed. Safe to call unconditionally
+        # (no-op if the worker wasn't updating).
+        _release_update_slot(worker_id)
+        # Drain the queue: this disconnect may have just freed a slot
+        # the next worker is waiting on.
+        try:
+            await _drain_update_queue()
+        except Exception:
+            log.warning("rolling-update: drain after disconnect failed", exc_info=True)
         await state.registry.unregister(worker_id)
         # Drop any sessions that were bound to this worker -- their Lane
         # is gone and the next /sessions/{id}/* call should 404, not
@@ -1625,4 +1742,52 @@ async def _handle_worker_message(worker, msg) -> None:
         return
     if isinstance(msg, WorkerSessionAnnounce):
         await _reconcile_worker_sessions(worker, msg.sessions or [])
+        return
+    if isinstance(msg, WorkerDraining):
+        # The worker noticed expected_worker_version > its own and is
+        # entering drain mode to prepare for self-update. Mark it so
+        # pick_worker() skips it, remember the target version, and
+        # either grant a slot immediately or queue.
+        worker.status = "drain"
+        worker.pending_update_to = msg.to_version
+        state.registry.log_event(
+            worker.worker_id,
+            f"draining for self-update -> {msg.to_version[:12]}",
+            kind="info",
+        )
+        ok, why = _try_grant_update_slot(worker.worker_id)
+        import random as _rand
+        if ok:
+            jitter = _rand.uniform(0, _UPDATE_JITTER_MAX_S)
+            try:
+                await worker.send(
+                    HubUpdateGate(allow_now=True, why=why, jitter_s=jitter)
+                )
+                log.info(
+                    "rolling-update: granted slot to %s -> %s (jitter %.1fs); %s",
+                    worker.worker_id, msg.to_version[:12], jitter, why,
+                )
+            except Exception:
+                log.warning(
+                    "rolling-update: failed to send immediate grant to %s",
+                    worker.worker_id, exc_info=True,
+                )
+                _active_update_slots.pop(worker.worker_id, None)
+        else:
+            # Capacity full -- enqueue and let the worker keep draining.
+            if not any(e[0] == worker.worker_id for e in _update_queue):
+                _update_queue.append(
+                    (worker.worker_id, msg.to_version, time.time())
+                )
+            try:
+                await worker.send(
+                    HubUpdateGate(allow_now=False, why=why, jitter_s=0.0)
+                )
+            except Exception:
+                pass
+            log.info(
+                "rolling-update: %s queued for update -> %s; %s "
+                "(queue depth %d)",
+                worker.worker_id, msg.to_version[:12], why, len(_update_queue),
+            )
         return

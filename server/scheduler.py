@@ -197,6 +197,14 @@ class ConnectedWorker:
     # Shown in the admin UI Workers table so operators can tell similar
     # `worker_id`s apart at a glance.
     client_address: str | None = None
+    # Rolling-update state: when the worker has sent a WorkerDraining
+    # because it detected the hub advertising a newer expected_worker_
+    # version, this holds that version string until the worker disconnects
+    # (presumably to restart on new code). status is also flipped to
+    # ``drain`` so pick_worker() skips it. ``None`` == not currently
+    # updating (either matches the hub version or is operator-controlled
+    # drain rather than auto-update drain).
+    pending_update_to: str | None = None
     # In-flight screenshot RPCs: req_id -> Future[WorkerScreenshotReply].
     # WorkerScreenshotReply messages from the worker resolve the matching
     # future so the requesting HTTP handler can return the JPEG.
@@ -630,6 +638,11 @@ class WorkerRegistry:
                     "version": w.capabilities.version or "",
                     "status": w.status,
                     "address": w.client_address or "",
+                    # Rolling-update state. None unless the worker has
+                    # signalled WorkerDraining; the admin UI shows this
+                    # as a "draining (→ vX)" badge so operators can see
+                    # which workers are mid-update vs operator-drained.
+                    "pending_update_to": w.pending_update_to,
                 }
             )
         # Pass 2 (historical workers from Redis) lives in ``stats_async``

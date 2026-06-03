@@ -45,12 +45,14 @@ from server.protocol import (
     HubSessionEnd,
     HubSessionInteraction,
     HubSessionStart,
+    HubUpdateGate,
     JobOptions,
     JobResult,
     JobStatus,
     ProfileCacheEntry,
     SessionStateSnapshot,
     WorkerCapabilities,
+    WorkerDraining,
     WorkerHeartbeat,
     WorkerJobAccepted,
     WorkerJobComplete,
@@ -2255,6 +2257,14 @@ class WorkerAgent:
         # SE_DRAIN_AFTER_SESSION_COUNT does. 0 disables.
         self._jobs_done = 0
         self._draining = False
+        # Rolling self-update state (set when we detect a hub-advertised
+        # version mismatch and start draining for an update). Replaces
+        # the old "immediately fetch + exit(42)" thundering-herd flow.
+        # See _drain_and_self_update() for the full sequence.
+        self._pending_update_to: str | None = None
+        self._update_gate: asyncio.Event = asyncio.Event()
+        self._update_jitter_s: float = 0.0
+        self._self_update_task: asyncio.Task | None = None
         try:
             self._recycle_after = int(os.environ.get("WORKER_RECYCLE_AFTER_JOBS", "200"))
         except (TypeError, ValueError):
@@ -2338,6 +2348,133 @@ class WorkerAgent:
             return
         async with self._send_lock:
             await ws.send(encode_msg(msg))
+
+    # ---------------------------------------------------- rolling self-update
+    async def _drain_and_self_update(self) -> None:
+        """Drain in-flight work, await the hub's update slot, sleep
+        for the assigned jitter, fetch source, exit(42).
+
+        Replaces the previous "fetch + exit as soon as version
+        mismatch is seen" pattern that caused the whole fleet to go
+        dark simultaneously.  Concurrency is hub-gated
+        (PAPRIKA_ROLLING_UPDATE_MAX_PARALLEL workers at a time) and
+        spread further by per-worker jitter.
+
+        Returns normally only on success or when self-update is
+        disabled; on success calls ``sys.exit(WORKER_EXIT_CODE_
+        VERSION_MISMATCH)`` so the docker restart policy boots a
+        fresh container on the new code.
+        """
+        target = self._pending_update_to or "?"
+        wid = self.worker_id
+        # How long to wait for in-flight work before forcing the
+        # update. Default 10 min: most video DLs finish; a stuck
+        # one shouldn't block the whole fleet's update train.
+        deadline_s = float(
+            os.environ.get("PAPRIKA_DRAIN_DEADLINE_S", "600")
+        )
+        poll_s = 5.0
+        start = time.monotonic()
+
+        _logger.info(
+            f"[worker {wid}] drain-for-update -> {target[:12]}: "
+            f"waiting for in-flight work to finish "
+            f"(deadline {deadline_s:.0f}s)"
+        )
+
+        # ---- Phase 1: drain in-flight work ----
+        while True:
+            elapsed = time.monotonic() - start
+            ifc = self._in_flight
+            scs = len(self._sessions)
+            if ifc <= 0 and scs <= 0:
+                _logger.info(
+                    f"[worker {wid}] drain-for-update: idle "
+                    f"(elapsed {elapsed:.0f}s); requesting update slot"
+                )
+                break
+            if elapsed >= deadline_s:
+                _logger.warning(
+                    f"[worker {wid}] drain-for-update: deadline "
+                    f"({deadline_s:.0f}s) reached with in_flight={ifc} "
+                    f"sessions={scs}; forcing update anyway"
+                )
+                break
+            try:
+                await asyncio.sleep(poll_s)
+            except asyncio.CancelledError:
+                _logger.info(f"[worker {wid}] drain-for-update: cancelled")
+                return
+
+        # ---- Phase 2: wait for the hub's update gate ----
+        # The hub caps concurrent updaters; we wait until it
+        # green-lights us. If the hub goes away, fall back to
+        # updating anyway after a generous timeout so a single dead
+        # hub can't strand the fleet on old code forever.
+        gate_timeout_s = float(
+            os.environ.get("PAPRIKA_UPDATE_GATE_TIMEOUT_S", "900")
+        )
+        try:
+            await asyncio.wait_for(
+                self._update_gate.wait(),
+                timeout=gate_timeout_s,
+            )
+            _logger.info(
+                f"[worker {wid}] drain-for-update: hub granted update slot"
+            )
+        except asyncio.TimeoutError:
+            _logger.warning(
+                f"[worker {wid}] drain-for-update: hub gate timed out "
+                f"({gate_timeout_s:.0f}s); proceeding without grant"
+            )
+        except asyncio.CancelledError:
+            _logger.info(f"[worker {wid}] drain-for-update: cancelled at gate")
+            return
+
+        # ---- Phase 3: hub-assigned jitter ----
+        if self._update_jitter_s > 0:
+            _logger.info(
+                f"[worker {wid}] drain-for-update: "
+                f"sleeping {self._update_jitter_s:.1f}s jitter before fetch"
+            )
+            try:
+                await asyncio.sleep(self._update_jitter_s)
+            except asyncio.CancelledError:
+                _logger.info(f"[worker {wid}] drain-for-update: cancelled in jitter")
+                return
+
+        # ---- Phase 4: fetch tarball ----
+        if _auto_fetch_source():
+            _logger.info(
+                f"[worker {wid}] drain-for-update: fetching source from hub..."
+            )
+            try:
+                applied = await _fetch_and_apply_source_from_hub(
+                    hub_http_url=self.hub_http_url,
+                    log_prefix=f"[worker {wid}]",
+                )
+                if applied:
+                    _logger.info(
+                        f"[worker {wid}] drain-for-update: "
+                        f"source applied; restarting on new code"
+                    )
+                else:
+                    _logger.warning(
+                        f"[worker {wid}] drain-for-update: "
+                        f"source fetch did not apply (see prior log); "
+                        f"restarting on existing code"
+                    )
+            except Exception:
+                _logger.warning(
+                    f"[worker {wid}] drain-for-update: source fetch failed",
+                    exc_info=True,
+                )
+
+        # ---- Phase 5: exit so docker restart picks up new code ----
+        _logger.info(
+            f"[worker {wid}] drain-for-update: exit({WORKER_EXIT_CODE_VERSION_MISMATCH})"
+        )
+        sys.exit(WORKER_EXIT_CODE_VERSION_MISMATCH)
 
     # --------------------------------------------------------- engine resolver
 
@@ -2607,33 +2744,56 @@ class WorkerAgent:
                 expected=expected or "",
                 source=f"Hub ({self.hub_http_url})",
             )
-            # When auto-fetch is enabled (default), pull the hub's
-            # source tarball and apply it before we exit. The docker
-            # restart policy then boots the fresh code right away;
-            # no registry / docker push / Watchtower needed. When
-            # disabled the worker just exits and the operator is
-            # expected to update the bind-mounted source themselves
-            # (git pull / rsync / whatever).
-            if _auto_fetch_source():
-                _logger.info(
-                    f"[worker {self.worker_id}] self-update: fetching source from hub...",
-                )
-                applied = await _fetch_and_apply_source_from_hub(
-                    hub_http_url=self.hub_http_url,
-                    log_prefix=f"[worker {self.worker_id}]",
-                )
-                if applied:
-                    _logger.info(
-                        f"[worker {self.worker_id}] self-update: success; "
-                        f"restarting to load new code",
+            # Rolling self-update.  Replaces the previous
+            # "immediately fetch + exit(42)" pattern that caused the
+            # whole fleet to go dark simultaneously whenever the hub
+            # advertised a new version (~20+ workers all fetching the
+            # tarball + restarting within the same 10-30s window).
+            #
+            # New sequence:
+            #   1. Send WorkerDraining(to_version=expected) so the hub
+            #      records us as draining and stops sending new jobs.
+            #   2. Wait for in-flight work (sessions + jobs) to complete
+            #      naturally, up to DRAIN_DEADLINE_S.
+            #   3. Wait for the hub's HubUpdateGate(allow_now=True) --
+            #      the hub caps concurrent updaters at
+            #      PAPRIKA_ROLLING_UPDATE_MAX_PARALLEL.
+            #   4. Sleep for the hub-assigned jitter (0..30s) so even
+            #      within one batch the actual fetch + exit moments
+            #      spread out across the network link.
+            #   5. Fetch source tarball + exit(42); docker restart
+            #      picks up the new code.
+            #
+            # ``_auto_exit_on_version_mismatch`` (env-gated, default ON)
+            # still controls whether step 5 runs at all; the rest is
+            # always done so the operator's bind-mount update flow
+            # stays observable in the admin UI even when auto-exit
+            # is disabled.
+            if (
+                _auto_exit_on_version_mismatch()
+                and self._self_update_task is None
+            ):
+                self._pending_update_to = expected or ""
+                self._draining = True
+                self._update_gate.clear()
+                try:
+                    await self._send(
+                        WorkerDraining(to_version=self._pending_update_to)
                     )
-            if _auto_exit_on_version_mismatch():
-                _logger.info(
-                    f"[worker {self.worker_id}] exiting with code "
-                    f"{WORKER_EXIT_CODE_VERSION_MISMATCH} so the supervisor "
-                    f"can pick up the new code",
+                except Exception:
+                    _logger.warning(
+                        f"[worker {self.worker_id}] could not notify hub "
+                        f"of drain-for-update; proceeding anyway",
+                        exc_info=True,
+                    )
+                self._self_update_task = asyncio.create_task(
+                    self._drain_and_self_update()
                 )
-                sys.exit(WORKER_EXIT_CODE_VERSION_MISMATCH)
+            elif not _auto_exit_on_version_mismatch():
+                # Operator opted out: stay running on old code, just
+                # log. They are expected to update the bind-mounted
+                # source manually (git pull / rsync / whatever).
+                pass
 
         _logger.info(
             f"[worker {self.worker_id}] registered. server_time={ack.server_time}"
@@ -3207,6 +3367,29 @@ class WorkerAgent:
                 _session_interaction_at[msg.session_id] = float(msg.ts) or time.time()
             except Exception:
                 pass
+            return
+        if isinstance(msg, HubUpdateGate):
+            # Hub's response to our WorkerDraining: either green-light
+            # the fetch + exit (a slot in the rolling-update budget
+            # opened up) or "stay in drain mode, we're full". The
+            # _drain_and_self_update task awaits self._update_gate and
+            # reads self._update_jitter_s; we set them here.
+            if msg.allow_now:
+                self._update_jitter_s = max(0.0, float(msg.jitter_s or 0.0))
+                _logger.info(
+                    f"[worker {self.worker_id}] update gate: "
+                    f"allow_now=True (jitter={self._update_jitter_s:.1f}s); "
+                    f"{msg.why}"
+                )
+                self._update_gate.set()
+            else:
+                # Hub is full; keep draining and wait for the next
+                # HubUpdateGate(allow_now=True). The hub auto-pushes one
+                # whenever a slot frees up (another worker disconnected).
+                _logger.info(
+                    f"[worker {self.worker_id}] update gate: "
+                    f"queued -- {msg.why}"
+                )
             return
         # HubCancelJob: not yet implemented (Phase 3.x)
         # HubPing: respond via heartbeat already

@@ -1535,9 +1535,25 @@ async function refresh() {
         // Status badge shows "offline" for historical (disconnected)
         // workers so the operator can tell at a glance which entries
         // are alive vs remembered.
-        const statusBadge = alive
-          ? `<span class="badge ${esc(status)}">${esc(status)}</span>`
-          : `<span class="badge" style="background:#eee; color:#888; border-color:#ccc;">offline</span>`;
+        let statusBadge;
+        if (!alive) {
+          statusBadge = `<span class="badge" style="background:#eee; color:#888; border-color:#ccc;">offline</span>`;
+        } else if (w.pending_update_to) {
+          // Rolling self-update in progress: worker has signalled
+          // WorkerDraining and is waiting for in-flight work + the
+          // hub's update slot before fetching the new source and
+          // restarting. Distinct from operator-controlled drain
+          // (status === 'drain' WITHOUT pending_update_to) so the
+          // operator can tell at a glance "this is a normal upgrade,
+          // not a problem".
+          const target = w.pending_update_to.slice(0, 8);
+          statusBadge = `<span class="badge" `
+            + `style="background:#fff0c4; color:#8a5a00; border-color:#f5d77a;" `
+            + `title="self-updating to ${esc(w.pending_update_to)}">`
+            + `updating → ${esc(target)}</span>`;
+        } else {
+          statusBadge = `<span class="badge ${esc(status)}">${esc(status)}</span>`;
+        }
         const ageHint = (!alive && w.last_heartbeat)
           ? ` <small style="color:#aaa;" title="last seen ${esc(new Date(w.last_heartbeat*1000).toISOString())}">${esc(fmtAgoOrNever(new Date(w.last_heartbeat*1000).toISOString()))}</small>`
           : '';
