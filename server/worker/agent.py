@@ -24,7 +24,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import websockets
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from core.fetcher import (
     FetchOptions,
@@ -2276,9 +2276,20 @@ class WorkerAgent:
                         f"[worker] reconnecting immediately with new id={e}",
                     )
                     backoff = 0.5
-                except (ConnectionClosed, OSError) as e:
+                except (WebSocketException, OSError) as e:
+                    # WebSocketException is the parent of ConnectionClosed AND
+                    # of the handshake-rejection errors (notably InvalidStatus,
+                    # raised when nginx returns HTTP 502/503 because the upstream
+                    # hub is momentarily down -- e.g. mid `docker compose restart
+                    # hub`). Previously only (ConnectionClosed, OSError) were
+                    # caught, so a 502 on reconnect raised InvalidStatus straight
+                    # out of this loop -> the worker PROCESS exited and docker had
+                    # to rebuild every lane (and any in-flight job was orphaned).
+                    # Treat any ws-level / socket error as a transient drop:
+                    # log + backoff + retry. Genuinely persistent failures still
+                    # hit the `no hub link for Ns` give-up exit below.
                     _logger.info(
-                        f"[worker {self.worker_id}] disconnected ({e}); "
+                        f"[worker {self.worker_id}] hub link down ({e}); "
                         f"reconnecting in {backoff:.1f}s",
                     )
                 except KeyboardInterrupt:
