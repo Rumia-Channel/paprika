@@ -1386,7 +1386,7 @@ async function refresh() {
       // "最近のジョブ" = Recent Jobs. Server-side filter + pagination so
       // each status sub-tab can show ALL matching jobs (not just the
       // 300-newest window the table used to cap at). Counts come from
-      // /jobs/counts (single round-trip, all 4 sub-tab badges accurate
+      // /jobs/summary (single round-trip, all 4 sub-tab badges accurate
       // every poll). The previous "fetch top 300, filter client-side"
       // path silently capped every sub-tab at 300 total entries even
       // when the store had thousands of completed / failed jobs.
@@ -1402,23 +1402,23 @@ async function refresh() {
       } else if (_f !== 'all') {
         _q += '&status=' + encodeURIComponent(_f);
       }
-      // Issue the page + the counts call in parallel so the only
-      // wall-clock cost is whichever is slower. /jobs/counts is
+      // Issue the page + the summary call in parallel so the only
+      // wall-clock cost is whichever is slower. /jobs/summary is
       // memoised server-side (2s TTL) so a 2s admin poll touches the
       // slow path at most once per tick. Cache fallback `null` keeps
-      // the rest of refresh() going if the counts call hiccups.
-      const [pageRes, countsRes] = await Promise.all([
+      // the rest of refresh() going if the summary call hiccups.
+      const [pageRes, summaryRes] = await Promise.all([
         _refreshJson('/jobs' + _q, { total: 0, jobs: [] }),
-        _refreshJson('/jobs/counts', null),
+        _refreshJson('/jobs/summary', null),
       ]);
       jobs = pageRes;
-      if (countsRes && countsRes.by_status) {
-        const _bs = countsRes.by_status;
+      if (summaryRes && summaryRes.by_status) {
+        const _bs = summaryRes.by_status;
         const _setCnt = (id, n) => {
           const el = document.getElementById(id);
           if (el) el.textContent = n;
         };
-        _setCnt('jobsCntAll',     countsRes.total ?? 0);
+        _setCnt('jobsCntAll',     summaryRes.total ?? 0);
         _setCnt('jobsCntSuccess', _bs.completed ?? 0);
         _setCnt('jobsCntError',   _bs.failed ?? 0);
         // "実行中" folds queued + running to match the sub-tab filter.

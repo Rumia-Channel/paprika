@@ -1956,88 +1956,42 @@ async def list_jobs(
     }
 
 
-# Tiny in-process memoisation for /jobs/counts. The admin UI polls
-# every ~2s and the count call hydrates every JobInfo, so without a
-# cache a 3000-job store costs 3000 store.get_job_info() calls per
-# 2 seconds for every operator who has the Jobs tab open. A 2s TTL
-# coalesces back-to-back hits to a single pass without making the
-# counters perceptibly stale.
-_JOBS_COUNTS_CACHE: dict = {"ts": 0.0, "value": None}
-_JOBS_COUNTS_TTL_S = 2.0
+# In-process memoisation for /jobs/summary. The admin UI polls every
+# ~2s; with the store-side GROUP BY fast path the whole call is
+# typically <50ms at 100k+ rows, but the cache still saves a few SQL
+# queries per second per connected operator. 2s TTL ≈ poll interval
+# so the UI sees fresh-enough numbers without paying the slow path
+# twice per tick during a burst of refreshes.
+_JOBS_SUMMARY_CACHE: dict = {"ts": 0.0, "value": None}
+_JOBS_SUMMARY_TTL_S = 2.0
+_JOBS_SUMMARY_RUNNING_PREVIEW = 5
+_JOBS_SUMMARY_RECENT_WINDOWS_H = (1, 24)
 
 
-@router.get("/jobs/counts")
-async def get_jobs_counts() -> dict:
-    """Per-status and per-mode job-count summary in one round-trip.
-
-    Returned shape::
-
-        {
-          "total":     3067,
-          "by_status": {
-            "queued":    0,
-            "running":   5,
-            "completed": 1222,
-            "failed":    1828,
-            "cancelled": 12
-          },
-          "by_mode": {
-            "fetch":         2800,
-            "codegen-loop":  200,
-            "vision-agent":  50,
-            "rerun":         17
-          }
-        }
-
-    Companion to ``GET /jobs``: the admin UI's Jobs sub-tabs (全部
-    / 成功 / エラー / 実行中) read the per-status counts from this
-    endpoint so each tab's badge stays accurate even when the
-    paginated /jobs view is locked to one filter at a time.
-
-    Implementation hydrates every job to count by ``status`` / ``mode``
-    -- intentionally a flat O(N) walk because that's also exactly what
-    ``GET /jobs?status=...`` does under the hood; co-locating both
-    paths makes the math predictable. A 2s in-process memo cache
-    keeps a 2s admin poll on the slow path at most once per tick.
-    For multi-tenant deployments where the iterate cost becomes a
-    bottleneck, the next step is a store-side counter (Redis sorted-
-    set per status, or SQL ``GROUP BY status``).
-    """
-    import time as _time
-
-    now = _time.monotonic()
-    cached = _JOBS_COUNTS_CACHE.get("value")
-    if cached is not None and (now - _JOBS_COUNTS_CACHE.get("ts", 0.0)) < _JOBS_COUNTS_TTL_S:
-        return cached
+async def _summary_python_count(
+    created_after_ts: float | None,
+) -> tuple[dict[str, int], dict[str, int], int]:
+    """Hydrate-and-count fallback for stores without
+    ``count_by_status_and_mode``. Linear in the number of jobs --
+    fine at <10k, gets painful beyond that."""
+    from datetime import datetime, timezone
 
     assert state.store is not None
-
-    # Fast path: MariaDBJobStore aggregates with two GROUP BY queries
-    # (~10 ms each) instead of the N+1 hydrate walk. At 2,000+ rows
-    # the difference is ~2s → <20ms per /jobs/counts call.
-    fast = getattr(state.store, "count_by_status_and_mode", None)
-    if callable(fast):
-        by_status_f, by_mode_f, total_f = await fast()
-        result = {
-            "total": total_f,
-            "by_status": by_status_f,
-            "by_mode": by_mode_f,
-        }
-        _JOBS_COUNTS_CACHE["ts"] = now
-        _JOBS_COUNTS_CACHE["value"] = result
-        return result
-
-    # Slow path: in-memory / Redis stores walk + hydrate.
     ids = await state.store.list_job_ids()
     by_status: dict[str, int] = {}
     by_mode: dict[str, int] = {}
+    cutoff = (
+        datetime.fromtimestamp(created_after_ts, tz=timezone.utc)
+        if created_after_ts is not None else None
+    )
     for jid in ids:
         info = await state.store.get_job_info(jid)
         if info is None:
             continue
-        # JobStatus enum -> value string (queued / running / completed /
-        # failed / cancelled / succeeded); fall back to str(...) so an
-        # unexpected shape doesn't crash the counter.
+        if cutoff is not None:
+            ca = getattr(info, "created_at", None)
+            if ca is None or ca < cutoff:
+                continue
         s = getattr(info.status, "value", None) or str(info.status)
         by_status[s] = by_status.get(s, 0) + 1
         opts = info.options
@@ -2046,14 +2000,142 @@ async def get_jobs_counts() -> dict:
         else:
             mode = getattr(opts, "mode", "fetch") or "fetch"
         by_mode[mode] = by_mode.get(mode, 0) + 1
+    return by_status, by_mode, sum(by_status.values())
+
+
+@router.get("/jobs/summary")
+async def get_jobs_summary() -> dict:
+    """Dashboard-shaped overview of the job store. One round-trip,
+    designed to be polled from the admin UI AND scripted from
+    paprika-client (``cli.jobs_summary()``).
+
+    Returned shape::
+
+        {
+          "as_of":  "2026-06-01T22:45:00Z",
+          "total":  3154,
+          "by_status": {queued, running, completed, failed, cancelled, ...},
+          "by_mode":   {fetch, "codegen-loop", rerun, ...},
+          "recent_1h":  {created, by_status: {...}, success_rate: 0.93},
+          "recent_24h": {created, by_status: {...}, success_rate: 0.91},
+          "active": {
+            "queued":  N,
+            "running": M,
+            "running_preview": [
+              {job_id, url, mode, worker_id, lane_idx, started_at, age_s},
+              ...up to _JOBS_SUMMARY_RUNNING_PREVIEW
+            ]
+          }
+        }
+
+    ``success_rate`` is computed over terminal jobs only (completed
+    + failed); pending / running jobs aren't counted in the
+    denominator. ``None`` when no terminal jobs in the window
+    (avoids dividing by 0 for fresh deploys).
+
+    Performance: a store with ``count_by_status_and_mode`` (e.g.
+    MariaDB) computes everything in ~5 indexed SQL queries (<50ms
+    total at 100k rows). Stores without those methods (in-memory
+    / Redis) fall back to a single Python iteration that's fine up
+    to ~10k rows; beyond that they should grow store-side aggregation
+    of their own (Redis: per-status sorted set; SQL: GROUP BY w/
+    composite index on (status, created_at)).
+
+    Replaces the older ``/jobs/counts`` endpoint -- the admin UI
+    and SDK both moved to this name.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+
+    now = _time.monotonic()
+    cached = _JOBS_SUMMARY_CACHE.get("value")
+    if cached is not None and (now - _JOBS_SUMMARY_CACHE.get("ts", 0.0)) < _JOBS_SUMMARY_TTL_S:
+        return cached
+
+    assert state.store is not None
+    wall_now = _time.time()
+
+    # ----- by_status / by_mode / total (fast path when store exposes it)
+    fast_counts = getattr(state.store, "count_by_status_and_mode", None)
+    if callable(fast_counts):
+        by_status, by_mode, total = await fast_counts()
+    else:
+        by_status, by_mode, total = await _summary_python_count(None)
+
+    # ----- recent windows (1h, 24h)
+    recent: dict[str, dict] = {}
+    for hours in _JOBS_SUMMARY_RECENT_WINDOWS_H:
+        ts_cut = wall_now - hours * 3600
+        if callable(fast_counts):
+            rec_by_status, _rec_by_mode, rec_total = await fast_counts(
+                created_after_ts=ts_cut,
+            )
+        else:
+            rec_by_status, _rec_by_mode, rec_total = await _summary_python_count(ts_cut)
+        completed = rec_by_status.get("completed", 0)
+        failed = rec_by_status.get("failed", 0)
+        terminal = completed + failed
+        success_rate = (completed / terminal) if terminal > 0 else None
+        recent[f"recent_{hours}h"] = {
+            "created": rec_total,
+            "by_status": rec_by_status,
+            "success_rate": success_rate,
+        }
+
+    # ----- active section: running preview + queued count
+    queued_n = by_status.get("queued", 0)
+    running_n = by_status.get("running", 0)
+    running_preview: list[dict] = []
+    fast_list = getattr(state.store, "list_job_infos", None)
+    if callable(fast_list) and running_n > 0:
+        try:
+            infos, _ = await fast_list(
+                offset=0,
+                limit=_JOBS_SUMMARY_RUNNING_PREVIEW,
+                status=["running"],
+            )
+            for i in infos:
+                started = getattr(i, "started_at", None)
+                age_s: float | None = None
+                if started is not None:
+                    try:
+                        age_s = max(
+                            0.0,
+                            (datetime.now(timezone.utc) - started).total_seconds(),
+                        )
+                    except Exception:
+                        age_s = None
+                opts = getattr(i, "options", None)
+                if isinstance(opts, dict):
+                    mode = opts.get("mode") or "fetch"
+                else:
+                    mode = getattr(opts, "mode", "fetch") or "fetch"
+                running_preview.append({
+                    "job_id":     getattr(i, "job_id", ""),
+                    "url":        getattr(i, "url", ""),
+                    "mode":       mode,
+                    "worker_id":  getattr(i, "worker_id", "") or "",
+                    "lane_idx":   getattr(i, "lane_idx", None),
+                    "started_at": started.isoformat() if started else None,
+                    "age_s":      age_s,
+                })
+        except Exception:
+            running_preview = []
 
     result = {
-        "total": len(ids),
+        "as_of":     datetime.now(timezone.utc).isoformat(),
+        "total":     total,
         "by_status": by_status,
-        "by_mode": by_mode,
+        "by_mode":   by_mode,
+        **recent,
+        "active": {
+            "queued":          queued_n,
+            "running":         running_n,
+            "running_preview": running_preview,
+        },
     }
-    _JOBS_COUNTS_CACHE["ts"] = now
-    _JOBS_COUNTS_CACHE["value"] = result
+    _JOBS_SUMMARY_CACHE["ts"] = now
+    _JOBS_SUMMARY_CACHE["value"] = result
     return result
 
 

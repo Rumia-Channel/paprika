@@ -241,6 +241,61 @@ class PaprikaClient:
         data = await self._json("GET", "/sessions")
         return data.get("sessions", [])
 
+    async def jobs_summary(self) -> dict:
+        """GET /jobs/summary — dashboard-shaped overview of the job store.
+
+        Returns a dict with::
+
+            {
+              "as_of":     "2026-06-01T22:45:00Z",   # ISO UTC
+              "total":     3154,                      # all jobs in store
+              "by_status": {
+                "queued":    1,
+                "running":   6,
+                "completed": 1254,
+                "failed":    1881,
+                "cancelled": 12,
+              },
+              "by_mode": {
+                "fetch":         3010,
+                "codegen-loop":   103,
+                "rerun":            4,
+              },
+              "recent_1h":  {"created": N, "by_status": {...}, "success_rate": 0.93},
+              "recent_24h": {"created": M, "by_status": {...}, "success_rate": 0.91},
+              "active": {
+                "queued":  1,
+                "running": 6,
+                "running_preview": [
+                  {"job_id": "...", "url": "...", "mode": "fetch",
+                   "worker_id": "...", "lane_idx": 0,
+                   "started_at": "...", "age_s": 412.3},
+                  ...up to 5 rows
+                ],
+              },
+            }
+
+        ``success_rate`` is computed over terminal jobs only
+        (completed + failed); pending / running jobs aren't counted
+        in the denominator. ``None`` when no terminal jobs in the
+        window. Typical uses::
+
+            s = await cli.jobs_summary()
+            if s["by_status"]["queued"] > 100:
+                # queue backpressure: pause submission
+                ...
+            recent = s["recent_1h"]
+            if recent["created"] > 5 and (recent["success_rate"] or 1.0) < 0.7:
+                # alert: failure rate spike
+                ...
+
+        Cheap: the hub computes everything from store-side aggregates
+        (SQL ``GROUP BY status`` when MariaDB-backed) in <50ms at
+        100k+ rows, plus a 2-second server memo cache. Safe to poll
+        every few seconds for live dashboards.
+        """
+        return await self._json("GET", "/jobs/summary")
+
     # -- jobs ---------------------------------------------------------------
     #
     # The session API (above) drives a live browser. These wrap the hub's
