@@ -49,10 +49,18 @@ _TABLES: list[tuple[str, str]] = [
             completed_at  DATETIME(3),
             error         TEXT,
             progress      JSON,
-            INDEX idx_status     (status),
-            INDEX idx_created_at (created_at),
-            INDEX idx_worker_id  (worker_id),
-            INDEX idx_url_prefix (url(255))
+            INDEX idx_status         (status),
+            INDEX idx_created_at     (created_at),
+            INDEX idx_worker_id      (worker_id),
+            INDEX idx_url_prefix     (url(255)),
+            -- Composite indexes for "WHERE status=X ORDER BY created_at DESC
+            -- LIMIT N" / "WHERE mode=X ORDER BY created_at DESC LIMIT N"
+            -- which the admin UI hits on every status sub-tab switch. Without
+            -- these, MariaDB falls back to filesort over the full result of
+            -- the single-column status/mode index; at 2,000+ rows the
+            -- difference is ~500ms vs <10ms per query.
+            INDEX idx_status_created (status, created_at),
+            INDEX idx_mode_created   (mode, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
     ),
@@ -269,7 +277,8 @@ async def close_pool(pool: Any) -> None:
 # ---------------------------------------------------------------------------
 
 async def ensure_schema(pool: Any) -> list[str]:
-    """Run all CREATE TABLE IF NOT EXISTS statements.
+    """Run all CREATE TABLE IF NOT EXISTS statements + apply additive
+    schema migrations (new indexes etc.) to existing tables.
 
     Returns the list of table names that were ensured.
     """
@@ -279,7 +288,49 @@ async def ensure_schema(pool: Any) -> list[str]:
             for name, ddl in _TABLES:
                 await cur.execute(ddl)
                 created.append(name)
+    # Apply additive migrations after CREATE TABLE so they target the
+    # current schema. Run separately so a single failing migration
+    # doesn't block the rest.
+    await _apply_index_migrations(pool)
     return created
+
+
+# ---------------------------------------------------------------------------
+# Additive index migrations (idempotent)
+# ---------------------------------------------------------------------------
+#
+# When the DDL above grows a new INDEX, ``CREATE TABLE IF NOT EXISTS`` is
+# a no-op on an already-existing table -- so newly-added indexes are never
+# applied to legacy databases. This helper runs ``CREATE INDEX IF NOT
+# EXISTS`` (MariaDB 10.5+) for each composite/secondary index the codebase
+# now depends on. Each entry is (table, index_name, "(col, col, ...)")".
+
+_REQUIRED_INDEXES: list[tuple[str, str, str]] = [
+    # Speeds up "WHERE status=X ORDER BY created_at DESC LIMIT N" -- the
+    # admin UI's per-status sub-tab queries (全部/成功/エラー/実行中).
+    ("jobs", "idx_status_created", "(status, created_at)"),
+    # Same shape for "WHERE mode=X ORDER BY created_at DESC LIMIT N".
+    ("jobs", "idx_mode_created", "(mode, created_at)"),
+]
+
+
+async def _apply_index_migrations(pool: Any) -> None:
+    """Idempotently add any indexes listed in ``_REQUIRED_INDEXES`` that
+    don't already exist on the live schema. Safe to call on every
+    startup -- each CREATE INDEX is wrapped in IF NOT EXISTS, and
+    failures are logged but don't propagate."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for table, name, cols in _REQUIRED_INDEXES:
+                try:
+                    await cur.execute(
+                        f"CREATE INDEX IF NOT EXISTS `{name}` "
+                        f"ON `{table}` {cols}"
+                    )
+                except Exception as e:
+                    log.warning(
+                        "index migration %s.%s failed: %s", table, name, e,
+                    )
 
 
 async def table_counts(pool: Any) -> dict[str, int]:

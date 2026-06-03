@@ -1859,16 +1859,54 @@ async def list_jobs(
     """
     assert state.store is not None
     lim = max(0, min(int(limit or 0), 500))
+    off = max(0, int(offset or 0))
 
-    # When no filters and limit>0, push offset/limit into the store
-    # to avoid fetching all IDs from Redis.
+    # ------------------------------------------------------------------
+    # Fast path: MariaDBJobStore exposes a single-query bulk hydrate
+    # that pushes status/mode/url filtering + paging into SQL. Without
+    # this, every status sub-tab click triggered an N+1 walk: one query
+    # to list all 2,000+ ids + one query per id to hydrate -- ~2 s per
+    # click. The fast path collapses that to ~2 indexed queries (count +
+    # paged SELECT) running in <50 ms.
+    # ------------------------------------------------------------------
+    fast = getattr(state.store, "list_job_infos", None)
+    if callable(fast):
+        status_list = (
+            [s.strip().lower() for s in status.split(",") if s.strip()]
+            if status else None
+        )
+        mode_list = (
+            [m.strip().lower() for m in mode.split(",") if m.strip()]
+            if mode else None
+        )
+        infos, filtered_total = await fast(
+            offset=off,
+            limit=lim,
+            status=status_list,
+            mode=mode_list,
+            url_substr=q,
+        )
+        page = [_proxy_info(i, request) for i in infos]
+        return {
+            "total": filtered_total,
+            "count": len(page),
+            "offset": off,
+            "limit": lim,
+            "jobs": page,
+        }
+
+    # ------------------------------------------------------------------
+    # Slow path: in-memory / Redis stores fall through to the
+    # hydrate-then-filter-in-Python approach. Equivalent behaviour,
+    # acceptable cost when N is small.
+    # ------------------------------------------------------------------
     has_filter = bool(status or mode or q)
     if has_filter or lim == 0:
         ids = await state.store.list_job_ids()
         total_in_store = len(ids)
     else:
         total_in_store = await state.store.count_jobs()
-        ids = await state.store.list_job_ids(offset=offset, limit=lim)
+        ids = await state.store.list_job_ids(offset=off, limit=lim)
 
     # Hydrate
     infos: list[JobInfo] = []
@@ -1896,7 +1934,6 @@ async def list_jobs(
     filtered_total = len(infos)
 
     # Paginate (only when filters were applied client-side)
-    off = max(0, int(offset or 0))
     if has_filter:
         if lim > 0:
             page = infos[off : off + lim]
@@ -1974,6 +2011,23 @@ async def get_jobs_counts() -> dict:
         return cached
 
     assert state.store is not None
+
+    # Fast path: MariaDBJobStore aggregates with two GROUP BY queries
+    # (~10 ms each) instead of the N+1 hydrate walk. At 2,000+ rows
+    # the difference is ~2s → <20ms per /jobs/counts call.
+    fast = getattr(state.store, "count_by_status_and_mode", None)
+    if callable(fast):
+        by_status_f, by_mode_f, total_f = await fast()
+        result = {
+            "total": total_f,
+            "by_status": by_status_f,
+            "by_mode": by_mode_f,
+        }
+        _JOBS_COUNTS_CACHE["ts"] = now
+        _JOBS_COUNTS_CACHE["value"] = result
+        return result
+
+    # Slow path: in-memory / Redis stores walk + hydrate.
     ids = await state.store.list_job_ids()
     by_status: dict[str, int] = {}
     by_mode: dict[str, int] = {}

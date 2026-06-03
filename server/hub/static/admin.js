@@ -1800,14 +1800,14 @@ let _jobsPage = 0;
 let _jobsLastSig = '';
 // W: status filter for the Recent Jobs table. One of:
 //   'all' | 'completed' | 'failed' | 'running'
-// Persisted across page reloads so a debugging operator who switched
-// to "エラー" doesn't lose their context on F5.
+// Always defaults to "全部" (all) on page load -- operators expect
+// the Jobs tab to show everything when they navigate to it. A
+// previously-selected sub-tab filter is intentionally NOT restored
+// from localStorage (older behavior was confusing: the table looked
+// empty when the restored filter had no matches, making it seem
+// like the tab wasn't loading).
 const JOBS_STATUS_FILTER_KEY = 'paprika.jobs.statusFilter';
 let _jobsStatusFilter = 'all';
-try {
-  const _v = localStorage.getItem(JOBS_STATUS_FILTER_KEY);
-  if (_v && ['all','completed','failed','running'].includes(_v)) _jobsStatusFilter = _v;
-} catch (_) {}
 const JOBS_PAGE_SIZE_KEY = 'paprika.jobs.pageSize';
 const JOBS_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200];
 
