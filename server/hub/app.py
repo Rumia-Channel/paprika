@@ -67,6 +67,49 @@ from server.store import make_store
 _ADMIN_MODE = config.admin_mode
 
 
+async def _resolve_hub_id_from_host_ip(redis_client) -> str | None:
+    """Per-VM-unique hub_id derived from the host LAN IP as Redis sees it.
+
+    A bridge-net container's outbound traffic is SNAT'd to its host's LAN IP,
+    so Redis reports .35 / .36 (not the 172.x container IP) in ``CLIENT INFO``'s
+    ``addr`` field. This lets a CLONED hub VM auto-pick a distinct hub_id with
+    zero per-clone config -- just give the clone its own IP. Returns
+    ``hub-<last-octet>`` or None (caller then keeps the import-time default).
+    """
+    if redis_client is None:
+        return None
+    try:
+        import re
+
+        info = await redis_client.execute_command("CLIENT", "INFO")
+        addr = None
+        if isinstance(info, dict):
+            addr = info.get("addr") or info.get(b"addr")
+        else:
+            if isinstance(info, (bytes, bytearray)):
+                info = info.decode(errors="replace")
+            m = re.search(r"(?:^|\s)addr=(\S+)", str(info))
+            addr = m.group(1) if m else None
+        if isinstance(addr, (bytes, bytearray)):
+            addr = addr.decode(errors="replace")
+        if not addr:
+            return None
+        ip = str(addr).rsplit(":", 1)[0].strip("[]")
+        parts = ip.split(".")
+        if len(parts) != 4:
+            return None
+        o = [int(p) for p in parts]
+        # loopback / link-local / Docker-bridge (172.16/12) = NOT a host LAN IP
+        # (Redis co-located on this host) -> keep the import-time default.
+        if o[0] == 127 or (o[0] == 169 and o[1] == 254) or (
+            o[0] == 172 and 16 <= o[1] <= 31
+        ):
+            return None
+        return f"hub-{o[3]}"
+    except Exception:
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if _ADMIN_MODE:
@@ -258,6 +301,20 @@ async def lifespan(app: FastAPI):
     # records WS ownership in Redis (multi-hub foundation; dormant for
     # single hub).
     redis_client = getattr(state.store, "_r", None)
+    # Auto-derive a per-VM-unique hub_id from the host LAN IP (via Redis) when
+    # HUB_ID isn't explicitly pinned -- so a CLONED hub VM (just give it a new
+    # IP) becomes a distinct hub with no per-clone config. Resolved BEFORE the
+    # registries below consume config.hub_id. Falls back to the import-time
+    # default (hostname) when discovery isn't possible.
+    if not os.environ.get("HUB_ID"):
+        _derived = await _resolve_hub_id_from_host_ip(redis_client)
+        if _derived and _derived != config.hub_id:
+            log.info(
+                "hub_id auto-derived from host LAN IP: %s (was %s)",
+                _derived,
+                config.hub_id,
+            )
+            config.hub_id = _derived
     state.registry = WorkerRegistry(redis_client=redis_client, hub_id=config.hub_id)
     # Mirror the Session Map (sid -> worker/hub) to the same Redis so a
     # future Hub→Hub forwarding layer can route session actions across

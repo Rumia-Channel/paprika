@@ -77,6 +77,30 @@ async def _recover_orphan_running_jobs() -> int:
             return 0
     except Exception:
         pass
+    # Multi-hub safety (clone-safe): if ANY other hub is alive in the shared
+    # presence registry, this process is joining a LIVE cluster (e.g. a freshly
+    # cloned VM, or a peer hub starting up). The in-store "running" jobs then
+    # belong to live peers, NOT to a dead local orchestrator -- blanket-failing
+    # them would nuke the whole fleet's work. Skip; genuine dead-hub orphans are
+    # handled by the lease reaper (when leasing is on).
+    try:
+        if state.hubs is not None:
+            peers = [
+                h for h in await state.hubs.list_all()
+                if h.get("alive")
+                and not h.get("local")
+                and str(h.get("hub_id")) != config.hub_id
+            ]
+            if peers:
+                log.info(
+                    "recovery: %d live peer hub(s) present (%s) -> skipping "
+                    "blanket orphan recovery (multi-hub safety)",
+                    len(peers),
+                    ", ".join(str(h.get("hub_id")) for h in peers),
+                )
+                return 0
+    except Exception:
+        log.debug("recovery: peer-presence check failed", exc_info=True)
     # state.local_tasks is empty at this point (fresh process), so any
     # in-store "running" job is by definition an orphan.
     try:
