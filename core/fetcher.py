@@ -1760,7 +1760,7 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                 )
                 if assets_dir is not None and _is_cache_miss:
                     try:
-                        import httpx as _httpx
+                        from core.httpclient import make_async_client
 
                         # Pull cookies for the resource's domain out of
                         # Chrome so authenticated/region-locked assets work.
@@ -1786,7 +1786,7 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                                 "image/svg+xml,image/*,*/*;q=0.8"
                             ),
                         }
-                        async with _httpx.AsyncClient(
+                        async with make_async_client(
                             follow_redirects=True,
                             timeout=30.0,
                             headers=_fb_headers,
@@ -1813,7 +1813,7 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                                 f"resource_{len(result.assets_saved)}"
                             )
                             _fb_path = _unique_path(assets_dir, _fb_name)
-                            _fb_path.write_bytes(_data)
+                            await asyncio.to_thread(_fb_path.write_bytes, _data)
                             result.assets_saved.append({
                                 "name": _fb_path.name,
                                 "path": str(_fb_path.resolve()),
@@ -1877,7 +1877,7 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                 f"resource_{len(result.assets_saved)}"
             )
             path = _unique_path(assets_dir, name)  # type: ignore[arg-type]
-            path.write_bytes(data)
+            await asyncio.to_thread(path.write_bytes, data)
             result.assets_saved.append({
                 "name": path.name,
                 "path": str(path.resolve()),

@@ -83,7 +83,7 @@ async def _act_ask(agent, ctx: "_ActionCtx") -> None:
             f"Question: {question}\n"
             "Answer (yes or no):"
         )
-        import httpx as _httpx
+        from core.httpclient import make_async_client
 
         req_headers = {"Content-Type": "application/json"}
         if llm_api_key:
@@ -119,7 +119,7 @@ async def _act_ask(agent, ctx: "_ActionCtx") -> None:
             req_headers = {"Content-Type": "application/json"}
             body_req["model"] = llm_model
         try:
-            async with _httpx.AsyncClient(timeout=llm_timeout) as cli:
+            async with make_async_client(timeout=llm_timeout) as cli:
                 rr = await cli.post(
                     f"{llm_base}/v1/chat/completions",
                     headers=req_headers,
@@ -321,7 +321,7 @@ async def _act_extract_observe(agent, ctx: "_ActionCtx") -> None:
                 "Output (JSON array only):"
             )
 
-        import httpx as _httpx
+        from core.httpclient import make_async_client
         req_headers = {"Content-Type": "application/json"}
         if llm_api_key:
             req_headers["Authorization"] = f"Bearer {llm_api_key}"
@@ -339,7 +339,7 @@ async def _act_extract_observe(agent, ctx: "_ActionCtx") -> None:
         }
         answer_text = ""
         try:
-            async with _httpx.AsyncClient(timeout=llm_timeout) as cli:
+            async with make_async_client(timeout=llm_timeout) as cli:
                 rr = await cli.post(
                     f"{llm_base}/v1/chat/completions",
                     headers=req_headers,

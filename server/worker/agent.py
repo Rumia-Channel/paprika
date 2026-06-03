@@ -531,6 +531,81 @@ def _parse_dl_progress(line: str) -> dict | None:
     return None
 
 
+def _terminate_ytdlp_descendants() -> int:
+    """SIGTERM all yt-dlp/ffmpeg descendant processes of this worker.
+
+    Used by the _download_stream stall watchdog as a belt-and-braces
+    fallback when the inline/adapter Popen-loop kill gates fail to fire
+    (e.g. yt-dlp stops emitting progress lines entirely, so the in-
+    process parser never gets a chance to decide).  Killing the child
+    unblocks the asyncio.to_thread thread, which lets the worker's
+    event loop fire its heartbeat task again.
+
+    Linux-only (relies on /proc).  Returns the number of processes
+    signalled; returns 0 on non-Linux or when /proc is unavailable.
+    Defensive: any individual /proc read or os.kill failure is silently
+    ignored — best-effort by design.
+    """
+    if not os.path.exists("/proc"):
+        return 0
+    import signal as _sig
+    my_pid = os.getpid()
+    # PID -> (PPid, cmdline) for every process currently running.
+    procs: dict[int, tuple[int, str]] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                raw = f.read()
+            # comm is in (...) and can contain spaces / parens. The
+            # safest parse: take everything after the LAST ')'.
+            rp = raw.rfind(b")")
+            after = raw[rp + 2:].split()
+            ppid = int(after[1])
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace"
+                ).strip()
+            procs[pid] = (ppid, cmd)
+        except (OSError, ValueError, IndexError):
+            continue
+    # Build child index, then BFS descendants of my_pid.
+    children_of: dict[int, list[int]] = {}
+    for p, (pp, _) in procs.items():
+        children_of.setdefault(pp, []).append(p)
+    descendants: list[int] = []
+    seen: set[int] = set()
+    stack: list[int] = [my_pid]
+    while stack:
+        p = stack.pop()
+        for c in children_of.get(p, []):
+            if c in seen:
+                continue
+            seen.add(c)
+            descendants.append(c)
+            stack.append(c)
+    # SIGTERM ones whose cmdline names yt-dlp or ffmpeg. We don't touch
+    # chrome / chromedriver / curl — those are not the stall source and
+    # killing chrome would cascade the whole session.
+    killed = 0
+    for pid in descendants:
+        _, cmd = procs.get(pid, (0, ""))
+        if not cmd:
+            continue
+        if ("yt-dlp" in cmd) or ("/ffmpeg" in cmd) or cmd.split()[0].endswith("ffmpeg"):
+            try:
+                os.kill(pid, _sig.SIGTERM)
+                killed += 1
+            except OSError:
+                pass
+    return killed
+
 
 
 def _make_video_downloader(
@@ -979,6 +1054,54 @@ def _make_video_downloader(
         ok = False
         msg = ""
         new_files = []
+
+        # Stall watchdog (outer last-resort gate).  The inline run_ytdlp
+        # and the adapter both have their OWN in-process stall + min-
+        # rate gates parsing yt-dlp progress lines (see core/fetcher.py
+        # and data/tools/installed/paprika-ytdlp/adapter.py).  This
+        # watchdog catches cases those miss: progress lines stop
+        # arriving entirely (CDN dropped the connection but TCP read is
+        # still pending), or the adapter delegates to ffmpeg-direct
+        # which emits frame=/time= lines the yt-dlp regex doesn't cover.
+        # We don't replace the in-process gates -- they kill SOONER and
+        # produce a precise error message -- this is the safety net.
+        _wd_no_progress_s = float(
+            os.environ.get("PAPRIKA_YTDLP_WATCHDOG_S", "120")
+        )
+        # Initial grace before the watchdog starts firing: yt-dlp's
+        # "Resolving / Extracting" phase produces NO progress lines but
+        # is legitimate work.  Skip the first 30 s entirely.
+        _wd_grace_s = 30.0
+
+        async def _stall_watchdog() -> None:
+            # Sleep through the spawn / extractor grace period first.
+            try:
+                await asyncio.sleep(_wd_grace_s)
+            except asyncio.CancelledError:
+                return
+            while True:
+                try:
+                    await asyncio.sleep(15)
+                except asyncio.CancelledError:
+                    return
+                last = last_progress.get(target_url, 0.0)
+                if not last:
+                    # URL was popped (download finished or moved on).
+                    return
+                idle = time.time() - last
+                if idle <= _wd_no_progress_s:
+                    continue
+                killed = _terminate_ytdlp_descendants()
+                _both(
+                    f"  !! stall watchdog: no progress for {idle:.0f}s "
+                    f"(threshold {_wd_no_progress_s:.0f}s) -- "
+                    f"SIGTERM'd {killed} yt-dlp/ffmpeg descendant(s)"
+                )
+                # Stop after firing once per attempt.  If yt-dlp respawns
+                # itself the next per-referer iteration will spin a fresh
+                # watchdog.
+                return
+
         try:
             for _idx, _cand_ref in enumerate(referer_candidates):
                 if _idx > 0:
@@ -992,15 +1115,23 @@ def _make_video_downloader(
                         f"{(_cand_ref or '(none)')[:80]}"
                     )
                 last_progress[target_url] = time.time()
-                ok, msg = await asyncio.to_thread(
-                    run_ytdlp,
-                    target_url,
-                    assets_dir,
-                    _cand_ref or None,
-                    None,
-                    ytdlp_timeout,
-                    _ytdlp_log,
-                )
+                wd_task = asyncio.create_task(_stall_watchdog())
+                try:
+                    ok, msg = await asyncio.to_thread(
+                        run_ytdlp,
+                        target_url,
+                        assets_dir,
+                        _cand_ref or None,
+                        None,
+                        ytdlp_timeout,
+                        _ytdlp_log,
+                    )
+                finally:
+                    wd_task.cancel()
+                    try:
+                        await wd_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 after = {p.name for p in assets_dir.iterdir() if p.is_file()}
                 new_files = sorted(after - before)
                 if ok and new_files:
