@@ -366,20 +366,27 @@ async def make_store(
     redis_url: str | None,
     *,
     mariadb_pool: object | None = None,
+    storage_dir_fn: object | None = None,
 ) -> tuple[JobStore, str]:
     """Returns (store, kind). kind is 'mariadb', 'redis', or 'in-memory'.
 
     When *mariadb_pool* is provided (an ``aiomysql.Pool``), the hub
-    persists jobs/results/logs in MariaDB.  Live log pub/sub still
-    goes through Redis if *redis_url* is set (MariaDB has no native
-    pub/sub).
+    persists jobs/results in MariaDB and log lines on disk under
+    ``storage_dir_fn() / {job_id} / log.txt`` (so the largest table by
+    far -- ``job_logs`` -- doesn't grow unbounded).  Live log pub/sub
+    still goes through Redis if *redis_url* is set (MariaDB has no
+    native pub/sub).
     """
     # 1. MariaDB (preferred when pool is available)
     if mariadb_pool is not None:
         try:
             from server.hub.mariadb_store import MariaDBJobStore
 
-            store = MariaDBJobStore(mariadb_pool, redis_url=redis_url)
+            store = MariaDBJobStore(
+                mariadb_pool,
+                redis_url=redis_url,
+                storage_dir_fn=storage_dir_fn,
+            )
             await store.initialize()
             return store, "mariadb"
         except Exception as e:

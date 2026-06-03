@@ -499,6 +499,29 @@ async def mariadb_recover_jobs() -> dict:
         raise HTTPException(500, f"復旧失敗: {e}")
 
 
+@router.post("/settings/mariadb/migrate-logs-to-disk")
+async def mariadb_migrate_logs() -> dict:
+    """Flush rows from the MariaDB ``job_logs`` table to disk
+    (``{storage_dir}/{job_id}/log.txt``) so the table can be reclaimed.
+
+    Idempotent: skips jobs whose log.txt already has content (the disk
+    file is treated as authoritative because the codegen-loop has been
+    double-writing for some time) and DELETEs the migrated rows so a
+    re-run only sees what's left to do.
+
+    At 3K jobs the table was 365 MB with ~2M rows; this endpoint moves
+    that data to flat files under the SMB mount where it's served
+    directly via /jobs/{id}/log.txt with no DB round-trip.
+    """
+    from server.hub.log_migrate import migrate_logs_to_disk
+
+    pool = await _get_or_create_pool()
+    try:
+        return await migrate_logs_to_disk(pool, get_storage_dir)
+    except Exception as e:
+        raise HTTPException(500, f"ログ移行失敗: {e}")
+
+
 @router.get("/settings/mariadb/tables")
 async def mariadb_table_status() -> dict:
     """Return row counts for each MariaDB table."""

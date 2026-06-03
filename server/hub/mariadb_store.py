@@ -2,17 +2,28 @@
 
 When the operator configures MariaDB connection in the Settings tab,
 the hub uses this store instead of the Redis-backed one.  Live log
-pub/sub still uses Redis (MariaDB has no native pub/sub); all
-persistence (job info, results, logs) goes to MariaDB.
+pub/sub still uses Redis (MariaDB has no native pub/sub); job info /
+results go to MariaDB.
+
+Log lines go to **disk** (``{storage_dir}/{job_id}/log.txt``) rather
+than MariaDB. Logs are append-only telemetry that's either replayed
+sequentially (full log dump for ``GET /jobs/{id}/log.txt``) or
+streamed live via Redis pub/sub — never queried by range/filter — so
+a flat file matches the access pattern at constant cost regardless
+of total size. Pushing them out of MariaDB also unloads the largest
+table by far (at ~3K jobs the ``job_logs`` table was already 365 MB
+of ~2M rows — at 200K jobs it would be tens of GB).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
@@ -22,13 +33,28 @@ class MariaDBJobStore:
 
     ``pool`` is an ``aiomysql.Pool``.
     ``redis_url`` is optional; when given, live log pub/sub uses Redis.
+    ``storage_dir_fn`` is a zero-arg callable returning the current
+    storage root (resolved late so SMB remounts are picked up). When
+    provided, log lines persist to ``{root}/{job_id}/log.txt`` instead
+    of the MariaDB ``job_logs`` table.
     """
 
-    def __init__(self, pool: Any, redis_url: str | None = None) -> None:
+    def __init__(
+        self,
+        pool: Any,
+        redis_url: str | None = None,
+        storage_dir_fn: Callable[[], Path] | None = None,
+    ) -> None:
         self._pool = pool
         self._redis_url = redis_url
+        self._storage_dir_fn = storage_dir_fn
         self._r: Any = None          # redis.asyncio.Redis (for pub/sub)
         self._pubsub_r: Any = None   # separate client for subscribe
+        # Per-job asyncio.Lock so concurrent appenders to the same
+        # file serialise their writes (POSIX append is line-atomic only
+        # below PIPE_BUF; long log lines from codegen scripts can exceed
+        # that). Locks evict naturally when the job is deleted.
+        self._log_locks: dict[str, asyncio.Lock] = {}
 
     async def initialize(self) -> None:
         # Test MariaDB connectivity
@@ -259,10 +285,32 @@ class MariaDBJobStore:
     async def delete_job(self, job_id: str) -> bool:
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:
-                # CASCADE deletes job_results + job_logs
+                # CASCADE deletes job_results + (any remaining legacy)
+                # job_logs rows. The disk-backed log.txt is cleaned up
+                # separately below.
                 await cur.execute(
                     "DELETE FROM jobs WHERE job_id=%s", (job_id,))
-                return cur.rowcount > 0
+                deleted = cur.rowcount > 0
+        # Best-effort: drop the per-job log file and evict its lock.
+        # Failure to unlink is logged but not raised — the rest of the
+        # job directory (assets, page.html, ...) is the operator's
+        # responsibility to GC via the storage-side tooling.
+        path = self._log_path(job_id)
+        if path is not None:
+            try:
+                await asyncio.to_thread(path.unlink, True)  # missing_ok=True
+            except TypeError:
+                # Python <3.8 fallback
+                try:
+                    await asyncio.to_thread(path.unlink)
+                except FileNotFoundError:
+                    pass
+                except Exception as e:
+                    log.debug("unlink %s: %s", path, e)
+            except Exception as e:
+                log.debug("unlink %s: %s", path, e)
+        self._log_locks.pop(job_id, None)
+        return deleted
 
     # ------------------------------------------------------------------ #
     # Job result
@@ -349,10 +397,54 @@ class MariaDBJobStore:
     # Log lines
     # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+    # Log persistence — disk-backed when storage_dir_fn is configured,
+    # falls back to the legacy MariaDB job_logs table otherwise.
+    # ------------------------------------------------------------------ #
+
+    def _log_path(self, job_id: str) -> Path | None:
+        """Return ``{storage_dir}/{job_id}/log.txt`` or None if no
+        storage root is configured (caller falls back to MariaDB)."""
+        if self._storage_dir_fn is None:
+            return None
+        try:
+            return Path(self._storage_dir_fn()) / job_id / "log.txt"
+        except Exception:
+            return None
+
+    def _log_lock(self, job_id: str) -> asyncio.Lock:
+        lock = self._log_locks.get(job_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._log_locks[job_id] = lock
+        return lock
+
+    @staticmethod
+    def _sync_append(path: Path, lines: list[str]) -> None:
+        """Blocking append — runs inside ``asyncio.to_thread`` so SMB
+        latency doesn't stall the event loop. Opens with line buffering
+        so partial writes flush even when many short lines arrive."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8", buffering=1) as f:
+            for line in lines:
+                if not line.endswith("\n"):
+                    line = line + "\n"
+                f.write(line)
+
+    @staticmethod
+    def _sync_read(path: Path) -> list[str]:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return [ln.rstrip("\n") for ln in f]
+
     async def append_log_line(self, job_id: str, line: str) -> None:
+        path = self._log_path(job_id)
+        if path is not None:
+            async with self._log_lock(job_id):
+                await asyncio.to_thread(self._sync_append, path, [line])
+            return
+        # Legacy fallback: MariaDB job_logs table (in-memory / test only).
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:
-                # Get next line_num
                 await cur.execute(
                     "SELECT COALESCE(MAX(line_num), -1) + 1 "
                     "FROM job_logs WHERE job_id=%s", (job_id,))
@@ -363,16 +455,21 @@ class MariaDBJobStore:
                     "VALUES (%s, %s, %s)", (job_id, next_num, line))
 
     async def append_log_lines(self, job_id: str, lines: list[str]) -> None:
-        """Batch-append log lines in a single multi-row INSERT.
+        """Batch-append log lines.
 
         Used by the LogBatcher so the worker WS receive loop is not blocked
-        on a per-line ``SELECT MAX + INSERT`` round-trip. ``line_num``
-        continues from the current MAX, computed once for the whole batch
-        (the batcher serialises flushes per job_id, so there is no
-        concurrent appender racing the same job's counter).
+        on a per-line round-trip. With disk storage this becomes a single
+        ``write()`` call per batch (POSIX coalesces buffered IO); with the
+        MariaDB fallback the batch becomes one multi-row INSERT.
         """
         if not lines:
             return
+        path = self._log_path(job_id)
+        if path is not None:
+            async with self._log_lock(job_id):
+                await asyncio.to_thread(self._sync_append, path, lines)
+            return
+        # Legacy fallback: MariaDB job_logs table.
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -386,13 +483,38 @@ class MariaDBJobStore:
                     [(job_id, base + i, ln) for i, ln in enumerate(lines)])
 
     async def get_log_lines(self, job_id: str) -> list[str]:
-        async with self._pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT line FROM job_logs WHERE job_id=%s "
-                    "ORDER BY line_num", (job_id,))
-                rows = await cur.fetchall()
-        return [r[0] for r in rows]
+        """Return the full log for a job, newest-format first then
+        legacy MariaDB rows. Disk is the primary store; rows still
+        present in ``job_logs`` (jobs that ran before this migration)
+        are concatenated AFTER the file content. The migration helper
+        ``server.hub.log_migrate.migrate_logs_to_disk()`` flushes the
+        table; once that's run on all live jobs the table can be
+        truncated."""
+        # Disk first.
+        path = self._log_path(job_id)
+        disk_lines: list[str] = []
+        if path is not None and path.exists():
+            try:
+                disk_lines = await asyncio.to_thread(self._sync_read, path)
+            except Exception as e:
+                log.warning("read log file %s failed: %s", path, e)
+        # MariaDB legacy rows (empty after migration).
+        db_lines: list[str] = []
+        try:
+            async with self._pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT line FROM job_logs WHERE job_id=%s "
+                        "ORDER BY line_num", (job_id,))
+                    rows = await cur.fetchall()
+            db_lines = [r[0] for r in rows]
+        except Exception as e:
+            log.debug("read job_logs %s failed: %s", job_id, e)
+        # Disk wins when both have content (post-migration, MariaDB
+        # should be empty for any job whose file exists).
+        if disk_lines:
+            return disk_lines
+        return db_lines
 
     # ------------------------------------------------------------------ #
     # Pub/Sub  (delegated to Redis — MariaDB has no native pub/sub)

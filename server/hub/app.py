@@ -215,7 +215,14 @@ async def lifespan(app: FastAPI):
         log.warning("engines: default pricing seed crashed: %s: %s", type(_e).__name__, _e)
 
     state.store, state.store_kind = await make_store(
-        config.redis_url, mariadb_pool=_mdb_pool,
+        config.redis_url,
+        mariadb_pool=_mdb_pool,
+        # When the MariaDB store activates, log lines persist on disk
+        # under {storage_dir}/{job_id}/log.txt instead of the
+        # ``job_logs`` table. Passing the callable rather than the
+        # resolved path lets the store pick up SMB (re-)mounts on each
+        # write without a restart.
+        storage_dir_fn=get_storage_dir,
     )
     state._local_sem = asyncio.Semaphore(config.max_concurrent_jobs)
 
