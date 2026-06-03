@@ -1,6 +1,8 @@
 # Dedicated admin service + MariaDB-centric config — implementation plan
 
-Status: PLAN (Phase A in progress on branch `feat/admin-service`). 2026-06-03.
+Status: single-URL goal SHIPPED via a router/compute split (see "Deployed
+topology" below); Phase B (config write-through + invalidation) is the next
+focused effort; Phase C (blobs → MariaDB/MinIO) deferred. Updated 2026-06-04.
 
 ## Goal
 
@@ -24,20 +26,44 @@ WS / job dispatch / reapers.
 | **MinIO/S3** (`10.10.50.16:9100`) | job-output media only: page.html, assets (images/video), bulk log.txt. Each hub writes **direct** (no hub→hub relay) |
 | **Redis** (`10.10.50.34:6379`) | coordination only: session map, worker ownership, hub presence, leases, **cache-invalidation pub/sub** |
 
-## Current state (verified 2026-06-03)
+## Current state
+
+### Deployed topology (2026-06-04)
+
+The single-URL goal shipped as a **router / compute split** rather than a
+separate `--mode admin` process:
+
+- **`.34` = router only**: nginx (`hubs` / `hubs_sticky` upstreams) + redis +
+  the **nginx reconciler** (`scripts/nginx_reconciler.py`, `docker-compose.reconciler.yml`)
+  + agent. The ONE admin/API URL is `http://10.10.50.34:8000`; nginx proxies it
+  to any live hub, and because the hubs share redis + MariaDB the admin UI shows
+  the whole cluster from whichever hub answers — so "N hubs" is still one admin
+  screen.
+- **`.35`/`.36`/`.37` = compute hubs** (`hub-hub-a-1`); `.36`/`.37` are Proxmox
+  clones of `.35`. **Clone-safe**: `hub_id` auto-derives from the host LAN IP
+  (`app.py:_host_lan_ip_via_redis` via redis `CLIENT INFO addr`) so a clone just
+  needs its own IP — no per-clone config. Each hub publishes that IP in its
+  presence row; the reconciler auto-syncs nginx upstreams to the live set.
+- **Multi-hub safety shipped**: the orphan-recovery nuke is skipped when a live
+  peer hub is present (`_reaper.py`), and cross-host session / noVNC forwarding
+  resolves peers from the IP-encoded `hub_id` (`sessions.py:_hub_internal_url`).
+- `--mode admin` (`__main__.py` + `app.py` `_ADMIN_MODE` gates) is **coded but
+  dormant** — kept as an option if the hubs-behind-nginx admin ever needs to be
+  carved off onto its own process.
+
+### Stores (verified 2026-06-03)
 
 - MariaDB `.20` is ALREADY the live job store (`store=mariadb`) and restores
   skills/conventions/engines/presets/hosts from it at boot
-  (`server/hub/app.py` lifespan L99-189, `server/hub/mariadb.py`).
+  (`server/hub/app.py` lifespan, `server/hub/mariadb.py`).
 - **engines already has live write-through** to MariaDB
-  (`routes/engines.py:399` `saved = er.upsert(rec); await _mdb_upsert(saved)`) —
+  (`routes/engines.py` `saved = er.upsert(rec); await _mdb_upsert(saved)`) —
   the template to replicate for the other registries.
-- Admin UI JS is **origin-relative** and already multi-hub aware (Hubs tab), so
-  the same static bundle works served by an admin process.
-- Gaps: runtime write-through missing for skills/conventions/presets/hosts/
-  visited/settings; no `settings`/`extensions`/`profiles` MariaDB tables; no
-  cross-hub cache invalidation; `--mode admin` not carved out; profiles/
-  extensions are file blobs distributed by WS push.
+- Admin UI JS is **origin-relative** and multi-hub aware (Hubs tab).
+- **Remaining gaps (Phase B/C)**: runtime write-through missing for
+  skills/conventions/presets/hosts/visited/settings; no `settings` /
+  `extensions` / `profiles` MariaDB tables; no cross-hub cache invalidation;
+  profiles/extensions still file blobs distributed by WS push.
 
 ## Phases
 
