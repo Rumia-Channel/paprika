@@ -1025,6 +1025,29 @@ class HubProfileDelete(BaseModel):
     name: str
 
 
+class HubSessionInteraction(BaseModel):
+    """Notify the worker that an operator is actively driving a session
+    via noVNC (RFB KeyEvent / PointerEvent / ClientCutText detected
+    on the hub's noVNC WS bridge).
+
+    Used by the worker's yt-dlp stall-detection gates (inline /
+    adapter Popen loops + parent watchdog task) to DEFER the kill
+    while a human is interacting with the lane's Chrome -- the
+    operator's wishes outrank the automatic "too slow" verdict
+    (evidence preservation > throughput). Protection lifts naturally
+    ~60 seconds after the last interaction since the hub throttles
+    these pushes to once per 10s.
+
+    ``ts`` is the hub-side time.time() at which the RFB activity was
+    observed. Workers compare against their own clock; small skew is
+    fine because the grace window is 60s.
+    """
+
+    type: Literal["session_interaction"] = "session_interaction"
+    session_id: str
+    ts: float
+
+
 HubToWorkerMsg = Annotated[
     Union[
         HubAssignJob,
@@ -1038,6 +1061,7 @@ HubToWorkerMsg = Annotated[
         HubSessionAgent,
         HubProfileSync,
         HubProfileDelete,
+        HubSessionInteraction,
     ],
     Field(discriminator="type"),
 ]

@@ -581,6 +581,8 @@ def run_ytdlp(
     timeout: int = 600,
     log: LogFn = default_log,
     cookies_file: Optional[Path] = None,
+    *,
+    is_protected: Optional[Callable[[], bool]] = None,
 ) -> tuple[bool, str]:
     """Shell out to yt-dlp. Returns (success, last lines of log).
 
@@ -597,6 +599,14 @@ def run_ytdlp(
     The cookies.txt is built hub-side from the /hosts/{host}
     registry (plaintext cookies pushed via the Paprika Bridge
     extension), so it sidesteps all browser-cookie decryption.
+
+    ``is_protected``: optional callable returning True if the stall +
+    min-rate kill gates should DEFER killing for the next progress-
+    line cycle. Used to honour noVNC operator interaction: when the
+    operator is actively driving the lane via noVNC, the agent's
+    callback returns True so we reset the stall / rate timers instead
+    of killing yt-dlp. Forwarded to the adapter via ``_is_protected_fn``.
+    None == legacy behaviour (gates kill on the regular timers).
     """
     # ------------------------------------------------------------------
     # Plugin-adapter path (preferred)
@@ -620,16 +630,22 @@ def run_ytdlp(
             user_agent=_BROWSER_USER_AGENT,
             impersonate="chrome" if _has_curl_cffi else None,
             _log_fn=log,
+            _is_protected_fn=is_protected,
         )
         try:
             result = adapter.download(**kwargs)
         except TypeError:
-            # Older adapter without user_agent/impersonate params
-            # (remote workers auto-update core/ but data/tools/ may
-            # lag behind).
-            kwargs.pop("user_agent", None)
-            kwargs.pop("impersonate", None)
-            result = adapter.download(**kwargs)
+            # Older adapter without user_agent / impersonate /
+            # _is_protected_fn params (remote workers auto-update core/
+            # but data/tools/ may lag behind during rolling upgrades).
+            # Strip the newest kwargs in reverse age order and retry.
+            kwargs.pop("_is_protected_fn", None)
+            try:
+                result = adapter.download(**kwargs)
+            except TypeError:
+                kwargs.pop("user_agent", None)
+                kwargs.pop("impersonate", None)
+                result = adapter.download(**kwargs)
         ok, msg = result["ok"], result["message"]
         # If the adapter failed with a Cloudflare anti-bot error and
         # curl_cffi is available, fall through to the inline path
@@ -789,18 +805,42 @@ def run_ytdlp(
                 # Parse progress + rate from this line, if any.
                 pct, rate_kibs = _parse_ytdlp_progress_line(line)
 
+                # noVNC operator priority: a callback returning True
+                # means a human is actively driving this session via
+                # noVNC; defer kill, reset both gate timers, keep going.
+                # Evidence preservation > throughput when somebody is
+                # literally watching.
+                _is_protected_now = False
+                try:
+                    if is_protected is not None and is_protected():
+                        _is_protected_now = True
+                except Exception:
+                    pass
+
                 # ---- Stall gate (percentage didn't advance) ----
                 if _no_progress_s > 0 and pct is not None:
                     if _last_pct is None or pct - _last_pct >= 0.1:
                         _last_pct = pct
                         _last_pct_at = now_m
                     elif now_m - _last_pct_at > _no_progress_s:
-                        proc.kill()
-                        return False, (
-                            f"stalled: download stuck at {_last_pct:.1f}% "
-                            f"for {_no_progress_s:.0f}s "
-                            f"(PAPRIKA_YTDLP_NO_PROGRESS_S)"
-                        )
+                        if _is_protected_now:
+                            # Operator interacting -- reset the stall
+                            # anchor and continue. Log once at INFO so
+                            # the operator can see protection engaged.
+                            log(
+                                f"  -- stall gate: deferred kill "
+                                f"({_last_pct:.1f}% for "
+                                f"{now_m - _last_pct_at:.0f}s) — "
+                                f"noVNC operator is interacting"
+                            )
+                            _last_pct_at = now_m
+                        else:
+                            proc.kill()
+                            return False, (
+                                f"stalled: download stuck at {_last_pct:.1f}% "
+                                f"for {_no_progress_s:.0f}s "
+                                f"(PAPRIKA_YTDLP_NO_PROGRESS_S)"
+                            )
 
                 # ---- Min-rate gate (download too slow for too long) ----
                 if _min_rate_kibs > 0 and rate_kibs is not None:
@@ -808,13 +848,22 @@ def run_ytdlp(
                         if _slow_rate_since is None:
                             _slow_rate_since = now_m
                         elif now_m - _slow_rate_since > _min_rate_grace_s:
-                            proc.kill()
-                            return False, (
-                                f"too slow: {rate_kibs:.1f} KiB/s < "
-                                f"{_min_rate_kibs:.0f} KiB/s for "
-                                f"{_min_rate_grace_s:.0f}s "
-                                f"(PAPRIKA_YTDLP_MIN_RATE_KIBS / GRACE_S)"
-                            )
+                            if _is_protected_now:
+                                log(
+                                    f"  -- rate gate: deferred kill "
+                                    f"({rate_kibs:.1f} KiB/s for "
+                                    f"{now_m - _slow_rate_since:.0f}s) — "
+                                    f"noVNC operator is interacting"
+                                )
+                                _slow_rate_since = now_m
+                            else:
+                                proc.kill()
+                                return False, (
+                                    f"too slow: {rate_kibs:.1f} KiB/s < "
+                                    f"{_min_rate_kibs:.0f} KiB/s for "
+                                    f"{_min_rate_grace_s:.0f}s "
+                                    f"(PAPRIKA_YTDLP_MIN_RATE_KIBS / GRACE_S)"
+                                )
                     else:
                         # Rate recovered above the floor; reset the grace.
                         _slow_rate_since = None

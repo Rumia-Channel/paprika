@@ -8,6 +8,7 @@ sends heartbeats, picks up assigned jobs, and reports completion.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import random
@@ -42,6 +43,7 @@ from server.protocol import (
     HubSessionAction,
     HubSessionAgent,
     HubSessionEnd,
+    HubSessionInteraction,
     HubSessionStart,
     JobOptions,
     JobResult,
@@ -530,6 +532,57 @@ def _parse_dl_progress(line: str) -> dict | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# noVNC operator-interaction tracker.
+#
+# Updated by the WS handler for HubSessionInteraction (sent by the hub
+# whenever its noVNC RFB tap sees a real KeyEvent / PointerEvent /
+# ClientCutText -- throttled to once per 10s by the hub side).
+#
+# Consumed by the yt-dlp stall-detection gates:
+#   - core/fetcher.py inline run_ytdlp (Layer 1)
+#   - data/tools/installed/paprika-ytdlp/adapter.py (Layer 2)
+#   - _stall_watchdog in _download_stream below (Layer 3)
+# All three call ``is_session_protected(session_id)`` before issuing a
+# kill; True == operator is at the keyboard, defer the kill (reset the
+# relevant timer and keep going). Protection lifts automatically
+# ``PAPRIKA_NOVNC_PROTECTION_S`` seconds after the last interaction
+# (default 60s: 6x the hub throttle so a stretch of mouse-idle within
+# normal interactive work doesn't drop protection).
+#
+# Sessions for which we never received a ping behave exactly as before
+# (no protection -- the gates kill on the regular timers). Hub crash
+# during interaction is self-healing: pings stop, protection expires.
+# ---------------------------------------------------------------------------
+_session_interaction_at: dict[str, float] = {}
+
+# Grace window in seconds. Env-overridable; 0 disables protection entirely
+# (= back to pre-noVNC-priority behaviour where stalls kill regardless of
+# operator presence).
+_NOVNC_PROTECTION_S = float(
+    os.environ.get("PAPRIKA_NOVNC_PROTECTION_S", "60")
+)
+
+
+def is_session_protected(session_id: str | None) -> bool:
+    """Return True if the operator interacted with ``session_id`` via
+    noVNC within the protection window. Used by all three stall gates
+    to defer a kill.
+
+    Defensive: a None session_id, an unknown session, or a disabled
+    window (= 0) all return False -- meaning "no protection, behave
+    as the regular timers say".
+    """
+    if not session_id:
+        return False
+    if _NOVNC_PROTECTION_S <= 0:
+        return False
+    last = _session_interaction_at.get(session_id, 0.0)
+    if last <= 0:
+        return False
+    return (time.time() - last) < _NOVNC_PROTECTION_S
+
+
 def _terminate_ytdlp_descendants() -> int:
     """SIGTERM all yt-dlp/ffmpeg descendant processes of this worker.
 
@@ -626,6 +679,13 @@ def _make_video_downloader(
     #              then the IFRAME url, which the CDN often rejects --
     #              the top page url is the referer it actually expects.
     user_agent: str | None = None,  # real Chrome UA from cdp.browser.get_version()
+    session_id: str | None = None,  # optional: enables noVNC operator-
+    #              interaction protection. When set, the closure builds
+    #              an is_protected callback the inline/adapter/watchdog
+    #              gates consult before killing yt-dlp -- so an operator
+    #              actively driving the lane via noVNC outranks the
+    #              automatic "too slow / stalled" verdict. None falls
+    #              back to the regular timer behaviour.
 ):
     """Return ``(maybe_download, drain)`` closures.
 
@@ -1054,6 +1114,17 @@ def _make_video_downloader(
         msg = ""
         new_files = []
 
+        # noVNC operator-priority override. When an operator is actively
+        # driving this session via noVNC (KeyEvent / PointerEvent /
+        # ClientCutText seen on the hub-side RFB tap within the last
+        # PAPRIKA_NOVNC_PROTECTION_S seconds, default 60s), all three
+        # stall gates -- this watchdog plus the inline + adapter Popen
+        # gates -- defer the kill. Evidence preservation outranks the
+        # automatic "too slow" verdict when a human is literally watching.
+        # ``session_id`` is the closure capture from _make_video_downloader.
+        def _is_session_protected() -> bool:
+            return is_session_protected(session_id)
+
         # Stall watchdog (outer last-resort gate).  The inline run_ytdlp
         # and the adapter both have their OWN in-process stall + min-
         # rate gates parsing yt-dlp progress lines (see core/fetcher.py
@@ -1090,6 +1161,22 @@ def _make_video_downloader(
                 idle = time.time() - last
                 if idle <= _wd_no_progress_s:
                     continue
+                # noVNC operator priority: someone is at the keyboard;
+                # don't override their wishes with the automatic kill.
+                # Log once so the operator sees the deferral in the Live
+                # panel and knows the watchdog isn't broken.
+                if _is_session_protected():
+                    _both(
+                        f"  -- stall watchdog: deferred kill ({idle:.0f}s "
+                        f"idle) — noVNC operator is interacting"
+                    )
+                    # Reset the comparison anchor so the next deferral
+                    # log doesn't fire every 15s while interaction
+                    # continues. As soon as operator stops touching,
+                    # protection lapses and the next tick (after another
+                    # _wd_no_progress_s seconds of true idle) will kill.
+                    last_progress[target_url] = time.time()
+                    continue
                 killed = _terminate_ytdlp_descendants()
                 _both(
                     f"  !! stall watchdog: no progress for {idle:.0f}s "
@@ -1116,14 +1203,20 @@ def _make_video_downloader(
                 last_progress[target_url] = time.time()
                 wd_task = asyncio.create_task(_stall_watchdog())
                 try:
+                    # is_protected is keyword-only; older core/fetcher.py
+                    # (pre-noVNC-priority) ignores it, newer one uses it
+                    # in the inline gates and forwards to the adapter.
                     ok, msg = await asyncio.to_thread(
-                        run_ytdlp,
-                        target_url,
-                        assets_dir,
-                        _cand_ref or None,
-                        None,
-                        ytdlp_timeout,
-                        _ytdlp_log,
+                        functools.partial(
+                            run_ytdlp,
+                            target_url,
+                            assets_dir,
+                            _cand_ref or None,
+                            None,
+                            ytdlp_timeout,
+                            _ytdlp_log,
+                            is_protected=_is_session_protected,
+                        )
                     )
                 finally:
                     wd_task.cancel()
@@ -3109,6 +3202,18 @@ class WorkerAgent:
         if isinstance(msg, HubProfileDelete):
             asyncio.create_task(self._handle_profile_delete(msg))
             return
+        if isinstance(msg, HubSessionInteraction):
+            # Record that the operator is actively driving this session
+            # via noVNC. The yt-dlp stall-detection gates consult
+            # is_session_protected(session_id) before killing -- as long
+            # as pings keep arriving (= human is moving the mouse /
+            # typing), kills are deferred. Cheap dict write; no async
+            # work to schedule.
+            try:
+                _session_interaction_at[msg.session_id] = float(msg.ts) or time.time()
+            except Exception:
+                pass
+            return
         # HubCancelJob: not yet implemented (Phase 3.x)
         # HubPing: respond via heartbeat already
 
@@ -3393,6 +3498,7 @@ class WorkerAgent:
                 log=lambda s: _logger.info(f"[session {sid}] {s}"),
                 job_id_for_logs=f"session-{sid}",
                 job_log=_maybe_send_job_log,
+                session_id=sid,
                 # Top-level page URL referer fallback for cross-origin
                 # iframe player streams (e.g. supjav's supremejav iframe).
                 # state.last_response tracks the most recent top-level
@@ -4257,6 +4363,7 @@ class WorkerAgent:
                 on_saved=_on_session_video_saved,
                 log=lambda s: _slog(s),
                 job_id_for_logs=f"session-{sid}",
+                session_id=sid,
                 page_url_provider=lambda: (
                     (state.last_response or {}).get("url")
                     if isinstance(getattr(state, "last_response", None), dict)

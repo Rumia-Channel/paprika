@@ -37,7 +37,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from fastapi.responses import Response, StreamingResponse
 
 from server.hub._state import config, state
-from server.protocol import JobInfo
+from server.protocol import HubSessionInteraction, JobInfo
 
 router = APIRouter(tags=["noVNC"])
 
@@ -520,6 +520,34 @@ async def _proxy_novnc_websocket(
         # mutating job state.
         try:
             state.sessions.touch(session_id)
+        except Exception:
+            pass
+
+        # Forward the activity ping to the worker that owns this session
+        # so its yt-dlp stall-detection gates (inline / adapter / parent
+        # watchdog) defer the kill while a human is actively driving the
+        # lane. Operator authority outranks the "too slow" verdict --
+        # evidence preservation matters more than throughput when somebody
+        # is literally watching. Throttle is shared with state.sessions
+        # .touch above (one push per 10 s), and the worker's protection
+        # window (default 60 s) is long enough to span normal mouse-idle
+        # gaps without going stale. Best-effort: every failure mode here
+        # is silent so a temporarily-unreachable worker never breaks the
+        # noVNC bridge itself.
+        try:
+            if state.registry is not None and state.sessions is not None:
+                _sinfo = state.sessions.get(session_id)
+                if _sinfo is not None and _sinfo.worker_id:
+                    _wconn = state.registry.connections.get(_sinfo.worker_id)
+                    if _wconn is not None:
+                        import time as _time2
+                        _msg = HubSessionInteraction(
+                            session_id=session_id,
+                            ts=_time2.time(),
+                        )
+                        # Fire-and-forget: don't wait for the round-trip
+                        # so RFB bytes keep flowing at viewer cadence.
+                        asyncio.create_task(_wconn.send(_msg))
         except Exception:
             pass
 

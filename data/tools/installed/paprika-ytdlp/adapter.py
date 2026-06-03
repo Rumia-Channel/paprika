@@ -128,6 +128,13 @@ def download(
     # Not in plugin.json schema — only used when imported directly from
     # fetcher.py so the caller gets live streaming log lines.
     _log_fn: LogFn | None = None,
+    # noVNC operator priority callback. core/fetcher.py forwards a
+    # closure here that returns True while an operator is actively
+    # driving the parent session via noVNC; when True, the stall +
+    # min-rate kill gates DEFER (= reset timers) instead of killing
+    # yt-dlp. Evidence preservation outranks the automatic verdict
+    # when a human is at the keyboard. None = legacy behaviour.
+    _is_protected_fn: "Callable[[], bool] | None" = None,
 ) -> dict:
     """Download a video via yt-dlp.
 
@@ -304,20 +311,43 @@ def download(
                 # Parse progress + rate from this line, if any.
                 pct, rate_kibs = _parse_ytdlp_progress_line(line)
 
+                # noVNC operator priority. If the caller wired up an
+                # _is_protected_fn that currently returns True, an
+                # operator is actively driving the session via noVNC
+                # and we DEFER any kill -- reset the relevant gate
+                # timers and keep going. Evidence preservation outranks
+                # the automatic "too slow / stalled" verdict when a
+                # human is literally watching.
+                _is_protected_now = False
+                if _is_protected_fn is not None:
+                    try:
+                        _is_protected_now = bool(_is_protected_fn())
+                    except Exception:
+                        _is_protected_now = False
+
                 # ---- Stall gate (percentage didn't advance) ----
                 if _no_progress_s > 0 and pct is not None:
                     if _last_pct is None or pct - _last_pct >= 0.1:
                         _last_pct = pct
                         _last_pct_at = now_m
                     elif now_m - _last_pct_at > _no_progress_s:
-                        proc.kill()
-                        msg = (
-                            f"stalled: download stuck at {_last_pct:.1f}% "
-                            f"for {_no_progress_s:.0f}s "
-                            f"(PAPRIKA_YTDLP_NO_PROGRESS_S)"
-                        )
-                        _log(f"  !! {msg}")
-                        return {"ok": False, "message": msg, "log_lines": lines}
+                        if _is_protected_now:
+                            _log(
+                                f"  -- stall gate: deferred kill "
+                                f"({_last_pct:.1f}% for "
+                                f"{now_m - _last_pct_at:.0f}s) — "
+                                f"noVNC operator is interacting"
+                            )
+                            _last_pct_at = now_m
+                        else:
+                            proc.kill()
+                            msg = (
+                                f"stalled: download stuck at {_last_pct:.1f}% "
+                                f"for {_no_progress_s:.0f}s "
+                                f"(PAPRIKA_YTDLP_NO_PROGRESS_S)"
+                            )
+                            _log(f"  !! {msg}")
+                            return {"ok": False, "message": msg, "log_lines": lines}
 
                 # ---- Min-rate gate (download too slow for too long) ----
                 if _min_rate_kibs > 0 and rate_kibs is not None:
@@ -325,15 +355,24 @@ def download(
                         if _slow_rate_since is None:
                             _slow_rate_since = now_m
                         elif now_m - _slow_rate_since > _min_rate_grace_s:
-                            proc.kill()
-                            msg = (
-                                f"too slow: {rate_kibs:.1f} KiB/s < "
-                                f"{_min_rate_kibs:.0f} KiB/s for "
-                                f"{_min_rate_grace_s:.0f}s "
-                                f"(PAPRIKA_YTDLP_MIN_RATE_KIBS / GRACE_S)"
-                            )
-                            _log(f"  !! {msg}")
-                            return {"ok": False, "message": msg, "log_lines": lines}
+                            if _is_protected_now:
+                                _log(
+                                    f"  -- rate gate: deferred kill "
+                                    f"({rate_kibs:.1f} KiB/s for "
+                                    f"{now_m - _slow_rate_since:.0f}s) — "
+                                    f"noVNC operator is interacting"
+                                )
+                                _slow_rate_since = now_m
+                            else:
+                                proc.kill()
+                                msg = (
+                                    f"too slow: {rate_kibs:.1f} KiB/s < "
+                                    f"{_min_rate_kibs:.0f} KiB/s for "
+                                    f"{_min_rate_grace_s:.0f}s "
+                                    f"(PAPRIKA_YTDLP_MIN_RATE_KIBS / GRACE_S)"
+                                )
+                                _log(f"  !! {msg}")
+                                return {"ok": False, "message": msg, "log_lines": lines}
                     else:
                         # Rate recovered above the floor; reset the grace.
                         _slow_rate_since = None
