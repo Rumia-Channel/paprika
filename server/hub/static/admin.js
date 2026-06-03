@@ -2779,32 +2779,48 @@ function syncScreenshotBusyState(jobs, sessions) {
         || (sess && (sess.current_url || sess.initial_url))
         || '';
       const labelJobId = (job && job.job_id) || (sess && sess.job_id) || '';
-      tile.wrap.title =
-        `Running job ${(labelJobId || '').slice(0, 12)} — ${labelUrl}`;
       if (tile.sub) {
         tile.sub.textContent = labelUrl || `(job ${labelJobId})`;
         tile.sub.style.display = '';
       }
-      // Click-through URL: if a session is bound to this lane, prefer
-      // the session-rooted hub-proxy URL so the operator's click opens
-      // a URL that doesn't expose worker LAN IPs (matches /jobs/{id}
-      // novnc_url rewriting). Falls back to job-side novnc_url
-      // (already proxied), then the LAN-direct cached on the tile.
+      // Click-through: when a job_id is bound to this lane, navigate to
+      // the in-app Live Job Panel ("#live/<job_id>") in the SAME tab --
+      // that gives the operator the full UI (logs / code / gallery /
+      // noVNC) instead of a bare noVNC popup. Falls back to the noVNC
+      // popup behaviour (separate tab) when only a session is bound
+      // without a job_id (rare; codegen-loop sessions not yet linked
+      // to a parent job).
       if (tile.wrap.tagName === 'A') {
-        const sid = (sess && sess.session_id)
-                 || (job && job.session_id);
-        let nextHref = tile.wrap.dataset.directUrl || '';
-        if (sid) {
-          nextHref =
-            `/sessions/${encodeURIComponent(sid)}/novnc/` +
-            `?path=sessions/${encodeURIComponent(sid)}/novnc/websockify` +
-            `&autoconnect=1&resize=scale&reconnect=1`;
-        } else if (job && job.novnc_url) {
-          // /jobs/{id} responses are already proxy-URL rewritten
-          // server-side by _proxy_info; trust it.
-          nextHref = job.novnc_url;
+        if (labelJobId) {
+          tile.wrap.href = '#live/' + encodeURIComponent(labelJobId);
+          tile.wrap.removeAttribute('target');
+          tile.wrap.removeAttribute('rel');
+          tile.wrap.title =
+            `Open Live Job Panel for ${(labelJobId).slice(0, 12)}`
+            + (labelUrl ? ` — ${labelUrl}` : '');
+          // Refresh the on-tile open hint so the "↗ noVNC" badge reads
+          // as "↗ live" -- it points at the in-app LJP now, not noVNC.
+          const openEl = tile.wrap.querySelector('.ssopen');
+          if (openEl) openEl.textContent = '↗ live';
+        } else {
+          // No job_id but a session exists -- give the operator the
+          // noVNC popup as a fallback (session-rooted hub-proxy URL).
+          const sid = sess && sess.session_id;
+          let nextHref = tile.wrap.dataset.directUrl || '';
+          if (sid) {
+            nextHref =
+              `/sessions/${encodeURIComponent(sid)}/novnc/` +
+              `?path=sessions/${encodeURIComponent(sid)}/novnc/websockify` +
+              `&autoconnect=1&resize=scale&reconnect=1`;
+          }
+          if (nextHref) tile.wrap.href = nextHref;
+          tile.wrap.target = '_blank';
+          tile.wrap.rel = 'noopener';
+          tile.wrap.title =
+            `Open noVNC viewer in a new tab` + (labelUrl ? ` — ${labelUrl}` : '');
+          const openEl = tile.wrap.querySelector('.ssopen');
+          if (openEl) openEl.textContent = '↗ noVNC';
         }
-        if (nextHref) tile.wrap.href = nextHref;
       }
     } else {
       tile.wrap.classList.add('idle');
@@ -2826,6 +2842,13 @@ function syncScreenshotBusyState(jobs, sessions) {
         if (tile.wrap.dataset.directUrl) {
           tile.wrap.href = tile.wrap.dataset.directUrl;
         }
+        // Re-enable new-tab popup behaviour for the idle noVNC path
+        // (the busy/job_id branch above strips target/rel to keep the
+        // LJP navigation in-tab; restore here so the toggle is clean).
+        tile.wrap.target = '_blank';
+        tile.wrap.rel = 'noopener';
+        const openEl = tile.wrap.querySelector('.ssopen');
+        if (openEl) openEl.textContent = '↗ noVNC';
       } else {
         tile.wrap.title = '';
       }
