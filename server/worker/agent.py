@@ -2285,6 +2285,26 @@ class WorkerAgent:
         except (TypeError, ValueError):
             self._reconnect_giveup_s = 120.0
         self._last_link_ok = 0.0
+        # Robust hung-event-loop watchdog ("worker self-diagnosis, done right").
+        # An off-loop daemon thread pokes the event loop via call_soon_threadsafe;
+        # if the loop fails to run the poke for _wd_threshold_s it is GENUINELY
+        # wedged (a sync call hogging the loop) -- NOT merely busy / starved.
+        # call_soon callbacks still run under load (unlike the heartbeat the old
+        # _reconnect_giveup_s keyed on, which false-fired on a busy worker and
+        # stormed the fleet on all-at-once deploys -- that check is disabled, see
+        # run()). Per-worker jitter desynchronises the fleet so a real wedge
+        # never produces a lockstep exit. PAPRIKA_WORKER_WATCHDOG=0 disables it.
+        self._wd_enabled = (
+            os.environ.get("PAPRIKA_WORKER_WATCHDOG", "1").strip().lower()
+            not in ("0", "false", "no", "off")
+        )
+        try:
+            _wd_base = float(os.environ.get("PAPRIKA_WORKER_WATCHDOG_THRESHOLD_S", "300"))
+        except (TypeError, ValueError):
+            _wd_base = 300.0
+        self._wd_threshold_s = max(60.0, _wd_base) + random.uniform(0.0, 60.0)
+        self._wd_check_s = 30.0
+        self._wd_last_pong = 0.0
         # Active session_id -> SessionState. Sessions hold the
         # nodriver browser/tab attached to a Lane between actions.
         self._sessions: dict[str, SessionState] = {}
@@ -2564,6 +2584,38 @@ class WorkerAgent:
             f"policy ({self.PAPRIKA_AGENT_ID} <- {update_url})",
         )
 
+    def _wd_pong(self) -> None:
+        """Runs ON the event loop (scheduled via call_soon_threadsafe by the
+        watchdog thread): proof the loop is executing callbacks. Cheap +
+        high-priority, so a merely busy / starved loop still runs it -- only a
+        genuinely BLOCKED loop misses it."""
+        self._wd_last_pong = time.monotonic()
+
+    def _watchdog_loop(self, loop: "asyncio.AbstractEventLoop") -> None:
+        """Daemon thread: detect a wedged event loop and force-exit so the
+        supervisor (docker ``restart: unless-stopped``) relaunches us clean.
+        Runs OFF the loop, so it works even when the loop is fully blocked --
+        the failure mode the old in-loop ``_reconnect_giveup_s`` check could
+        never catch."""
+        self._wd_last_pong = time.monotonic()
+        while True:
+            time.sleep(self._wd_check_s)
+            try:
+                loop.call_soon_threadsafe(self._wd_pong)
+            except RuntimeError:
+                return  # loop closed -> the process is shutting down
+            stale = time.monotonic() - self._wd_last_pong
+            if stale > self._wd_threshold_s:
+                try:
+                    _logger.critical(
+                        f"[worker {self.worker_id}] event loop WEDGED: no callback "
+                        f"ran for {stale:.0f}s (> {self._wd_threshold_s:.0f}s threshold) "
+                        f"-> exit({WORKER_EXIT_CODE_VERSION_MISMATCH}) for supervisor restart"
+                    )
+                except Exception:
+                    pass
+                os._exit(WORKER_EXIT_CODE_VERSION_MISMATCH)
+
     async def run(self) -> None:
         """Reconnect loop. Reconnects with backoff on disconnect."""
         # Optional GitHub-releases version check. Fires before any heavy
@@ -2603,6 +2655,22 @@ class WorkerAgent:
         # Seed the link-alive clock so the shutdown-on-failure window
         # covers the very first connect attempts too.
         self._last_link_ok = time.monotonic()
+        # Arm the hung-loop watchdog now that the event loop is running (the
+        # thread captures this loop for its call_soon pokes). Daemon thread,
+        # off the loop -- see __init__ for the design + why it won't storm.
+        if self._wd_enabled:
+            import threading
+            self._wd_last_pong = time.monotonic()
+            threading.Thread(
+                target=self._watchdog_loop,
+                args=(asyncio.get_running_loop(),),
+                name=f"wd-{self.worker_id}",
+                daemon=True,
+            ).start()
+            _logger.info(
+                f"[worker {self.worker_id}] loop-watchdog armed "
+                f"(wedge threshold {self._wd_threshold_s:.0f}s, check {self._wd_check_s:.0f}s)"
+            )
         async with make_async_client(timeout=60.0) as http:
             self._http = http
             while True:
