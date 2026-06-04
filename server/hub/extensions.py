@@ -299,6 +299,19 @@ class ExtensionRegistry:
         atomic_write_json(self._meta_path(slug), meta.to_json())
         return meta
 
+    def install_tarball(self, slug: str, tarball_bytes: bytes) -> Path:
+        """Write a pre-built tar.gz into the local cache. Used when another hub
+        uploaded the extension and this hub pulled the BLOB from MariaDB to
+        serve a worker. Atomic; returns the tarball path. No meta is written --
+        shared metadata is served from MariaDB and ``get_meta`` synthesises a
+        bare local meta on demand."""
+        tar_path = self._tarball_path(slug)
+        tar_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = tar_path.with_suffix(tar_path.suffix + ".tmp")
+        tmp.write_bytes(tarball_bytes)
+        tmp.replace(tar_path)
+        return tar_path
+
     def delete(self, slug: str) -> bool:
         ok = False
         for p in (self._tarball_path(slug), self._meta_path(slug)):

@@ -272,6 +272,90 @@ async def ensure_local(local_path: Path | str) -> bool:
         return False
 
 
+# --- explicit-key helpers (hub-internal blobs outside the storage root) -----
+#
+# mirror_file / ensure_local derive the object key from a path UNDER the per-job
+# storage root (_key_for), so they silently no-op for hub-internal blobs that
+# live in config.data_dir (e.g. profile tarballs). These take an EXPLICIT key
+# instead, for the profiles-> MinIO migration (caller owns the key scheme, e.g.
+# ``profiles/<name>.tar.gz``).
+
+
+async def put_object(key: str, local_path: Path | str) -> bool:
+    """Upload a local file to an explicit object key. Returns True on success;
+    no-op→False when disabled / boto3 missing / file absent. Never raises."""
+    if not enabled():
+        return False
+    path = Path(local_path)
+
+    def _put() -> bool:
+        client = _get_client()
+        if client is None or not path.is_file():
+            return False
+        try:
+            client.upload_file(str(path), _bucket(), key)
+            return True
+        except Exception:
+            return False
+
+    try:
+        return await asyncio.to_thread(_put)
+    except Exception:
+        return False
+
+
+async def get_object(key: str, local_path: Path | str) -> bool:
+    """Download an explicit object key to ``local_path`` (atomic via .s3part).
+    Creates parent dirs. Returns True on success. Never raises."""
+    if not enabled():
+        return False
+    path = Path(local_path)
+
+    def _get() -> bool:
+        client = _get_client()
+        if client is None:
+            return False
+        tmp = path.with_suffix(path.suffix + ".s3part")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            client.download_file(_bucket(), key, str(tmp))
+            tmp.replace(path)
+            return True
+        except Exception:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            return False
+
+    try:
+        return await asyncio.to_thread(_get)
+    except Exception:
+        return False
+
+
+async def head_object(key: str) -> bool:
+    """True when the explicit object key exists in the bucket. Never raises."""
+    if not enabled():
+        return False
+
+    def _head() -> bool:
+        client = _get_client()
+        if client is None:
+            return False
+        try:
+            client.head_object(Bucket=_bucket(), Key=key)
+            return True
+        except Exception:
+            return False
+
+    try:
+        return await asyncio.to_thread(_head)
+    except Exception:
+        return False
+
+
 def _job_prefix(job_id: str, subdir: str = "") -> str:
     """Object-key prefix (with trailing slash) for a job's dir, or a
     ``subdir`` within it. Mirrors the layout :func:`_key_for` produces:
@@ -495,6 +579,9 @@ __all__ = [
     "mirror_dir",
     "reachable",
     "ensure_local",
+    "put_object",
+    "get_object",
+    "head_object",
     "list_dir",
     "list_tree",
     "prefix_exists",

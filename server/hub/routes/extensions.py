@@ -153,7 +153,17 @@ async def list_extensions() -> dict:
         }
     """
     reg = _require_extensions()
-    rows = _builtin_extensions() + [_extension_meta_to_dict(m) for m in reg.list()]
+    pool = state.mariadb_pool
+    if pool is not None:
+        try:
+            from server.hub.mariadb import load_extensions
+            uploaded = await load_extensions(pool)
+        except Exception:
+            log.warning("extensions: MariaDB list failed; using local", exc_info=True)
+            uploaded = [_extension_meta_to_dict(m) for m in reg.list()]
+    else:
+        uploaded = [_extension_meta_to_dict(m) for m in reg.list()]
+    rows = _builtin_extensions() + uploaded
     return {"count": len(rows), "extensions": rows}
 
 
@@ -164,9 +174,18 @@ async def get_extension_info(slug: str) -> dict:
         raise HTTPException(400, "invalid extension slug")
     reg = _require_extensions()
     m = reg.get_meta(slug)
-    if m is None:
-        raise HTTPException(404, f"extension '{slug}' not found")
-    return _extension_meta_to_dict(m)
+    if m is not None:
+        return _extension_meta_to_dict(m)
+    pool = state.mariadb_pool
+    if pool is not None:
+        try:
+            from server.hub.mariadb import load_extensions
+            for d in await load_extensions(pool):
+                if d.get("slug") == slug:
+                    return d
+        except Exception:
+            pass
+    raise HTTPException(404, f"extension '{slug}' not found")
 
 
 @router.get("/extensions/{slug}/download")
@@ -181,6 +200,25 @@ async def download_extension(slug: str):
         raise HTTPException(400, "invalid extension slug")
     reg = _require_extensions()
     p = reg.get_tarball_path(slug)
+    if p is None and state.mariadb_pool is not None:
+        # Another hub uploaded it: pull the BLOB from MariaDB into the local
+        # cache once, then serve from disk (subsequent hits are local).
+        try:
+            from server.hub.mariadb import fetch_extension_blob
+            blob = await fetch_extension_blob(state.mariadb_pool, slug)
+        except Exception:
+            blob = None
+        if blob:
+            lock = state.extensions_lock
+            try:
+                if lock is not None:
+                    async with lock:
+                        p = reg.install_tarball(slug, blob)
+                else:
+                    p = reg.install_tarball(slug, blob)
+            except Exception:
+                log.warning("extensions: local cache write failed for %r", slug, exc_info=True)
+                p = None
     if p is None:
         raise HTTPException(404, f"extension '{slug}' not found")
     return FileResponse(
@@ -232,6 +270,18 @@ async def upload_extension(slug: str, request: Request) -> dict:
                 filename=filename,
                 note=note,
             )
+            # Push to the shared MariaDB store (metadata + tar.gz BLOB) so
+            # workers on every hub can fetch it. Inside the lock so the bytes
+            # read back are exactly what was just written.
+            pool = state.mariadb_pool
+            if pool is not None:
+                try:
+                    from server.hub.mariadb import upsert_extension_row
+                    _tar = reg.get_tarball_path(slug)
+                    _blob = _tar.read_bytes() if _tar else b""
+                    await upsert_extension_row(pool, meta, _blob, reg.etag(slug) or "")
+                except Exception:
+                    log.warning("extensions: MariaDB upsert failed for %r", slug, exc_info=True)
     except ValueError as e:
         raise HTTPException(400, str(e))
     log.info(
@@ -263,7 +313,23 @@ async def set_extension_enabled(slug: str, body: dict) -> dict:
     enabled = bool(body.get("enabled"))
     reg = _require_extensions()
     meta = reg.set_enabled(slug, enabled)
+    pool = state.mariadb_pool
+    if pool is not None:
+        try:
+            from server.hub.mariadb import set_extension_enabled_row
+            await set_extension_enabled_row(pool, slug, enabled)
+        except Exception:
+            log.warning("extensions: MariaDB enable toggle failed for %r", slug, exc_info=True)
     if meta is None:
+        # No local copy (another hub uploaded it): answer from the shared store.
+        if pool is not None:
+            try:
+                from server.hub.mariadb import load_extensions
+                for d in await load_extensions(pool):
+                    if d.get("slug") == slug:
+                        return d
+            except Exception:
+                pass
         raise HTTPException(404, f"extension '{slug}' not found")
     return _extension_meta_to_dict(meta)
 
@@ -280,4 +346,12 @@ async def delete_extension(slug: str) -> dict:
     assert lock is not None
     async with lock:
         ok = reg.delete(slug)
+    pool = state.mariadb_pool
+    if pool is not None:
+        try:
+            from server.hub.mariadb import delete_extension_row
+            await delete_extension_row(pool, slug)
+            ok = True  # removed from the shared store even if not cached locally
+        except Exception:
+            log.warning("extensions: MariaDB delete failed for %r", slug, exc_info=True)
     return {"slug": slug, "deleted": ok}

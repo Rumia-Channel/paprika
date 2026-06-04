@@ -241,6 +241,42 @@ _TABLES: list[tuple[str, str]] = [
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
     ),
+    (
+        "profiles",
+        """
+        CREATE TABLE IF NOT EXISTS profiles (
+            name                 VARCHAR(64)   PRIMARY KEY,
+            size_bytes           BIGINT        DEFAULT 0,
+            etag                 VARCHAR(128),
+            s3_key               VARCHAR(255),
+            chrome_profile_name  VARCHAR(128),
+            source_machine       VARCHAR(190),
+            note                 TEXT,
+            is_default           TINYINT(1)    DEFAULT 0,
+            uploaded_at          DATETIME(3),
+            updated_at           DATETIME(3)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
+    (
+        "extensions",
+        """
+        CREATE TABLE IF NOT EXISTS extensions (
+            slug          VARCHAR(64)   PRIMARY KEY,
+            name          VARCHAR(190),
+            description   TEXT,
+            version       VARCHAR(64),
+            extension_id  VARCHAR(64),
+            size_bytes    BIGINT        DEFAULT 0,
+            enabled       TINYINT(1)    DEFAULT 1,
+            note          TEXT,
+            etag          VARCHAR(128),
+            tarball       LONGBLOB,
+            uploaded_at   DATETIME(3),
+            updated_at    DATETIME(3)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
 ]
 
 
@@ -1832,6 +1868,129 @@ async def load_settings(pool: Any) -> dict:
                 except Exception:
                     out[str(k)] = v
     return out
+
+
+# ---------------------------------------------------------------------------
+# Extensions: shared store in MariaDB (Phase C — bytes as LONGBLOB + metadata)
+#
+# Extensions are small (KB–few MB) and operator-uploaded only, so per the
+# operator principle ("configure MariaDB and everything works; MinIO holds only
+# job media") the whole extension — tarball bytes AND metadata — lives in one
+# MariaDB row. Any hub serves the shared set: list reads metadata here, download
+# lazily pulls the BLOB and caches it locally. Table self-created (idempotent).
+# ---------------------------------------------------------------------------
+
+_EXTENSIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS extensions ("
+    "slug VARCHAR(64) PRIMARY KEY, name VARCHAR(190), description TEXT, "
+    "version VARCHAR(64), extension_id VARCHAR(64), size_bytes BIGINT DEFAULT 0, "
+    "enabled TINYINT(1) DEFAULT 1, note TEXT, etag VARCHAR(128), tarball LONGBLOB, "
+    "uploaded_at DATETIME(3), updated_at DATETIME(3)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+)
+
+
+def _dt_iso(v: Any) -> str:
+    """A DB datetime → ISO-8601 string (with trailing Z) for API payloads."""
+    if v is None:
+        return ""
+    try:
+        return v.isoformat() + "Z"
+    except Exception:
+        return str(v)
+
+
+async def upsert_extension_row(pool: Any, meta: Any, tarball_bytes: bytes, etag: str = "") -> None:
+    """INSERT-or-UPDATE one extension row (metadata + the tar.gz BLOB)."""
+    d = meta.to_json() if hasattr(meta, "to_json") else dict(meta)
+    params = (
+        d.get("slug", ""),
+        d.get("name", ""),
+        d.get("description", ""),
+        d.get("version", ""),
+        d.get("extension_id", ""),
+        int(d.get("size_bytes", 0) or 0),
+        1 if d.get("enabled", True) else 0,
+        d.get("note", "") or "",
+        etag or "",
+        tarball_bytes,
+        _parse_dt(d.get("uploaded_at")),
+        _parse_dt(d.get("updated_at")),
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_EXTENSIONS_DDL)
+            await cur.execute(
+                """INSERT INTO extensions
+                   (slug, name, description, version, extension_id,
+                    size_bytes, enabled, note, etag, tarball,
+                    uploaded_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                     name=VALUES(name), description=VALUES(description),
+                     version=VALUES(version), extension_id=VALUES(extension_id),
+                     size_bytes=VALUES(size_bytes), enabled=VALUES(enabled),
+                     note=VALUES(note), etag=VALUES(etag),
+                     tarball=VALUES(tarball), updated_at=VALUES(updated_at)""",
+                params,
+            )
+
+
+async def load_extensions(pool: Any) -> list[dict]:
+    """All extension metadata (NO BLOB) as API-ready dicts, newest first."""
+    out: list[dict] = []
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_EXTENSIONS_DDL)
+            await cur.execute(
+                "SELECT slug, name, description, version, extension_id, "
+                "size_bytes, enabled, note, etag, uploaded_at, updated_at "
+                "FROM extensions ORDER BY updated_at DESC"
+            )
+            for r in await cur.fetchall():
+                out.append({
+                    "slug": r[0],
+                    "name": r[1] or "",
+                    "description": r[2] or "",
+                    "version": r[3] or "",
+                    "extension_id": r[4] or "",
+                    "size_bytes": int(r[5] or 0),
+                    "enabled": bool(r[6]),
+                    "note": r[7] or "",
+                    "etag": r[8] or "",
+                    "uploaded_at": _dt_iso(r[9]),
+                    "updated_at": _dt_iso(r[10]),
+                    "builtin": False,
+                })
+    return out
+
+
+async def fetch_extension_blob(pool: Any, slug: str) -> bytes | None:
+    """The tar.gz bytes for one extension, or None when absent."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_EXTENSIONS_DDL)
+            await cur.execute("SELECT tarball FROM extensions WHERE slug=%s", (slug,))
+            row = await cur.fetchone()
+    if row and row[0] is not None:
+        return bytes(row[0])
+    return None
+
+
+async def set_extension_enabled_row(pool: Any, slug: str, enabled: bool) -> None:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE extensions SET enabled=%s, updated_at=UTC_TIMESTAMP(3) "
+                "WHERE slug=%s",
+                (1 if enabled else 0, slug),
+            )
+
+
+async def delete_extension_row(pool: Any, slug: str) -> None:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM extensions WHERE slug=%s", (slug,))
 
 
 async def restore_presets(pool: Any, preset_registry: Any) -> int:
