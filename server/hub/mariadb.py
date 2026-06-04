@@ -1993,6 +1993,134 @@ async def delete_extension_row(pool: Any, slug: str) -> None:
             await cur.execute("DELETE FROM extensions WHERE slug=%s", (slug,))
 
 
+# ---------------------------------------------------------------------------
+# Profiles: shared metadata in MariaDB; tarball BYTES in MinIO (Phase C-2)
+#
+# Profile tarballs are large (Chrome user-data-dirs), so unlike extensions the
+# bytes go to MinIO (key ``profiles/<name>.tar.gz``) and only the metadata lives
+# here. The ``is_default`` column is the shared default-profile pointer (replaces
+# the per-hub ``_default.txt``). Every hub reads list/default/etag from here so
+# any hub can resolve + serve any profile for a job. Table self-created.
+# ---------------------------------------------------------------------------
+
+_PROFILES_DDL = (
+    "CREATE TABLE IF NOT EXISTS profiles ("
+    "name VARCHAR(64) PRIMARY KEY, size_bytes BIGINT DEFAULT 0, etag VARCHAR(128), "
+    "s3_key VARCHAR(255), chrome_profile_name VARCHAR(128), "
+    "source_machine VARCHAR(190), note TEXT, is_default TINYINT(1) DEFAULT 0, "
+    "uploaded_at DATETIME(3), updated_at DATETIME(3)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+)
+
+
+def _profile_row_to_dict(r: Any) -> dict:
+    return {
+        "name": r[0],
+        "size_bytes": int(r[1] or 0),
+        "etag": r[2] or "",
+        "s3_key": r[3] or "",
+        "chrome_profile_name": r[4],
+        "source_machine": r[5],
+        "note": r[6],
+        "is_default": bool(r[7]),
+        "uploaded_at": _dt_iso(r[8]),
+        "updated_at": _dt_iso(r[9]),
+    }
+
+
+_PROFILE_COLS = (
+    "name, size_bytes, etag, s3_key, chrome_profile_name, "
+    "source_machine, note, is_default, uploaded_at, updated_at"
+)
+
+
+async def upsert_profile_row(pool: Any, meta: Any, etag: str = "", s3_key: str = "") -> None:
+    """INSERT-or-UPDATE one profile's metadata. Does NOT touch ``is_default``
+    (managed by set_default_profile), so a re-upload never changes the default."""
+    d = meta.to_json() if hasattr(meta, "to_json") else dict(meta)
+    params = (
+        d.get("name", ""),
+        int(d.get("size_bytes", 0) or 0),
+        etag or "",
+        s3_key or "",
+        d.get("chrome_profile_name"),
+        d.get("source_machine"),
+        d.get("note"),
+        _parse_dt(d.get("uploaded_at")),
+        _parse_dt(d.get("updated_at")),
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_PROFILES_DDL)
+            await cur.execute(
+                """INSERT INTO profiles
+                   (name, size_bytes, etag, s3_key, chrome_profile_name,
+                    source_machine, note, uploaded_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                     size_bytes=VALUES(size_bytes), etag=VALUES(etag),
+                     s3_key=VALUES(s3_key),
+                     chrome_profile_name=VALUES(chrome_profile_name),
+                     source_machine=VALUES(source_machine), note=VALUES(note),
+                     updated_at=VALUES(updated_at)""",
+                params,
+            )
+
+
+async def load_profiles(pool: Any) -> list[dict]:
+    """All profile metadata as dicts (no bytes), newest first."""
+    out: list[dict] = []
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_PROFILES_DDL)
+            await cur.execute(
+                f"SELECT {_PROFILE_COLS} FROM profiles ORDER BY updated_at DESC"
+            )
+            for r in await cur.fetchall():
+                out.append(_profile_row_to_dict(r))
+    return out
+
+
+async def get_profile_meta_row(pool: Any, name: str) -> dict | None:
+    """One profile's metadata (incl. etag, s3_key, is_default) or None."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_PROFILES_DDL)
+            await cur.execute(
+                f"SELECT {_PROFILE_COLS} FROM profiles WHERE name=%s", (name,)
+            )
+            r = await cur.fetchone()
+    return _profile_row_to_dict(r) if r else None
+
+
+async def get_default_profile(pool: Any) -> str | None:
+    """The shared default profile name, or None."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_PROFILES_DDL)
+            await cur.execute("SELECT name FROM profiles WHERE is_default=1 LIMIT 1")
+            r = await cur.fetchone()
+    return r[0] if r else None
+
+
+async def set_default_profile(pool: Any, name: str | None) -> None:
+    """Mark ``name`` the shared default (clears all others). None clears it."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_PROFILES_DDL)
+            await cur.execute("UPDATE profiles SET is_default=0 WHERE is_default=1")
+            if name:
+                await cur.execute(
+                    "UPDATE profiles SET is_default=1 WHERE name=%s", (name,)
+                )
+
+
+async def delete_profile_row(pool: Any, name: str) -> None:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM profiles WHERE name=%s", (name,))
+
+
 async def restore_presets(pool: Any, preset_registry: Any) -> int:
     """Mirror MariaDB ``presets`` table to the file-backed
     PresetRegistry. Presets are keyed by ``name`` only (no tier)."""

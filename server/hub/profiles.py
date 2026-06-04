@@ -203,6 +203,11 @@ class ProfileRegistry:
         p = self._tarball_path(name)
         return p if p.exists() else None
 
+    def tarball_target(self, name: str) -> Path:
+        """The local tarball path for ``name`` whether or not it exists yet --
+        the download target when pulling a peer's profile from MinIO."""
+        return self._tarball_path(name)
+
     def list(self) -> list[ProfileMeta]:
         out: list[ProfileMeta] = []
         for tar in sorted(self.root.glob("*.tar.gz")):

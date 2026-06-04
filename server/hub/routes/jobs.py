@@ -3755,10 +3755,17 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
         _profile_etag: str | None = None
         _profile_name = (req.options.use_profile or "").strip() or None
         _explicit = _profile_name is not None
-        if _profile_name is None and state.profiles is not None:
-            _profile_name = state.profiles.get_default()
+        # Profiles are shared across hubs (MariaDB metadata + MinIO bytes), so
+        # resolve the default + existence/etag from the shared view -- any hub
+        # can dispatch a job using a profile uploaded on any other hub. The
+        # worker fetches the tarball from THIS hub's /profiles/{name}, which
+        # serves it from local disk or pulls it from MinIO on a cache miss.
+        from server.hub.routes.profiles import _shared_default, _shared_meta
+        if _profile_name is None:
+            _profile_name = await _shared_default()
         if _profile_name:
-            if state.profiles is None or not state.profiles.exists(_profile_name):
+            _pmeta = await _shared_meta(_profile_name)
+            if _pmeta is None:
                 if _explicit:
                     raise HTTPException(
                         400,
@@ -3766,16 +3773,14 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
                         "found. Upload it first via POST /profiles/{name} "
                         "(paprika-client upload-profile).",
                     )
-                # default went stale between get_default() and the
-                # exists() recheck -- treat as "no default" rather
-                # than failing the dispatch.
+                # default went stale between read + recheck -- treat as
+                # "no default" rather than failing the dispatch.
                 _profile_name = None
-        if _profile_name:
-            _profile_url = f"{base}/profiles/{_profile_name}"
-            # Etag lets the worker skip the download when its cache
-            # already has this exact version (typical case after the
-            # initial sync broadcast).
-            _profile_etag = state.profiles.etag(_profile_name)
+            else:
+                _profile_url = f"{base}/profiles/{_profile_name}"
+                # Etag lets the worker skip the download when its cache already
+                # has this exact version (typical after the initial sync).
+                _profile_etag = _pmeta.get("etag") or None
 
         # Asset URL blacklist (V): pull operator-managed list from Settings
         # and stamp onto every assignment so an admin UI edit takes effect

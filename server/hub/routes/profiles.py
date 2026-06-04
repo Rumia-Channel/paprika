@@ -165,13 +165,12 @@ async def _broadcast_profile_sync(name: str) -> None:
     the ambient (= applied to all idle lanes' user-data-dir so
     noVNC viewers see the operator's logged-in Chrome immediately).
     """
-    if state.profiles is None or state.registry is None:
+    if state.registry is None:
         return
-    etag = state.profiles.etag(name)
-    meta = state.profiles.get_meta(name)
-    if etag is None or meta is None:
+    meta = await _shared_meta(name)
+    if meta is None or not meta.get("etag"):
         return
-    is_default = state.profiles.get_default() == name
+    is_default = (await _shared_default()) == name
     for w in list(state.registry.connections.values()):
         url = _profile_url_for_worker(w, name)
         if not url:
@@ -181,8 +180,8 @@ async def _broadcast_profile_sync(name: str) -> None:
                 HubProfileSync(
                     name=name,
                     url=url,
-                    etag=etag,
-                    size_bytes=meta.size_bytes,
+                    etag=meta["etag"],
+                    size_bytes=int(meta.get("size_bytes") or 0),
                     is_default=is_default,
                 )
             )
@@ -220,30 +219,31 @@ async def _sync_all_profiles_to_worker(worker) -> None:
     set on the broadcast for the active default so the worker
     installs the ambient on its idle lanes.
     """
-    if state.profiles is None:
+    if state.registry is None and state.profiles is None:
         return
-    default_name = state.profiles.get_default()
-    for meta in state.profiles.list():
-        url = _profile_url_for_worker(worker, meta.name)
-        if not url:
+    default_name = await _shared_default()
+    for p in await _shared_list():
+        name = p.get("name")
+        etag = p.get("etag")
+        if not name or not etag:
             continue
-        etag = state.profiles.etag(meta.name)
-        if etag is None:
+        url = _profile_url_for_worker(worker, name)
+        if not url:
             continue
         try:
             await worker.send(
                 HubProfileSync(
-                    name=meta.name,
+                    name=name,
                     url=url,
                     etag=etag,
-                    size_bytes=meta.size_bytes,
-                    is_default=(meta.name == default_name),
+                    size_bytes=int(p.get("size_bytes") or 0),
+                    is_default=(name == default_name),
                 )
             )
         except Exception:
             log.warning(
                 "initial profile_sync %r -> %s failed",
-                meta.name,
+                name,
                 worker.worker_id,
                 exc_info=True,
             )
@@ -498,6 +498,69 @@ def _format_bytes(n: int) -> str:
     return f"{n} ?"
 
 
+# --- shared (multi-hub) profile metadata: MariaDB-first, local fallback ------
+# Phase C-2: profile bytes live in MinIO and metadata in MariaDB, so any hub can
+# resolve + serve any profile. These async helpers return the shared view (or
+# the local file registry when there's no MariaDB pool -- dev / single hub).
+
+
+async def _shared_default() -> str | None:
+    pool = state.mariadb_pool
+    if pool is not None:
+        try:
+            from server.hub.mariadb import get_default_profile
+            return await get_default_profile(pool)
+        except Exception:
+            log.warning("profiles: MariaDB default read failed; using local", exc_info=True)
+    return state.profiles.get_default() if state.profiles else None
+
+
+async def _shared_meta(name: str) -> dict | None:
+    """Shared metadata dict (name, etag, size_bytes, s3_key, is_default, ...) for
+    one profile, or None when no hub knows it. MariaDB-first, local fallback."""
+    pool = state.mariadb_pool
+    if pool is not None:
+        try:
+            from server.hub.mariadb import get_profile_meta_row
+            d = await get_profile_meta_row(pool, name)
+            if d is not None:
+                return d
+        except Exception:
+            log.warning("profiles: MariaDB meta read failed for %r; using local", name, exc_info=True)
+    reg = state.profiles
+    if reg is not None:
+        m = reg.get_meta(name)
+        if m is not None:
+            d = _profile_meta_to_dict(m, default_name=reg.get_default())
+            d["etag"] = reg.etag(name) or ""
+            d.setdefault("s3_key", "")
+            return d
+    return None
+
+
+async def _shared_list() -> list[dict]:
+    pool = state.mariadb_pool
+    if pool is not None:
+        try:
+            from server.hub.mariadb import load_profiles
+            rows = await load_profiles(pool)
+            for d in rows:
+                d["size_human"] = _format_bytes(d.get("size_bytes") or 0)
+            return rows
+        except Exception:
+            log.warning("profiles: MariaDB list failed; using local", exc_info=True)
+    reg = state.profiles
+    if reg is None:
+        return []
+    default = reg.get_default()
+    out: list[dict] = []
+    for m in reg.list():
+        d = _profile_meta_to_dict(m, default_name=default)
+        d["etag"] = reg.etag(m.name) or ""
+        out.append(d)
+    return out
+
+
 @router.get("/profiles")
 async def list_profiles() -> dict:
     """List every uploaded Chrome profile (metadata only).
@@ -513,11 +576,9 @@ async def list_profiles() -> dict:
           "profiles": [{name, size_bytes, ..., is_default}, ...]
         }
     """
-    reg = _require_profiles()
-    default = reg.get_default()
     return {
-        "default": default,
-        "profiles": [_profile_meta_to_dict(m, default_name=default) for m in reg.list()],
+        "default": await _shared_default(),
+        "profiles": await _shared_list(),
     }
 
 
@@ -529,8 +590,7 @@ async def get_default_profile() -> dict:
     that doesn't set ``options.use_profile`` explicitly. None means
     no default is set -- jobs run with the lane's stock profile.
     """
-    reg = _require_profiles()
-    return {"name": reg.get_default()}
+    return {"name": await _shared_default()}
 
 
 @router.post("/profiles/{name}/default")
@@ -555,11 +615,18 @@ async def set_default_profile(name: str) -> dict:
     if not _profile_name_valid(name):
         raise HTTPException(400, "invalid profile name")
     reg = _require_profiles()
-    prev = reg.get_default()
-    try:
-        reg.set_default(name)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
+    prev = await _shared_default()
+    if await _shared_meta(name) is None:
+        raise HTTPException(404, f"profile '{name}' not found")
+    pool = state.mariadb_pool
+    if pool is not None:
+        from server.hub.mariadb import set_default_profile as _mdb_set_default
+        await _mdb_set_default(pool, name)
+    else:
+        try:
+            reg.set_default(name)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
     log.info("profile %r set as default", name)
     # Re-broadcast the new default first so workers install it,
     # then demote the previous default. Order matters: if we
@@ -584,8 +651,13 @@ async def clear_default_profile() -> dict:
     fresh Chrome again).
     """
     reg = _require_profiles()
-    prev = reg.get_default()
-    reg.set_default(None)
+    prev = await _shared_default()
+    pool = state.mariadb_pool
+    if pool is not None:
+        from server.hub.mariadb import set_default_profile as _mdb_set_default
+        await _mdb_set_default(pool, None)
+    else:
+        reg.set_default(None)
     if prev:
         log.info("default profile cleared (was %r)", prev)
         # Re-broadcast the demoted name with is_default=False so
@@ -610,6 +682,20 @@ async def download_profile(name: str):
     reg = _require_profiles()
     p = reg.get_tarball_path(name)
     if p is None:
+        # Another hub uploaded it: pull the tarball from MinIO into the local
+        # cache once (keyed off the shared metadata), then serve from disk.
+        meta = await _shared_meta(name)
+        if meta is not None:
+            s3_key = meta.get("s3_key") or f"profiles/{name}.tar.gz"
+            try:
+                from server.hub import objstore
+                if objstore.enabled() and await objstore.get_object(
+                    s3_key, reg.tarball_target(name)
+                ):
+                    p = reg.get_tarball_path(name)
+            except Exception:
+                log.warning("profile %r MinIO pull failed", name, exc_info=True)
+    if p is None:
         raise HTTPException(404, f"profile '{name}' not found")
     from fastapi.responses import FileResponse
 
@@ -625,11 +711,10 @@ async def get_profile_info(name: str) -> dict:
     """Metadata for ``{name}`` without downloading the tarball."""
     if not _profile_name_valid(name):
         raise HTTPException(400, "invalid profile name")
-    reg = _require_profiles()
-    meta = reg.get_meta(name)
+    meta = await _shared_meta(name)
     if meta is None:
         raise HTTPException(404, f"profile '{name}' not found")
-    return _profile_meta_to_dict(meta)
+    return meta
 
 
 @router.post("/profiles/{name}")
@@ -755,6 +840,24 @@ async def upload_profile(
                 chrome_profile_name=chrome_profile,
                 note=note,
             )
+            # Phase C-2: push the tarball to MinIO + metadata to MariaDB so any
+            # hub can serve this profile for a job (bytes are large -> MinIO,
+            # not a DB BLOB). Best-effort; the local copy still serves this hub.
+            _s3key = f"profiles/{name}.tar.gz"
+            _etag = reg.etag(name) or ""
+            try:
+                from server.hub import objstore
+                _tar = reg.get_tarball_path(name)
+                if _tar is not None and objstore.enabled():
+                    await objstore.put_object(_s3key, _tar)
+            except Exception:
+                log.warning("profile %r MinIO upload failed", name, exc_info=True)
+            if state.mariadb_pool is not None:
+                try:
+                    from server.hub.mariadb import upsert_profile_row
+                    await upsert_profile_row(state.mariadb_pool, meta, _etag, _s3key)
+                except Exception:
+                    log.warning("profile %r MariaDB upsert failed", name, exc_info=True)
         log.info(
             "profile %r uploaded: %d bytes (machine=%r chrome_profile=%r)",
             name,
@@ -853,6 +956,14 @@ async def delete_profile(name: str) -> dict:
     assert lock is not None
     async with lock:
         ok = reg.remove(name)
+    pool = state.mariadb_pool
+    if pool is not None:
+        try:
+            from server.hub.mariadb import delete_profile_row
+            await delete_profile_row(pool, name)
+            ok = True  # removed from the shared store even if not cached locally
+        except Exception:
+            log.warning("profile %r MariaDB delete failed", name, exc_info=True)
     if ok:
         log.info("profile %r deleted", name)
         try:

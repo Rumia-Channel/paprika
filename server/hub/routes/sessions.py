@@ -526,10 +526,16 @@ async def create_session(body: dict) -> dict:
     profile_etag: str | None = None
     profile_name = (body.get("use_profile") or "").strip() or None
     _explicit_profile = profile_name is not None
-    if profile_name is None and state.profiles is not None:
-        profile_name = state.profiles.get_default()
+    # Profiles are shared across hubs (MariaDB metadata + MinIO bytes) -- resolve
+    # the default + existence/etag from the shared view so a session on any hub
+    # can use a profile uploaded on any other hub.
+    from server.hub.routes.profiles import _shared_default, _shared_meta
+    if profile_name is None:
+        profile_name = await _shared_default()
+    _smeta = None
     if profile_name:
-        if state.profiles is None or not state.profiles.exists(profile_name):
+        _smeta = await _shared_meta(profile_name)
+        if _smeta is None:
             if _explicit_profile:
                 state.sessions.remove(sid)
                 raise HTTPException(
@@ -547,7 +553,7 @@ async def create_session(body: dict) -> dict:
         base = worker.public_base_url or config.public_base_url
         if base:
             profile_url = f"{base.rstrip('/')}/profiles/{profile_name}"
-        profile_etag = state.profiles.etag(profile_name)
+        profile_etag = (_smeta or {}).get("etag") or None
 
     try:
         ack = await worker.start_session(
