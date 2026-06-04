@@ -915,8 +915,16 @@ for (const r of document.querySelectorAll('input[name="mode"]')) {
   r.addEventListener('change', syncSubmitMode);
 }
 // Phase 2a: fetchSubMode radio change wakes up the inline-goal toggle.
+// syncFetchSubMode is defined in admin-joblist.js, which loads AFTER this
+// file -- so naming it bare here at wiring time throws a ReferenceError
+// that aborts the REST of this script (everything below this loop) and
+// leaves the 取得方法 radios with no change handler. Reference it lazily
+// from inside the handler instead: by the time a change actually fires,
+// joblist.js has run and defined it.
 for (const r of document.querySelectorAll('input[name="fetchSubMode"]')) {
-  r.addEventListener('change', syncFetchSubMode);
+  r.addEventListener('change', () => {
+    if (typeof syncFetchSubMode === 'function') syncFetchSubMode();
+  });
 }
 
 // X: 解析の目標プリセットボタン。クリックで textarea を GOAL_PRESETS の
