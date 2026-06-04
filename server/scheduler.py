@@ -677,6 +677,18 @@ class WorkerRegistry:
                         if d.get("hub_id") != self._hub_id:
                             d["hub_id"] = self._hub_id
                             changed = True
+                        # Stamp the worker's prefetched-profile list into the
+                        # row so a NON-OWNER hub serving /workers shows the
+                        # プロファイル column instead of '-' (same cross-hub
+                        # flicker the address / hub_id stamps above fix;
+                        # _fetch_known_workers reads this back). profiles_cached
+                        # changes rarely (only when a profile is prefetched /
+                        # evicted), so a heartbeat-interval delay to first
+                        # appearance is fine.
+                        _pc = list(worker.profiles_cached or [])
+                        if d.get("profiles_cached") != _pc:
+                            d["profiles_cached"] = _pc
+                            changed = True
                         if changed:
                             await self._r.set(
                                 _k_worker(worker_id), json.dumps(d),
@@ -881,7 +893,11 @@ class WorkerRegistry:
                 "last_heartbeat": float(last_ts) if last_ts else None,
                 "lane_novnc_urls": [],
                 "slot_novnc_urls": [],
-                "profiles_cached": [],
+                # Owning hub stamps the worker's prefetched-profile list into
+                # the row on heartbeat (see heartbeat()), so a non-owner hub
+                # serving /workers shows the same プロファイル column instead of
+                # a flickering '-'. Empty for legacy rows / not-yet-stamped.
+                "profiles_cached": list(data.get("profiles_cached") or []),
                 "version": caps.get("version") or "",
                 "status": (
                     str(data["status"]) if data.get("status")
