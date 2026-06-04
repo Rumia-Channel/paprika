@@ -689,6 +689,17 @@ class WorkerRegistry:
                         if d.get("profiles_cached") != _pc:
                             d["profiles_cached"] = _pc
                             changed = True
+                        # Operator-set status (active/drain/standby) and the
+                        # rolling-update target are hub-side in-memory only;
+                        # stamp them too so a NON-OWNER hub serving /workers
+                        # shows the real ステータス + "draining→vX" badge
+                        # instead of falling back to "active" / no badge.
+                        if d.get("status") != worker.status:
+                            d["status"] = worker.status
+                            changed = True
+                        if d.get("pending_update_to") != worker.pending_update_to:
+                            d["pending_update_to"] = worker.pending_update_to
+                            changed = True
                         if changed:
                             await self._r.set(
                                 _k_worker(worker_id), json.dumps(d),
@@ -848,6 +859,7 @@ class WorkerRegistry:
                 row = await self._r.get(_k_worker(wid))
                 last_ts = await self._r.zscore(_k_index(), wid)
                 owner = await self._r.get(_k_owner(wid))
+                counts = await self._r.hgetall(_k_worker(wid) + ":counts")
             except Exception:
                 continue
             if not row:
@@ -859,6 +871,30 @@ class WorkerRegistry:
             except Exception:
                 continue
             caps = data.get("capabilities") or {}
+            # Live load from the heartbeat-maintained ``:counts`` hash so a
+            # non-owner hub shows the real 負荷 (in_flight was hardcoded 0
+            # below, which flickered the load to 0/N whenever nginx routed
+            # /workers to a peer hub). Redis returns bytes unless the client
+            # decodes responses; normalise both.
+            _in_flight = 0
+            try:
+                if counts:
+                    _cd = {
+                        (k.decode() if isinstance(k, bytes) else k):
+                        (v.decode() if isinstance(v, bytes) else v)
+                        for k, v in counts.items()
+                    }
+                    _in_flight = int(_cd.get("in_flight") or 0)
+            except Exception:
+                _in_flight = 0
+            # Per-lane noVNC URLs live in the worker's (static) capabilities
+            # row; rewrite stale clone hosts with the recorded client IP --
+            # the same correction stats() applies for local connections -- so
+            # a non-owner hub keeps the #screens tile noVNC click-through.
+            _lane_urls = _rewrite_lane_urls_if_stale(
+                list(caps.get("lane_novnc_urls") or []),
+                str(data.get("address") or "") or None,
+            )
             # Cross-hub presence: a worker NOT connected to THIS process may
             # still be live on a peer hub. Judge "alive" by redis heartbeat
             # freshness (same WORKER_TTL window stats() uses for local
@@ -883,7 +919,7 @@ class WorkerRegistry:
             _alive = _fresh and bool(owner)
             out.append({
                 "worker_id": wid,
-                "in_flight": 0,
+                "in_flight": _in_flight,
                 "capacity": int(caps.get("max_concurrent") or 1),
                 "labels": dict(caps.get("labels") or {}),
                 "alive": _alive,
@@ -891,8 +927,11 @@ class WorkerRegistry:
                     int(time.time() - float(last_ts)) if last_ts else None
                 ),
                 "last_heartbeat": float(last_ts) if last_ts else None,
-                "lane_novnc_urls": [],
-                "slot_novnc_urls": [],
+                # Per-lane noVNC URLs from the worker's capabilities row
+                # (rewritten above) so a non-owner hub keeps the #screens tile
+                # noVNC click-through instead of dropping it to an empty list.
+                "lane_novnc_urls": list(_lane_urls),
+                "slot_novnc_urls": list(_lane_urls),
                 # Owning hub stamps the worker's prefetched-profile list into
                 # the row on heartbeat (see heartbeat()), so a non-owner hub
                 # serving /workers shows the same プロファイル column instead of
@@ -915,6 +954,9 @@ class WorkerRegistry:
                     (owner.decode() if isinstance(owner, bytes) else str(owner))
                     if owner else ""
                 ),
+                # Rolling-update target (heartbeat-stamped) so the
+                # "draining→vX" badge survives a non-owner-hub /workers poll.
+                "pending_update_to": data.get("pending_update_to"),
             })
         return out
 
