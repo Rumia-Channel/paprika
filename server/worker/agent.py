@@ -39,6 +39,7 @@ from server.protocol import (
     HubProfileDelete,
     HubProfileSync,
     HubRegistered,
+    HubPreviewSubscribe,
     HubScreenshotRequest,
     HubSessionAction,
     HubSessionAgent,
@@ -64,6 +65,7 @@ from server.protocol import (
     WorkerJobLog,
     WorkerJobProgress,
     WorkerRegister,
+    WorkerPreviewFrame,
     WorkerScreenshotReply,
     WorkerSessionActionResult,
     WorkerSessionAgentResult,
@@ -2251,6 +2253,15 @@ class WorkerAgent:
         self.novnc_url = novnc_url
         self.lane_pool = lane_pool
 
+        # --- push-based preview: self-capture watched lanes + push to hub ---
+        # Armed by HubPreviewSubscribe (an admin is watching); self-quiesces
+        # when _preview_until lapses (hub stops refreshing = nobody watching).
+        self._preview_lanes: set[int] | None = None
+        self._preview_until = 0.0          # time.monotonic() expiry of interest
+        self._preview_interval = 10.0
+        self._preview_max_width = 320
+        self._preview_quality = 5
+
         self._send_lock = asyncio.Lock()
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._sem = asyncio.Semaphore(max_concurrent)
@@ -2385,6 +2396,7 @@ class WorkerAgent:
             version=default_worker_version(),
             novnc_url=self.novnc_url,
             lane_novnc_urls=lane_urls,
+            supports_preview_push=True,
         )
 
     # ------------------------------------------------------------------ send
@@ -3048,6 +3060,7 @@ class WorkerAgent:
         hb_task = asyncio.create_task(self._heartbeat_loop())
         reaper_task = asyncio.create_task(self._idle_tab_reaper_loop())
         disk_task = asyncio.create_task(self._disk_cleanup_loop())
+        preview_task = asyncio.create_task(self._preview_capture_loop())
         try:
             async for raw in self._ws:
                 try:
@@ -3060,6 +3073,7 @@ class WorkerAgent:
             hb_task.cancel()
             reaper_task.cancel()
             disk_task.cancel()
+            preview_task.cancel()
 
     async def _heartbeat_loop(self) -> None:
         try:
@@ -3451,6 +3465,11 @@ class WorkerAgent:
             # Don't block the recv loop on ffmpeg; fan out to a task.
             asyncio.create_task(self._handle_screenshot(msg))
             return
+        if isinstance(msg, HubPreviewSubscribe):
+            # Push-based previews: an admin is watching us -> (re)arm the
+            # self-capture loop. Cheap synchronous state update.
+            self._on_preview_subscribe(msg)
+            return
         if isinstance(msg, HubSessionStart):
             asyncio.create_task(self._handle_session_start(msg))
             return
@@ -3542,6 +3561,67 @@ class WorkerAgent:
             _logger.info(
                 f"[worker {self.worker_id}] failed to send screenshot reply: {e}"
             )
+
+    # ------------------------------------------------ push-based previews
+
+    def _on_preview_subscribe(self, msg: HubPreviewSubscribe) -> None:
+        """Hub says an admin is watching us: (re)arm + extend the self-capture
+        loop's interest window. None lanes = all of our active lanes."""
+        if msg.lanes is None:
+            n = len(self.lane_pool.lanes) if self.lane_pool is not None else 0
+            self._preview_lanes = set(range(n))
+        else:
+            self._preview_lanes = {int(x) for x in msg.lanes}
+        self._preview_interval = max(2.0, float(msg.interval_s or 10.0))
+        self._preview_max_width = int(msg.max_width or 320)
+        self._preview_quality = int(msg.quality or 5)
+        self._preview_until = time.monotonic() + max(5.0, float(msg.ttl_s or 30.0))
+
+    async def _preview_capture_loop(self) -> None:
+        """While an admin is watching (interest not expired), capture each
+        watched lane on a timer and PUSH it to the hub. The hub caches it in
+        Redis for the #screens grid, so the grid never triggers a live
+        capture. Self-quiesces (cheap idle poll) once the interest window
+        lapses -- the hub stops refreshing it when nobody's watching."""
+        import base64
+
+        while True:
+            try:
+                lanes = self._preview_lanes
+                if (
+                    lanes
+                    and self.lane_pool is not None
+                    and time.monotonic() < self._preview_until
+                ):
+                    for li in sorted(lanes):
+                        if not (0 <= li < len(self.lane_pool.lanes)):
+                            continue
+                        try:
+                            jpeg = await self.lane_pool.lanes[li].screenshot(
+                                max_width=self._preview_max_width,
+                                quality=self._preview_quality,
+                            )
+                        except Exception:
+                            continue
+                        try:
+                            await self._send(
+                                WorkerPreviewFrame(
+                                    lane_idx=li,
+                                    jpeg_b64=base64.b64encode(jpeg).decode("ascii"),
+                                    width=self._preview_max_width,
+                                    ts=time.time(),
+                                )
+                            )
+                        except Exception:
+                            pass
+                    await asyncio.sleep(self._preview_interval)
+                else:
+                    # Not subscribed / interest expired: idle poll for re-arm.
+                    await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(2.0)
 
     # --------------------------------------------------- session handlers
 

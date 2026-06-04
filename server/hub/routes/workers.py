@@ -461,12 +461,27 @@ async def worker_lane_preview(
                 return await _proxy_request_to_hub(owner, request, 12.0)
         raise HTTPException(404, f"worker '{worker_id}' not connected")
     ffmpeg_q = _ffmpeg_q_from_quality_pct(quality)
+    # Bound concurrency the SAME way the batch path does: every screenshot RPC
+    # on this hub -- whether it arrived as a direct single-tile GET or was
+    # forwarded here by a peer hub's cross-hub preview batch -- shares the one
+    # per-hub _preview_semaphore. Without this, a peer's full-grid batch fans
+    # ~20+ forwarded GETs at us at once and each fires an UNBOUNDED screenshot
+    # RPC: the worker fleet gets slammed and captures that take ~0.1s in
+    # isolation balloon past the deadline -> 504 storms on multi-hub #screens.
+    # Forwarded tiles also take the short batch deadline so a busy worker
+    # releases its slot fast; the focused single-tile panel (direct GET) keeps
+    # the generous default so a human staring at one slow lane still gets it.
+    from server.hub.routes.sessions import _FWD_MARK as _fwd_hdr
+    forwarded = bool(request.headers.get(_fwd_hdr))
+    rpc_timeout = _PREVIEW_RPC_TIMEOUT if forwarded else 8.0
     try:
-        reply = await worker.request_screenshot(
-            lane_idx,
-            max_width=width,
-            quality=ffmpeg_q,
-        )
+        async with _preview_semaphore():
+            reply = await worker.request_screenshot(
+                lane_idx,
+                max_width=width,
+                quality=ffmpeg_q,
+                timeout=rpc_timeout,
+            )
     except TimeoutError:
         raise HTTPException(504, f"screenshot timed out for lane {lane_idx}")
     except Exception as e:
@@ -572,6 +587,24 @@ def _preview_semaphore():
     return _preview_sem
 
 
+_fwd_http_client = None  # one pooled httpx client for cross-hub preview forwards
+
+
+def _fwd_http():
+    """Lazily-created shared AsyncClient (keep-alive connection pool) for
+    forwarding lane-preview captures to peer hubs. One client process-wide so
+    the TCP connection to each peer hub is reused across tiles/polls instead of
+    a fresh handshake per forward. Bound to the running loop on first use."""
+    global _fwd_http_client
+    if _fwd_http_client is None:
+        import httpx
+        _fwd_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(6.0, connect=2.0),
+            limits=httpx.Limits(max_connections=128, max_keepalive_connections=64),
+        )
+    return _fwd_http_client
+
+
 async def _capture_via_owner(owner_hub, wid, lane, width, quality_pct):
     """Multi-hub: fetch one lane preview from the PEER hub that owns the
     worker's control WS (this hub can't capture a worker it doesn't hold).
@@ -579,21 +612,26 @@ async def _capture_via_owner(owner_hub, wid, lane, width, quality_pct):
     single-preview endpoint runs locally (its _FWD_MARK guard stops a bounce)."""
     import base64
 
-    import httpx
     from server.hub.routes.sessions import _FWD_MARK, _hub_internal_url
     url = _hub_internal_url(owner_hub, f"/workers/{wid}/lanes/{lane}/preview")
     headers = {_FWD_MARK: config.hub_id or "1"}
     if getattr(config, "worker_secret", ""):
         headers["X-Paprika-Worker-Secret"] = config.worker_secret
     try:
-        # > the peer's single-preview capture deadline (~8s) so the forward
-        # doesn't ReadTimeout before the peer finishes / returns a clean 504.
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            r = await client.get(
-                url,
-                params={"width": width, "quality": quality_pct},
-                headers=headers,
-            )
+        # Reuse ONE pooled keep-alive client (see _fwd_http) instead of a fresh
+        # AsyncClient per tile: a full #screens grid forwards ~30+ tiles to peer
+        # hubs every poll, and a new client each meant ~30 cold TCP handshakes
+        # per batch -- a big chunk of multi-hub batch latency. The 6s timeout
+        # (down from 12s) bounds a slow/stalled peer so the batch fails that tile
+        # FAST (-> stale-frame fallback) instead of hanging ~12-22s and letting
+        # successive 5s polls pile into an event-loop stall. It still exceeds the
+        # peer's 4s forwarded-capture deadline so a clean 504 wins the race.
+        r = await _fwd_http().get(
+            url,
+            params={"width": width, "quality": quality_pct},
+            headers=headers,
+            timeout=6.0,
+        )
     except Exception as e:
         return None, f"peer {owner_hub}: {type(e).__name__}"
     if r.status_code != 200:
@@ -601,48 +639,76 @@ async def _capture_via_owner(owner_hub, wid, lane, width, quality_pct):
     return base64.b64encode(r.content).decode("ascii"), None
 
 
+# On a capture failure, reuse the most recent good frame if it's younger than
+# this. A monitoring grid should ride out a transient hiccup -- a worker that's
+# momentarily too busy to screenshot, or a peer hub that briefly stalls under
+# live load (an event-loop block makes ALL its forwarded tiles time out at
+# once) -- by showing the last frame for a poll or two instead of flashing a
+# red "Capture failed" tile, then refreshing the instant a capture succeeds.
+# A worker genuinely dark for longer than this finally surfaces the error.
+# Ghosts never reach this path: the owner-gated alive set (scheduler
+# _fetch_known_workers) keeps disconnected workers out of the grid entirely.
+_PREVIEW_STALE_MAX = 30.0
+
+
+def _stale_fallback(key, err):
+    """Failed capture -> (last_good_b64, None, stale=True) when a recent frame
+    is cached, else (None, err, False)."""
+    hit = _PREVIEW_FRAME_CACHE.get(key)
+    if hit is not None and hit[1] and (time.monotonic() - hit[0]) <= _PREVIEW_STALE_MAX:
+        return hit[1], None, True
+    return None, err, False
+
+
 async def _do_capture_frame(key, quality_pct=30):
-    """Actually capture one lane frame. Returns (jpeg_b64, error_str) with
-    exactly one non-None. Never raises -- a single bad lane must not tear
-    down the whole batch stream. Result is cached on success."""
+    """Serve one grid tile -- a PURE Redis cache read (push-based previews).
+    Returns (jpeg_b64, error_str, stale): jpeg_b64 XOR error_str non-None;
+    stale=True means the served frame is a recent-but-not-fresh push. Workers
+    self-capture watched lanes on their own ~10s timer and PUSH frames the hub
+    caches in Redis (interest-gated -- see scheduler.preview_subscribe_loop), so
+    a full-grid poll is O(redis get) per tile with NO live capture and NO
+    cross-hub hop. That decouples capture rate from admin poll rate, which is
+    what eliminates the per-poll capture storm / hub-event-loop cascade. Never
+    raises -- a single bad lane must not tear down the batch stream."""
     wid, lane, width, ffmpeg_q = key
     if state.registry is None:
-        return None, "registry not ready"
-    worker = state.registry.connections.get(wid)
-    if worker is None:
-        # Multi-hub: capture on the hub that owns this worker's control WS.
+        return None, "registry not ready", False
+    reg = state.registry
+    # Push-based fast path: if the worker self-captures and PUSHES frames, serve
+    # the latest from Redis -- NO live capture, NO cross-hub forward. This is
+    # what stops a full #screens grid from triggering a per-poll capture storm:
+    # capture runs on the worker's own ~10s timer; the grid just reads cache.
+    # Marking watch keeps the worker's OWNER hub subscribing it. Falls through
+    # to the legacy live path for workers not yet pushing (mixed fleet / no redis).
+    try:
+        await reg.preview_mark_watch(wid)
+        pf = await reg.preview_get_frame(wid, lane)
+    except Exception:
+        pf = None
+    if pf and pf.get("b"):
+        b64 = pf["b"]
+        _PREVIEW_FRAME_CACHE[key] = (time.monotonic(), b64)
         try:
-            owner = await state.registry.owner_of(wid)
+            stale = (time.time() - float(pf.get("t") or 0.0)) > 15.0
         except Exception:
-            owner = None
-        if owner and owner != config.hub_id:
-            return await _capture_via_owner(owner, wid, lane, width, quality_pct)
-        return None, "worker not connected"
-    async with _preview_semaphore():
-        try:
-            reply = await worker.request_screenshot(
-                lane, max_width=width, quality=ffmpeg_q,
-                timeout=_PREVIEW_RPC_TIMEOUT,
-            )
-        except TimeoutError:
-            return None, "timeout"
-        except Exception as e:
-            return None, f"send failed: {e}"
-    if reply is None:
-        # request_screenshot returns None on mid-flight cancellation.
-        return None, "cancelled"
-    if reply.error:
-        return None, reply.error
-    b64 = reply.jpeg_b64 or ""
-    _PREVIEW_FRAME_CACHE[key] = (time.monotonic(), b64)
-    return b64, None
+            stale = False
+        return b64, None, stale
+    # No pushed frame yet (worker warming up its push loop, not watched long
+    # enough, or an old build that doesn't push): serve the last-known frame if
+    # still recent, else a light "warming" miss -- the worker's ~10s push
+    # refreshes it shortly. The grid deliberately does NOT live-capture here:
+    # a synchronous per-tile capture (esp. the cross-hub forward) is exactly
+    # what made a full-grid poll cascade into a hub-event-loop stall under load.
+    # On-demand live capture still lives in the focused single-tile GET
+    # (worker_lane_preview), which is low-volume.
+    return _stale_fallback(key, "warming")
 
 
 async def _capture_one_frame(key, quality_pct=30):
     """Cache-first, coalescing wrapper around _do_capture_frame."""
     hit = _PREVIEW_FRAME_CACHE.get(key)
     if hit is not None and (time.monotonic() - hit[0]) <= _PREVIEW_CACHE_TTL:
-        return hit[1], None
+        return hit[1], None, False
     task = _PREVIEW_INFLIGHT.get(key)
     if task is None:
         task = asyncio.ensure_future(_do_capture_frame(key, quality_pct))
@@ -656,12 +722,14 @@ async def _capture_one_frame(key, quality_pct=30):
 
 async def _preview_line(wid, lane, width, ffmpeg_q, quality_pct=30):
     """Produce one NDJSON line for a lane (capture + serialize)."""
-    b64, err = await _capture_one_frame((wid, lane, width, ffmpeg_q), quality_pct)
+    b64, err, stale = await _capture_one_frame((wid, lane, width, ffmpeg_q), quality_pct)
     rec = {"wid": wid, "lane": lane}
     if err:
         rec["error"] = err
     else:
         rec["jpeg_b64"] = b64
+        if stale:
+            rec["stale"] = True
     return _json.dumps(rec, separators=(",", ":")) + "\n"
 
 
@@ -783,6 +851,7 @@ from server.protocol import (
     WorkerJobFailed,
     WorkerJobLog,
     WorkerJobProgress,
+    WorkerPreviewFrame,
     WorkerRegister,
     WorkerScreenshotReply,
     WorkerSessionActionResult,
@@ -1777,6 +1846,15 @@ async def _handle_worker_message(worker, msg) -> None:
 
     if isinstance(msg, WorkerScreenshotReply):
         worker.deliver_screenshot_reply(msg)
+        return
+
+    if isinstance(msg, WorkerPreviewFrame):
+        # Worker self-captured a watched lane and pushed it. Cache in Redis so
+        # ANY hub serves it to #screens without a live cross-hub capture.
+        if state.registry is not None and msg.jpeg_b64:
+            await state.registry.preview_put_frame(
+                worker.worker_id, msg.lane_idx, msg.jpeg_b64, msg.ts, msg.width,
+            )
         return
 
     if isinstance(msg, WorkerSessionStartAck):

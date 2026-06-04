@@ -71,6 +71,22 @@ def _k_owner(worker_id: str) -> str:
     return f"paprika:worker:{worker_id}:owner"
 
 
+# Push-based preview cache (Redis-backed so ANY hub can serve a frame that was
+# captured on the worker's OWNER hub). Workers push frames on a ~10s timer, but
+# only while an admin is watching (see WorkerRegistry.preview_subscribe_loop),
+# which decouples capture rate from admin poll rate.
+PREVIEW_FRAME_TTL = 25   # secs a worker-pushed frame stays servable
+PREVIEW_WATCH_TTL = 30   # secs an admin's "watching" interest persists in redis
+
+
+def _k_preview_frame(worker_id: str, lane: int) -> str:
+    return f"paprika:preview:frame:{worker_id}:{lane}"
+
+
+def _k_preview_watch(worker_id: str) -> str:
+    return f"paprika:preview:watch:{worker_id}"
+
+
 # Atomic compare-and-delete: only drop the owner key if it still points
 # at US. Guards the race where a worker's WS flaps from hub A to hub B
 # (B's register sets owner=B) and A's delayed unregister would otherwise
@@ -486,6 +502,89 @@ class WorkerRegistry:
             await self._r.set(_k_owner(worker_id), self._hub_id, ex=WORKER_TTL)
         return worker
 
+    # ----- push-based preview cache + interest signalling ------------------
+    async def preview_put_frame(
+        self, worker_id: str, lane: int, jpeg_b64: str, ts, width,
+    ) -> None:
+        """Store a worker-PUSHED preview frame in Redis so any hub serving the
+        admin grid reads it without a live cross-hub capture."""
+        if self._r is None:
+            return
+        try:
+            await self._r.set(
+                _k_preview_frame(worker_id, lane),
+                json.dumps(
+                    {"b": jpeg_b64, "t": float(ts or 0.0), "w": int(width or 0)}
+                ),
+                ex=PREVIEW_FRAME_TTL,
+            )
+        except Exception:
+            pass
+
+    async def preview_get_frame(self, worker_id: str, lane: int):
+        """Most-recent pushed frame as {'b':jpeg_b64,'t':ts,'w':width}, or None."""
+        if self._r is None:
+            return None
+        try:
+            raw = await self._r.get(_k_preview_frame(worker_id, lane))
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            return json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+        except Exception:
+            return None
+
+    async def preview_mark_watch(self, worker_id: str) -> None:
+        """Record (cross-hub, via Redis) that an admin is watching this worker
+        NOW. The worker's OWNER hub reads this in preview_subscribe_loop to ask
+        the worker to self-capture; the key self-expires so interest fades once
+        the operator closes #screens."""
+        if self._r is None:
+            return
+        try:
+            await self._r.set(_k_preview_watch(worker_id), "1", ex=PREVIEW_WATCH_TTL)
+        except Exception:
+            pass
+
+    async def preview_is_watched(self, worker_id: str) -> bool:
+        if self._r is None:
+            return False
+        try:
+            return bool(await self._r.get(_k_preview_watch(worker_id)))
+        except Exception:
+            return False
+
+    async def preview_subscribe_loop(self, interval_s: float = 8.0) -> None:
+        """Background loop: while an admin is watching one of THIS hub's
+        connected workers, tell that worker to self-capture + push its lanes
+        (HubPreviewSubscribe). Only workers advertising supports_preview_push
+        are messaged (older ones can't parse the type and keep the legacy pull
+        path). Sends nothing when nobody is watching, so an idle fleet / an
+        unwatched grid costs zero capture."""
+        from server.protocol import HubPreviewSubscribe
+        while True:
+            try:
+                for worker_id, worker in list(self.connections.items()):
+                    caps = getattr(worker, "capabilities", None)
+                    if not getattr(caps, "supports_preview_push", False):
+                        continue
+                    try:
+                        if not await self.preview_is_watched(worker_id):
+                            continue
+                        await worker.send(
+                            HubPreviewSubscribe(
+                                lanes=None, interval_s=10.0, ttl_s=30.0,
+                                max_width=320, quality=5,
+                            )
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            await asyncio.sleep(interval_s)
+
     async def unregister(self, worker_id: str) -> None:
         self.connections.pop(worker_id, None)
         self.assignments.pop(worker_id, None)
@@ -732,7 +831,21 @@ class WorkerRegistry:
             # admin / a peer hub shows the whole fleet as offline. Dispatch
             # (pick_worker -> alive_workers -> self.connections) is unaffected;
             # this only changes the DISPLAY of redis-known rows.
-            _alive = bool(last_ts) and (time.time() - float(last_ts)) < WORKER_TTL
+            # A redis-known row is "alive" only when BOTH (a) its heartbeat is
+            # fresh AND (b) some hub still holds its control-WS -- i.e. the
+            # _k_owner lease is present. Gating on (a) alone lets a disconnected
+            # worker linger as alive=True until its heartbeat index ages out
+            # (WORKER_TTL=120s); but with no owner the preview/forward path can
+            # only answer "worker not connected", so #screens renders a ghost
+            # tile that ALWAYS fails to capture ("worker not connected" /
+            # "peer HTTP 404"). unregister() clears the lease on a clean
+            # disconnect, so requiring it drops those ghost tiles at once; a
+            # crashed worker's lease still TTLs out inside the same window. The
+            # owner lease is (re)written on every heartbeat alongside the index,
+            # so a genuinely-connected worker (incl. one held by a PEER hub) is
+            # never wrongly hidden. (owner is fetched above for hub_id.)
+            _fresh = bool(last_ts) and (time.time() - float(last_ts)) < WORKER_TTL
+            _alive = _fresh and bool(owner)
             out.append({
                 "worker_id": wid,
                 "in_flight": 0,

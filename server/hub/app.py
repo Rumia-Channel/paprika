@@ -398,6 +398,7 @@ async def lifespan(app: FastAPI):
     # admin role: a read-only management service must never evict sessions,
     # delete records, prune the registry, or re-dispatch jobs.
     reaper_task = retire_task = dead_worker_task = job_lease_task = None
+    preview_sub_task = None
     if not _ADMIN_MODE:
         reaper_task = asyncio.create_task(_session_reaper_loop())
         retire_task = asyncio.create_task(_skill_convention_reaper_loop())
@@ -407,6 +408,14 @@ async def lifespan(app: FastAPI):
         from server.hub._reaper import _job_lease_loop
 
         job_lease_task = asyncio.create_task(_job_lease_loop())
+
+        # Push-based previews: while an admin watches a worker (interest-gated
+        # via Redis), tell that worker to self-capture + push frames so the
+        # #screens grid serves from cache instead of a live cross-hub capture.
+        if state.registry is not None:
+            preview_sub_task = asyncio.create_task(
+                state.registry.preview_subscribe_loop()
+            )
 
     # Cross-hub config/knowledge propagation (Phase B): subscribe to the
     # registry-invalidation channel and surgically apply peer edits to the
@@ -498,7 +507,7 @@ async def lifespan(app: FastAPI):
     yield
 
     for _t in (reaper_task, retire_task, dead_worker_task, job_lease_task,
-               invalidate_task):
+               invalidate_task, preview_sub_task):
         if _t is not None:
             _t.cancel()
     if smb_watchdog_task is not None:

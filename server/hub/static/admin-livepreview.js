@@ -427,11 +427,19 @@ function ssApplyPreviewFrame(rec) {
   const tile = ssTiles.get(rec.wid + '/' + rec.lane);
   if (!tile) return;
   if (rec.error) {
-    // Mirror the <img> onerror path so the .sserr overlay + loading-state
-    // clearing stay consistent with single-tile failures.
+    // "warming" is a NORMAL push-preview state, not a failure: the worker is
+    // spinning up its self-capture loop (it pushes a frame within ~10s). Show
+    // it neutrally -- and if we already have a (cached) frame, just keep it
+    // rather than overlaying text, so the grid doesn't flash on every poll.
+    const warming = rec.error === 'warming';
     if (tile.err) {
-      tile.err.textContent = 'capture failed (' + rec.error + ')';
-      tile.err.style.display = 'block';
+      if (warming && tile.img && tile.img.src) {
+        tile.err.style.display = 'none';
+      } else {
+        tile.err.textContent = warming ? 'warming…' : ('capture failed (' + rec.error + ')');
+        tile.err.style.color = warming ? '#9aa0a6' : '';
+        tile.err.style.display = 'block';
+      }
     }
     tile.wrap.classList.remove('loading');
     return;

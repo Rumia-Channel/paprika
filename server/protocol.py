@@ -392,6 +392,15 @@ class WorkerCapabilities(BaseModel):
         "this so the live-screenshot tiles can link directly "
         "to the matching VNC viewer.",
     )
+    supports_preview_push: bool = Field(
+        False,
+        description="Worker runs the self-capture preview loop: it captures "
+        "watched lanes on a timer and PUSHES WorkerPreviewFrame to "
+        "the hub (cached in Redis), instead of the hub pulling a live "
+        "screenshot per admin poll. The hub only sends "
+        "HubPreviewSubscribe to workers that advertise this; older "
+        "workers keep the legacy pull path. Set by new worker builds.",
+    )
 
 
 # --- Worker → Hub ----------------------------------------------------------
@@ -530,6 +539,28 @@ class WorkerScreenshotReply(BaseModel):
     # If set, the worker failed to capture the lane (e.g. ffmpeg crashed,
     # lane index out of range). hub turns this into a 5xx for the admin UI.
     error: str | None = None
+
+
+class WorkerPreviewFrame(BaseModel):
+    """Worker-PUSHED lane preview frame (push-based previews).
+
+    A worker advertising ``supports_preview_push`` captures each watched
+    lane on its own ~10s timer (see HubPreviewSubscribe) and sends this
+    unsolicited. The hub writes it to a Redis frame cache
+    (``preview:frame:{worker_id}:{lane_idx}``) that ANY hub serves to the
+    admin #screens grid -- decoupling capture rate from admin poll rate so
+    a full-grid poll never triggers a live cross-hub screenshot storm.
+    Unlike WorkerScreenshotReply there is no req_id: it's not a reply."""
+
+    type: Literal["preview_frame"] = "preview_frame"
+    lane_idx: int
+    # JPEG bytes, base64-encoded.
+    jpeg_b64: str = ""
+    # Actual encoded width in px (after downscale); admin may show it.
+    width: int = 0
+    # Worker capture wall-clock (epoch secs) so the admin can show frame age
+    # / "N s ago" and tell a static screen apart from a stalled worker.
+    ts: float = 0.0
 
 
 # --- Session protocol (RFC-001 §7) ----------------------------------------
@@ -681,6 +712,7 @@ WorkerToHubMsg = Annotated[
         WorkerJobComplete,
         WorkerJobFailed,
         WorkerScreenshotReply,
+        WorkerPreviewFrame,
         WorkerSessionStartAck,
         WorkerSessionActionResult,
         WorkerSessionEndAck,
@@ -841,6 +873,31 @@ class HubScreenshotRequest(BaseModel):
     # Height is computed to preserve the aspect ratio. None = native size.
     max_width: int | None = 480
     # JPEG quality 2..31 (lower is better; ffmpeg's -q:v scale).
+    quality: int = 5
+
+
+class HubPreviewSubscribe(BaseModel):
+    """Tell a worker which lanes are CURRENTLY being watched in the admin
+    #screens grid, so it self-captures + pushes WorkerPreviewFrame for them.
+
+    Interest-gated + self-expiring: the hub (re)sends this while at least one
+    admin is watching the worker (a ``preview:watch:{worker_id}`` key is live
+    in Redis). The worker keeps capturing for ``ttl_s`` after the last one it
+    received, then STOPS -- so if every admin closes #screens (or the hub
+    dies), capture quiesces on its own and idle workers pay nothing. Only sent
+    to workers that advertised ``supports_preview_push`` (older workers can't
+    parse this type)."""
+
+    type: Literal["preview_subscribe"] = "preview_subscribe"
+    # Lane indices to capture; None = all of the worker's active lanes.
+    lanes: list[int] | None = None
+    # Seconds between captures of each watched lane.
+    interval_s: float = 10.0
+    # Keep capturing for this long after THIS message; the hub refreshes it
+    # well within the window while a viewer remains.
+    ttl_s: float = 30.0
+    max_width: int = 320
+    # ffmpeg mjpeg q (2..31, lower=better).
     quality: int = 5
 
 
@@ -1101,6 +1158,7 @@ HubToWorkerMsg = Annotated[
         HubPing,
         HubRegistered,
         HubScreenshotRequest,
+        HubPreviewSubscribe,
         HubSessionStart,
         HubSessionAction,
         HubSessionEnd,
