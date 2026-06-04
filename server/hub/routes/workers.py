@@ -457,7 +457,8 @@ async def worker_lane_preview(
             except Exception:
                 owner = None
             if owner and owner != config.hub_id:
-                return await _proxy_request_to_hub(owner, request, 8.0)
+                # > the owner's ~8s capture deadline so we don't time out first.
+                return await _proxy_request_to_hub(owner, request, 12.0)
         raise HTTPException(404, f"worker '{worker_id}' not connected")
     ffmpeg_q = _ffmpeg_q_from_quality_pct(quality)
     try:
@@ -585,7 +586,9 @@ async def _capture_via_owner(owner_hub, wid, lane, width, quality_pct):
     if getattr(config, "worker_secret", ""):
         headers["X-Paprika-Worker-Secret"] = config.worker_secret
     try:
-        async with httpx.AsyncClient(timeout=_PREVIEW_RPC_TIMEOUT + 2.0) as client:
+        # > the peer's single-preview capture deadline (~8s) so the forward
+        # doesn't ReadTimeout before the peer finishes / returns a clean 504.
+        async with httpx.AsyncClient(timeout=12.0) as client:
             r = await client.get(
                 url,
                 params={"width": width, "quality": quality_pct},
