@@ -502,6 +502,29 @@ class WorkerRegistry:
             await self._r.set(_k_owner(worker_id), self._hub_id, ex=WORKER_TTL)
         return worker
 
+    async def persist_client_address(self, worker_id: str, address: str | None) -> None:
+        """Write a worker's client_address into its Redis row right away, so a
+        NON-OWNER hub serving /workers shows the IP immediately instead of
+        waiting for the worker's first heartbeat to stamp it. Without this the
+        IP column flickered to '-' for freshly-(re)connected workers whenever
+        nginx routed /workers to a hub that does not own that worker's WS.
+        No-op for single-hub / no-redis / empty address."""
+        if self._r is None:
+            return
+        addr = (address or "").strip()
+        if not addr:
+            return
+        try:
+            raw = await self._r.get(_k_worker(worker_id))
+            if not raw:
+                return
+            d = json.loads(raw)
+            if isinstance(d, dict) and d.get("address") != addr:
+                d["address"] = addr
+                await self._r.set(_k_worker(worker_id), json.dumps(d))
+        except Exception:
+            pass
+
     # ----- push-based preview cache + interest signalling ------------------
     async def preview_put_frame(
         self, worker_id: str, lane: int, jpeg_b64: str, ts, width,

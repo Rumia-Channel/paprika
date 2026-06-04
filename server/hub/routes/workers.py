@@ -1074,7 +1074,18 @@ async def worker_link(ws: WebSocket, worker_id: str):
     # VMware copy, dd, container volume copy, ...). Mint a fresh ID and
     # hand it back via HubRegistered.assigned_worker_id so the worker can
     # adopt it, persist it, and reconnect.
-    new_ip = ws.client.host if ws.client else None
+    # Derive the worker's REAL LAN IP the same way client_address is set
+    # below (X-Real-IP, else first X-Forwarded-For hop) -- NOT the raw socket
+    # peer. Behind the multi-hub nginx front ws.client.host is the front's IP
+    # (e.g. 10.10.50.34) for EVERY worker, so comparing it against the
+    # header-derived existing_ip below false-positives a clone collision on
+    # every reconnect-while-alive and flaps the whole fleet. existing_ip is
+    # header-derived, so new_ip MUST be too (apples-to-apples).
+    _new_real_ip = (
+        ws.headers.get("x-real-ip")
+        or (ws.headers.get("x-forwarded-for") or "").split(",")[0]
+    ).strip()
+    new_ip = _new_real_ip or (ws.client.host if ws.client else None)
     existing = state.registry.connections.get(worker_id)
     if existing is not None:
         existing_alive = (time.time() - existing.last_heartbeat) < WORKER_TTL
@@ -1128,6 +1139,14 @@ async def worker_link(ws: WebSocket, worker_id: str):
         worker.client_address = _real_ip or (ws.client.host if ws.client else None)
     except Exception:
         worker.client_address = None
+    # Persist the IP into the worker's Redis row NOW (not only on the first
+    # heartbeat) so a NON-OWNER hub serving /workers shows it immediately --
+    # closes the cross-hub window where the IP column flickered to '-' for a
+    # freshly-(re)connected worker until its first heartbeat re-stamped it.
+    try:
+        await state.registry.persist_client_address(worker_id, worker.client_address)
+    except Exception:
+        pass
     log.info(
         "worker connected: %s  capacity=%d  labels=%s  base_url=%s  from=%s",
         worker_id,
