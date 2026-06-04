@@ -2305,6 +2305,28 @@ class WorkerAgent:
         self._wd_threshold_s = max(60.0, _wd_base) + random.uniform(0.0, 60.0)
         self._wd_check_s = 30.0
         self._wd_last_pong = 0.0
+        # v2 -- second wedge signal. A loop that still runs the call_soon poke
+        # (so the pong check passes) but whose coroutines are stuck (no
+        # successful hub heartbeat) is ALSO wedged, just async-style: a hung
+        # await rather than a blocked loop. This is the DOMINANT heavy-site /
+        # monsnode failure the pong check alone misses. Fire when _last_link_ok
+        # has been stale far longer than the old _reconnect_giveup_s 120s that
+        # false-fired on busy workers -- default ~10min (+jitter), so a normal
+        # ~90s reconnect or a 120s load-induced heartbeat miss never trips it;
+        # only a genuinely stuck worker does. Set
+        # PAPRIKA_WORKER_WATCHDOG_LINK_THRESHOLD_S=0 to disable just this arm
+        # (the loop-wedge arm above stays active).
+        try:
+            _wd_link_base = float(
+                os.environ.get("PAPRIKA_WORKER_WATCHDOG_LINK_THRESHOLD_S", "600")
+            )
+        except (TypeError, ValueError):
+            _wd_link_base = 600.0
+        self._wd_link_threshold_s = (
+            max(300.0, _wd_link_base) + random.uniform(0.0, 60.0)
+            if _wd_link_base > 0
+            else 0.0
+        )
         # Active session_id -> SessionState. Sessions hold the
         # nodriver browser/tab attached to a Lane between actions.
         self._sessions: dict[str, SessionState] = {}
@@ -2615,6 +2637,29 @@ class WorkerAgent:
                 except Exception:
                     pass
                 os._exit(WORKER_EXIT_CODE_VERSION_MISMATCH)
+            # v2: loop still ticks (pong fresh above) but no successful hub
+            # heartbeat for a long time => coroutines wedged (async hang -- the
+            # dominant heavy-site / monsnode failure). _last_link_ok is seeded
+            # at run() start + refreshed on every heartbeat; the >0 guard skips
+            # the pre-loop window. Threshold ~5x the old 120s that false-fired,
+            # so normal reconnects / load-induced heartbeat misses don't trip.
+            if (
+                self._wd_link_threshold_s > 0
+                and self._last_link_ok > 0
+                and (time.monotonic() - self._last_link_ok) > self._wd_link_threshold_s
+            ):
+                link_stale = time.monotonic() - self._last_link_ok
+                try:
+                    _logger.critical(
+                        f"[worker {self.worker_id}] hub link STUCK: no successful "
+                        f"heartbeat for {link_stale:.0f}s (> "
+                        f"{self._wd_link_threshold_s:.0f}s) while the loop still "
+                        f"ticks -- coroutines wedged -> "
+                        f"exit({WORKER_EXIT_CODE_VERSION_MISMATCH})"
+                    )
+                except Exception:
+                    pass
+                os._exit(WORKER_EXIT_CODE_VERSION_MISMATCH)
 
     async def run(self) -> None:
         """Reconnect loop. Reconnects with backoff on disconnect."""
@@ -2669,7 +2714,8 @@ class WorkerAgent:
             ).start()
             _logger.info(
                 f"[worker {self.worker_id}] loop-watchdog armed "
-                f"(wedge threshold {self._wd_threshold_s:.0f}s, check {self._wd_check_s:.0f}s)"
+                f"(wedge {self._wd_threshold_s:.0f}s, link-stuck "
+                f"{self._wd_link_threshold_s:.0f}s, check {self._wd_check_s:.0f}s)"
             )
         async with make_async_client(timeout=60.0) as http:
             self._http = http
