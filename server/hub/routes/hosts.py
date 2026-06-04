@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from server.hub._state import config, get_storage_dir, state
+from server.hub._invalidate import share_delete, share_upsert
 from server.hub.host_visited import HostVisitedRegistry
 from server.hub.hosts import HostRegistry, _normalise_host
 
@@ -585,6 +586,7 @@ async def put_host(host: str, body: dict) -> dict:
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    await share_upsert("hosts", reg, rec)
     return _host_to_dict(rec, include_visited_count=True)
 
 
@@ -632,6 +634,7 @@ async def append_host_recipe(host: str, body: dict) -> dict:
         rec = reg.append_recipe(host, body)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    await share_upsert("hosts", reg, rec)
     return _host_to_dict(rec, include_visited_count=True)
 
 
@@ -648,6 +651,7 @@ async def delete_host(host: str) -> dict:
             state.host_visited.delete_host(host)
         except Exception:
             pass
+    await share_delete("hosts", _normalise_host(host))
     return {"host": _normalise_host(host), "deleted": True}
 
 
@@ -688,6 +692,7 @@ async def put_host_login_recipe(host: str, body: dict) -> dict:
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    await share_upsert("hosts", reg, rec)
     return {
         "host": rec.host,
         "login_url": rec.login_url,
