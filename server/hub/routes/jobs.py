@@ -1045,7 +1045,7 @@ async def list_attempts(job_id: str) -> dict:
 
 
 @router.get("/jobs/{job_id}/sessions")
-async def list_job_sessions(job_id: str) -> dict:
+async def list_job_sessions(job_id: str, request: Request) -> dict:
     """Sessions currently owned by this Job (codegen-loop pinned them
     via PAPRIKA_JOB_ID -> parent_job_id). Used by the admin UI's live
     panel to render noVNC iframes for whatever lanes the runner has
@@ -1057,10 +1057,46 @@ async def list_job_sessions(job_id: str) -> dict:
     if state.sessions is None:
         return {"job_id": job_id, "count": 0, "sessions": []}
     matches = [s.to_json() for s in state.sessions.all() if s.job_id == job_id]
-    for m in matches:
-        _proxy_session_dict(m)
-        m["novnc_url_autoconnect"] = _novnc_autoconnect(m.get("novnc_url"))
-    return {"job_id": job_id, "count": len(matches), "sessions": matches}
+    if matches:
+        for m in matches:
+            _proxy_session_dict(m)
+            m["novnc_url_autoconnect"] = _novnc_autoconnect(m.get("novnc_url"))
+        return {"job_id": job_id, "count": len(matches), "sessions": matches}
+
+    # Multi-hub: a keep_session fetch (or Code-mode) job's session lives
+    # on the ONE hub that owns its worker's WS, but nginx round-robins
+    # this GET across every hub -- so ~(N-1)/N of the admin Live panel's
+    # 3s polls land on a hub that holds no local session for this job and
+    # would (wrongly) report an empty list. ljpRefreshSessions reads an
+    # empty list as "session ended" and tears the noVNC iframe down, so
+    # the live viewer flaps in and out and never confirms startup.
+    #
+    # Resolve the job's session_id from the SHARED job store (MariaDB),
+    # look its owner up in the Redis Session Map, and forward this request
+    # to the owning hub. One hop only -- _FWD_MARK guards a stale map from
+    # bouncing the request between hubs. Single-hub deploys, an unknown /
+    # already-reaped session, a codegen-loop job whose JobInfo carries no
+    # session_id, or an already-forwarded request all fall through to the
+    # empty local list below (byte-for-byte unchanged there).
+    from server.hub.routes.sessions import _FWD_MARK, _proxy_request_to_hub
+
+    if not request.headers.get(_FWD_MARK):
+        info = None
+        if state.store is not None:
+            try:
+                info = await state.store.get_job_info(job_id)
+            except Exception:
+                info = None
+        sid = getattr(info, "session_id", None) if info else None
+        if sid and state.sessions.get(sid) is None:
+            try:
+                owner = await state.sessions.lookup_owner(sid)
+            except Exception:
+                owner = None
+            if owner and owner[1] and owner[1] != (config.hub_id or ""):
+                return await _proxy_request_to_hub(owner[1], request, 15.0)
+
+    return {"job_id": job_id, "count": 0, "sessions": []}
 
 
 @router.post("/jobs/{job_id}/refresh")

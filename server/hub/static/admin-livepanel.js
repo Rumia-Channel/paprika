@@ -831,10 +831,19 @@ async function ljpRefreshSessions() {
     // Remove iframes for sessions that are no longer alive (closed by
     // worker / TTL). Keep the special '__job__' iframe (fetch mode);
     // its lifecycle is handled in ljpRefreshStatus.
+    //
+    // Multi-hub guard: /jobs/{id}/sessions is answered by whichever hub
+    // nginx routed THIS poll to. A hub that doesn't own the session
+    // reports it absent even while it's alive on a peer (the hub-side
+    // fix forwards the keep_session-fetch case, but codegen-loop and a
+    // momentarily-stale Session Map can still slip through). Don't tear
+    // the viewer down on that false negative -- confirm via
+    // /sessions/{sid} (which forwards to the owning hub) and only
+    // unmount on a definitive 404.
     for (const sid of Array.from(LJP.vncIframes.keys())) {
       if (sid === '__job__') continue;
       if (!seen.has(sid)) {
-        ljpRemoveVncFrame(sid, 'セッションが終了しました');
+        ljpConfirmSessionGoneThenRemove(sid);
       }
     }
     ljpUpdateVncCount();
@@ -855,6 +864,32 @@ async function ljpRefreshSessions() {
       videoBtn.style.display = sessionPresent ? '' : 'none';
     }
   } catch (_) {}
+}
+
+// Confirm a session is REALLY gone before unmounting its noVNC iframe.
+// /jobs/{id}/sessions can come back empty from a non-owning hub under the
+// multi-hub nginx round-robin even though the session is alive on a peer;
+// /sessions/{sid} forwards to the owning hub, so a 404 there is
+// authoritative. Anything else (200 = alive elsewhere, or a transient
+// network blip) leaves the viewer mounted for the next poll to re-confirm
+// -- so a momentary wrong-hub poll can't flap the live viewer.
+async function ljpConfirmSessionGoneThenRemove(sid) {
+  if (!sid || sid === '__job__') return;
+  try {
+    const r = await fetch('/sessions/' + encodeURIComponent(sid));
+    if (r.status === 404) {
+      // Re-check it's still mounted -- a concurrent poll may have already
+      // removed it -- then tear down for real.
+      if (LJP.vncIframes.has(sid)) {
+        ljpRemoveVncFrame(sid, 'セッションが終了しました');
+        ljpUpdateVncCount();
+      }
+    }
+    // 200 / any non-404 / parse: keep the iframe up; the session is alive
+    // on a peer hub or the check was inconclusive.
+  } catch (_) {
+    // Network error -- inconclusive; leave the viewer mounted.
+  }
 }
 
 // Pull the session's actual current page URL from the worker (via
