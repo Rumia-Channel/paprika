@@ -4,7 +4,16 @@ layout: null
 [
   {% assign pages = site.pages | sort: "title" %}
   {% for page in pages %}
+    {% comment %}
+      Skip search/404 and *internal design docs* — they show up at the top of
+      search results because they're long with many keyword hits, but they're
+      not public-user content. Excluded explicitly by URL.
+    {% endcomment %}
     {% if page.url == "/search.json" or page.url == "/404.html" %}{% continue %}{% endif %}
+    {% if page.url == "/admin-service-plan.html" %}{% continue %}{% endif %}
+    {% if page.url == "/architecture/hub-multiprocess.html" %}{% continue %}{% endif %}
+    {% if page.url == "/deploy.html" %}{% continue %}{% endif %}
+    {% if page.search == false %}{% continue %}{% endif %}
     {% if page.title %}
     {
       "url": {{ page.url | relative_url | jsonify }},
