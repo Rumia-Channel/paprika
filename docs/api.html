@@ -190,7 +190,7 @@ use Paprika\Client\Session;
 $cli = Paprika::connect();
 $cli-&gt;session('https://example.com', function (Session $sess) use ($cli) {
     echo "noVNC: ", $cli-&gt;baseUrl() . $sess-&gt;novncUrl, "\n";
-    // Phase 2: $sess-&gt;goto(...), $sess-&gt;locator(...) ...
+    // 順次対応: $sess-&gt;goto(...), $sess-&gt;locator(...) ...
 });</code></pre>
 
     <h3>現在使える <code>$cli-&gt;*</code> メソッド (Python 版と1:1)</h3>
