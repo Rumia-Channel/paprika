@@ -525,6 +525,41 @@ class WorkerRegistry:
         except Exception:
             pass
 
+    async def drain_local_workers(self) -> int:
+        """Graceful pre-restart (in-flight protection, layer 1): set every
+        LOCALLY-connected worker to 'drain' so THIS hub's pick_worker stops
+        handing them NEW jobs, and mirror the status into each worker's Redis
+        row immediately so peer hubs' cross-hub dispatch (P1) also stops
+        routing jobs here while we drain + restart. In-flight jobs keep
+        running. Workers reset to 'active' on their next register after the
+        restart, so there's nothing to undo. Returns the count drained."""
+        n = 0
+        for wid, w in list(self.connections.items()):
+            try:
+                w.status = "drain"
+                n += 1
+            except Exception:
+                continue
+            if self._r is not None:
+                try:
+                    raw = await self._r.get(_k_worker(wid))
+                    if raw:
+                        d = json.loads(raw)
+                        if isinstance(d, dict):
+                            d["status"] = "drain"
+                            await self._r.set(_k_worker(wid), json.dumps(d))
+                except Exception:
+                    pass
+        return n
+
+    def local_in_flight(self) -> int:
+        """Sum of in-flight jobs across this hub's LOCALLY-connected workers.
+        Used by the prepare-restart drain loop to know when it's safe to
+        restart without failing in-flight work."""
+        return sum(
+            int(getattr(w, "in_flight", 0) or 0) for w in self.connections.values()
+        )
+
     # ----- push-based preview cache + interest signalling ------------------
     async def preview_put_frame(
         self, worker_id: str, lane: int, jpeg_b64: str, ts, width,

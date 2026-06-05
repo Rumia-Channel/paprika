@@ -252,6 +252,39 @@ def _build_worker_plugins_tarball() -> bytes:
     return _build_tarball(_WORKER_PLUGINS_TREE_PATHS)
 
 
+@router.post("/internal/prepare-restart")
+async def prepare_restart(timeout_s: float = 120.0) -> dict:
+    """Graceful pre-restart drain (in-flight protection, layer 1).
+
+    Marks this hub's locally-connected workers ``drain`` -- so this hub stops
+    handing them NEW jobs and (via the Redis status mirror) peer hubs' cross-hub
+    dispatch routes new jobs elsewhere -- then waits up to ``timeout_s`` for
+    their in-flight jobs to finish (local in_flight -> 0). A deploy calls this
+    BEFORE ``docker restart`` so the restart doesn't fail in-flight work.
+    Workers reset to ``active`` on their reconnect after the restart, so there
+    is nothing to un-drain. Returns ok=False (with remaining_in_flight) if the
+    timeout elapses first -- e.g. long-lived keepalive sessions hold a lane and
+    won't drain; those need the layer-2 reconnect-reattach / Redis sessions."""
+    if state.registry is None:
+        return {"ok": False, "reason": "registry not ready"}
+    import asyncio as _asyncio
+    drained = await state.registry.drain_local_workers()
+    _deadline = time.monotonic() + max(0.0, float(timeout_s))
+    inflight = state.registry.local_in_flight()
+    while inflight > 0 and time.monotonic() < _deadline:
+        await _asyncio.sleep(1.0)
+        inflight = state.registry.local_in_flight()
+    log.info(
+        "prepare-restart: drained %d local worker(s); remaining in_flight=%d",
+        drained, inflight,
+    )
+    return {
+        "ok": inflight <= 0,
+        "drained_workers": drained,
+        "remaining_in_flight": inflight,
+    }
+
+
 @router.get("/worker-source.tar.gz")
 async def get_worker_source_tarball() -> Response:
     """Tarball of the source tree the hub expects connected workers to run.
@@ -315,8 +348,38 @@ async def get_worker_plugins_tarball() -> Response:
     return Response(content=data, media_type="application/gzip", headers=headers)
 
 
+async def _maybe_forward_worker(
+    worker_id: str, request: Request, *, forward_timeout: float = 30.0,
+):
+    """If ``worker_id``'s control WS isn't held by THIS hub but the Redis
+    owner lease says a peer hub owns it, reverse-proxy the request there
+    and return that Response. Returns None = "handle locally": the single-
+    hub path, a worker connected here, an already-forwarded hop (loop
+    guard via _FWD_MARK), or a worker owned by no live hub (let the local
+    handler 404 / forget as before).
+
+    This is the worker-scoped twin of sessions._maybe_forward_session --
+    needed because /workers/{id}/* requests round-robin across hubs but a
+    worker's WS (status, logs, screenshot RPCs) lives on exactly one hub.
+    """
+    if state.registry is None:
+        return None
+    if state.registry.connections.get(worker_id) is not None:
+        return None
+    from server.hub.routes.sessions import _FWD_MARK, _proxy_request_to_hub
+    if request.headers.get(_FWD_MARK):
+        return None
+    try:
+        owner = await state.registry.owner_of(worker_id)
+    except Exception:
+        owner = None
+    if not owner or owner == (config.hub_id or ""):
+        return None
+    return await _proxy_request_to_hub(owner, request, forward_timeout)
+
+
 @router.post("/workers/{worker_id}/status")
-async def set_worker_status(worker_id: str, body: dict) -> dict:
+async def set_worker_status(worker_id: str, body: dict, request: Request) -> dict:
     """Operator switch: active / drain / standby.
 
     * ``active``  -- normal scheduling.
@@ -327,6 +390,11 @@ async def set_worker_status(worker_id: str, body: dict) -> dict:
                      "do not auto-resume". State is in-memory only
                      and resets to active when the hub restarts.
     """
+    # Multi-hub: the status lives on the hub holding the worker's WS;
+    # forward there when nginx routed this POST to a peer (else it 404s).
+    fwd = await _maybe_forward_worker(worker_id, request)
+    if fwd is not None:
+        return fwd
     if state.registry is None:
         raise HTTPException(503, "registry not ready")
     worker = state.registry.connections.get(worker_id)
@@ -349,7 +417,7 @@ async def set_worker_status(worker_id: str, body: dict) -> dict:
 
 
 @router.delete("/workers/{worker_id}")
-async def delete_worker(worker_id: str) -> dict:
+async def delete_worker(worker_id: str, request: Request) -> dict:
     """Forget a worker entirely (Redis row + index + in-process logs).
 
     The Workers tab keeps disconnected workers visible so operators can
@@ -361,6 +429,14 @@ async def delete_worker(worker_id: str) -> dict:
     should drain it (status=drain) and disconnect it first; otherwise
     we'd be racing the WS loop. Returns 404 if the id is unknown.
     """
+    # Multi-hub: a worker connected to a PEER hub looks "not connected"
+    # locally, so a non-owner hub would wrongly skip the 409 guard and
+    # forget a LIVE worker. Forward to the owner, which sees its WS and
+    # refuses correctly. A worker owned by no live hub (owner_of -> None)
+    # is genuinely offline -> handle locally and forget.
+    fwd = await _maybe_forward_worker(worker_id, request)
+    if fwd is not None:
+        return fwd
     if state.registry is None:
         raise HTTPException(503, "registry not ready")
     if state.registry.connections.get(worker_id) is not None:
@@ -376,7 +452,7 @@ async def delete_worker(worker_id: str) -> dict:
 
 
 @router.get("/workers/{worker_id}/logs")
-async def get_worker_logs(worker_id: str, limit: int = 200) -> dict:
+async def get_worker_logs(worker_id: str, request: Request, limit: int = 200) -> dict:
     """Recent hub-side activity log for one worker.
 
     Backed by the in-memory ring buffer maintained by ``WorkerRegistry``;
@@ -388,6 +464,12 @@ async def get_worker_logs(worker_id: str, limit: int = 200) -> dict:
     come from forwarded WorkerJobLog messages and are prefixed with the
     short job id so the operator can correlate.
     """
+    # Multi-hub: the ring buffer is in-memory on the hub that owns the
+    # worker's WS; a peer hub has no entries for it. Forward to the owner
+    # so the "..." logs menu isn't empty when nginx routes us to a peer.
+    fwd = await _maybe_forward_worker(worker_id, request)
+    if fwd is not None:
+        return fwd
     if state.registry is None:
         raise HTTPException(503, "registry not ready")
     rows = state.registry.get_logs(worker_id, limit=limit)
