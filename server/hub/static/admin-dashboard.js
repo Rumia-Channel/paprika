@@ -230,8 +230,12 @@ async function refresh() {
     const wcount = workers.count || 0;
     const jcount = jobs.total ?? (jobs.jobs || jobs).length;
     const scount = sessions.count || 0;
+    // workers=${wcount} (shared /workers count, consistent across hubs) not
+    // h.workers (the serving hub's LOCAL connected count, which flickered to
+    // 0 whenever nginx routed /overview to a hub owning no workers). scount is
+    // now the fleet-wide session count too (see /overview).
     document.getElementById('status').textContent =
-      `store=${h.store}  workers=${h.workers}  jobs=${jcount}  sessions=${scount}`;
+      `store=${h.store}  workers=${wcount}  jobs=${jcount}  sessions=${scount}`;
     document.getElementById('cntWorkers').textContent = wcount;
     document.getElementById('cntJobs').textContent = jcount;
     document.getElementById('cntSessions').textContent = scount;
