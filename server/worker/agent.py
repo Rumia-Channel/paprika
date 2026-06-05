@@ -2797,28 +2797,29 @@ class WorkerAgent:
                     return
                 finally:
                     self._ws = None
-                    # The hub is the source of truth for session
-                    # lifecycle; once our WS to it drops we can no
-                    # longer drive any session we currently hold (the
-                    # corresponding paprika-runner process has lost
-                    # its /sessions/{id} reachability too, since the
-                    # runner talks to the hub, not directly to us).
-                    # Force-close everything so when we reconnect the
-                    # worker is in a clean state -- matches the new
-                    # hub's empty session registry.
-                    try:
-                        n = await self._force_end_all_sessions(
-                            "hub WS disconnected",
-                        )
-                        if n:
-                            _logger.info(
-                                f"[worker {self.worker_id}] reset lane pool "
-                                f"after WS drop: {n} session(s) cleared",
-                            )
-                    except Exception as e:
+                    # P2 (session survival): do NOT force-end sessions on a
+                    # transient WS drop. This loop reconnects in place, and the
+                    # hub now PERSISTS full session state in Redis and REBUILDS a
+                    # worker's sessions from its reconnect announce
+                    # (_reconcile_worker_sessions). Our Chrome tabs + lanes are
+                    # unaffected by a dropped hub WS, so we KEEP every live
+                    # session and re-announce it on reconnect -- detached /
+                    # keepalive / interactive sessions then survive a hub restart
+                    # instead of being torn down here (the old behaviour, from
+                    # when the hub forgot all sessions on restart). On reconnect
+                    # the hub's reconcile rebuilds what it can (JobInfo or the
+                    # Redis owner map), orphan-ends anything it genuinely can't
+                    # account for -- freeing those lanes -- and Pass-3 re-syncs
+                    # in_flight so the scheduler won't over-dispatch. The announce
+                    # itself skips any session it can't snapshot, so a tab that
+                    # died during the drop won't be rebuilt. A worker PROCESS exit
+                    # (self-update / Ctrl-C / give-up) still tears Chrome + lanes
+                    # down via process death, so nothing leaks across a restart.
+                    held = len(self._sessions)
+                    if held:
                         _logger.info(
-                            f"[worker {self.worker_id}] WS-drop cleanup failed: "
-                            f"{type(e).__name__}: {e}",
+                            f"[worker {self.worker_id}] hub WS dropped; keeping "
+                            f"{held} live session(s) for reconnect recovery",
                         )
                 # NOTE: a "shutdown-on-failure" self-exit (exit after
                 # WORKER_RECONNECT_GIVEUP_S of no hub link) was removed. It
