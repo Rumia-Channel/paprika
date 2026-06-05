@@ -40,7 +40,7 @@ git clone https://github.com/paps-jp/paprika.git
 ## 使い方（3 ステップ）
 
 1. ツールバーのアイコンをクリック（最初はパズルピースから固定しておくと楽）
-2. **初回のみ** Hub の URL を入力（例: `http://paprika.lan:8000` / `http://localhost:8000`）。保存されます。
+2. **初回のみ** Hub の URL を入力（例: `http://your-hub.example:8000` / `http://localhost:8000`）。保存されます。
 3. スコープを選んで **「Push cookies to hub」** をクリック
    - **active-host**（既定）: 今アクティブなタブのホストだけ送る
    - **all**: ブラウザに Cookie がある全ホストを送る

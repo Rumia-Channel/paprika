@@ -85,7 +85,7 @@
 
 
 B.  [hub-host]   redis ── hub  ── WebSocket ── [worker-host #1]  worker
-                  http://paprika.lan:8000                        worker
+                  http://your-hub.example:8000                        worker
                                                   ── WebSocket ── [worker-host #2]  worker
                                                   …
                                                   ── WebSocket ── [worker-host #N]  worker
@@ -125,14 +125,14 @@ docker compose up -d --build</code></pre>
     <h3 id="install-b">B. ハブ + リモート worker（分散）</h3>
     <p><strong>① ハブホスト</strong>：A と同じ手順で立ち上げる。ただし他マシンからアクセスするので <code>.env</code> で公開アドレスを設定：</p>
     <pre><code># .env (ハブホスト)
-NOVNC_PUBLIC_HOST=paprika.lan            # 管理画面の noVNC リンクが指すホスト名/IP
-PUBLIC_BASE_URL=http://paprika.lan:8000  # worker がアセットを POST する先
+NOVNC_PUBLIC_HOST=your-hub.example            # 管理画面の noVNC リンクが指すホスト名/IP
+PUBLIC_BASE_URL=http://your-hub.example:8000  # worker がアセットを POST する先
 LANE_POOL=2                              # ローカル worker のレーン数（不要なら 0）</code></pre>
     <p><strong>② worker ホスト</strong>（追加したい台数だけ）：</p>
     <pre><code>git clone https://github.com/paps-jp/paprika.git /opt/paprika
 cd /opt/paprika && cp .env.example .env
 # .env を編集:
-#   HUB_URL=ws://paprika.lan:8000
+#   HUB_URL=ws://your-hub.example:8000
 #   NOVNC_PUBLIC_HOST=<このホストの LAN IP/DNS>
 docker compose -f docker-compose-worker.yml up -d</code></pre>
     <p><strong>③ 接続確認</strong>：ハブの <code>GET /workers</code>（管理画面の「ワーカー」タブでも可）に <code>alive=true</code> で現れれば OK。</p>
@@ -200,7 +200,7 @@ python -m server --mode worker \
     <table>
       <thead><tr><th>変数</th><th>デフォルト</th><th>説明</th></tr></thead>
       <tbody>
-        <tr><td><code>HUB_URL</code></td><td><code>ws://paprika.lan:8000</code></td><td>hub の WS URL</td></tr>
+        <tr><td><code>HUB_URL</code></td><td><code>ws://your-hub.example:8000</code></td><td>hub の WS URL</td></tr>
         <tr><td><code>WORKER_SECRET</code></td><td>(無)</td><td>hub と一致が必要</td></tr>
         <tr><td><code>LANE_POOL</code></td><td>(file)</td><td>Lane (ブラウザ) 数</td></tr>
         <tr><td><code>MAX_CONCURRENT</code></td><td><code>2</code></td><td>同時ジョブ数</td></tr>
@@ -222,7 +222,7 @@ python -m server --mode worker \
     <!-- 4. UPDATE / FLEET --------------------------------------------- -->
     <h2 id="update">更新・フリート運用</h2>
     <h3>Hub を更新する</h3>
-    <pre><code>ssh root@paprika.lan
+    <pre><code>ssh root@your-hub.example
 cd /opt/paprika && git pull && docker compose restart hub</code></pre>
     <p><code>server/worker/*.py</code> を変えた場合も、hub 再起動で新ソース tarball が配信され、worker は次の handshake で<strong>自己更新</strong>します。pip 依存を増やしたときだけ <code>docker compose up -d --build hub</code>。</p>
 
@@ -268,7 +268,7 @@ cd /opt/paprika && git pull && docker compose restart hub</code></pre>
 
     <!-- 7. HTTP API ---------------------------------------------------- -->
     <h2 id="http">HTTP API</h2>
-    <p>全エンドポイントはフラット（<code>/api/</code> prefix なし）、<strong>認証なし（LAN 内信頼前提）</strong>。インタラクティブな一覧は Swagger UI <a href="https://paprika.lan/docs">/docs</a>。SDK 経由が基本ですが、未ラップのレジストリ系は <code>await cli._json("GET", "/hosts")</code> でも叩けます。任意の言語から叩く解説は <a href="http-api.html">HTTP API（任意の言語から）</a>、<code>options</code> の全フィールドは <a href="job-options.html">JobOptions</a>、エラーコードの意味は <a href="errors.html">エラー一覧</a> を参照。</p>
+    <p>全エンドポイントはフラット（<code>/api/</code> prefix なし）、<strong>認証なし（LAN 内信頼前提）</strong>。インタラクティブな一覧は Swagger UI <a href="https://your-hub.example/docs">/docs</a>。SDK 経由が基本ですが、未ラップのレジストリ系は <code>await cli._json("GET", "/hosts")</code> でも叩けます。任意の言語から叩く解説は <a href="http-api.html">HTTP API（任意の言語から）</a>、<code>options</code> の全フィールドは <a href="job-options.html">JobOptions</a>、エラーコードの意味は <a href="errors.html">エラー一覧</a> を参照。</p>
     <table>
       <thead><tr><th>グループ</th><th>主なエンドポイント</th></tr></thead>
       <tbody>
@@ -284,7 +284,7 @@ cd /opt/paprika && git pull && docker compose restart hub</code></pre>
     <h3>worker が hub に繋がらない</h3>
     <ol>
       <li><code>docker logs paprika-worker-1</code> でログ確認</li>
-      <li><code>HUB_URL</code> が正しいか / <code>curl http://paprika.lan:8000/health</code> で到達性</li>
+      <li><code>HUB_URL</code> が正しいか / <code>curl http://your-hub.example:8000/health</code> で到達性</li>
       <li><code>WORKER_SECRET</code> 不一致だと <code>bad worker secret</code> で切断</li>
     </ol>
     <h3>セッションが 404 になる</h3>
@@ -301,5 +301,6 @@ cd /opt/paprika && git pull && docker compose restart hub</code></pre>
     </div>
   </main>
 </div>
+{% include footer.html %}
 </body>
 </html>

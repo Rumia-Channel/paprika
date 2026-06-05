@@ -191,3 +191,18 @@ video.shot { display: block; height: auto; background: #000; }
   .topnav .gh { display: none; }
   .topnav .dropdown-menu { position: fixed; left: 8px; right: 8px; min-width: auto; }
 }
+
+/* ---- shared site footer ---------------------------------------- */
+.site-footer { border-top: 1px solid var(--border-soft); background: var(--bg-soft);
+  margin-top: 80px; padding: 22px 18px 30px; color: var(--fg-muted);
+  font-size: 0.86rem; }
+.site-footer-inner { max-width: 1240px; margin: 0 auto; }
+.site-footer-row { display: flex; flex-wrap: wrap; align-items: center;
+  gap: 14px 22px; }
+.site-footer-row + .site-footer-row { margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed var(--border-soft); }
+.site-footer-brand { display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 700; color: var(--fg); }
+.site-footer a { color: var(--fg-muted); text-decoration: none; }
+.site-footer a:hover { color: var(--accent); text-decoration: underline; }
+.site-footer-meta { font-size: 0.78rem; }

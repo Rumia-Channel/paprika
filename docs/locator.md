@@ -183,7 +183,7 @@ with sync_paprika() as cli:
 
 ## PHP SDK
 
-> **Locator は Phase 2 で対応予定**です（チェーン API `$page->locator(...)->first()->click()` を実装予定）。現在の Phase 1 では `Job` / `Session` の基本操作までが対象です。
+> **PHP の Locator は順次対応中**です（チェーン API `$page->locator(...)->first()->click()` を実装予定）。現在は `Job` / `Session` の基本操作まで対応しています。
 
 ## よくあるハマりどころ
 

@@ -26,9 +26,9 @@ pip install paprika-client
 | `--hub <URL>` | `$PAPRIKA_HUB` または `http://localhost:8000` | 操作対象の Hub の URL |
 
 ```bash
-paprika-client --hub http://paprika.lan:8000 list-profiles
+paprika-client --hub http://your-hub.example:8000 list-profiles
 # あるいは環境変数で
-export PAPRIKA_HUB=http://paprika.lan:8000
+export PAPRIKA_HUB=http://your-hub.example:8000
 paprika-client list-profiles
 ```
 

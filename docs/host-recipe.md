@@ -125,7 +125,7 @@ curl -X PUT "$PAPRIKA_HUB/hosts/market.example.com/login_recipe" \
 
 ## AI モードで「観察 → 保存」する流れ
 
-AI モード（`codegen-loop`）でうまくいった操作は、**そのまま Host レシピに保存**して次回以降決定的に再生できます（**Phase 2c**: 管理画面の Live パネル → 「recipe として保存」）。
+AI モード（`codegen-loop`）でうまくいった操作は、**そのまま Host レシピに保存**して次回以降決定的に再生できます（管理画面の Live パネル → 「recipe として保存」）。
 
 ```text
 未知サイト

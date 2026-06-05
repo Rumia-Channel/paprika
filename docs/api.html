@@ -8,18 +8,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
 <script>(function(){try{var m=localStorage.getItem('paprika.api.mode')||'async';if(!['async','sync','php'].includes(m))m='async';document.documentElement.classList.add('mode-'+m);}catch(_){document.documentElement.classList.add('mode-async');}})();</script>
-<meta name="description" content="paprika-client (Python async / sync) と PHP SDK (Phase 1) の API リファレンス。Playwright スタイルのページ操作・DOM 取得・JS 実行・画像/動画収集・Cookie 操作・サイト巡回 (walk)・同期版 sync_paprika・PHP からの Job/Session 操作の引数・戻り値・実行結果。">
+<meta name="description" content="paprika-client (Python async / sync) と PHP SDK の API リファレンス。Playwright スタイルのページ操作・DOM 取得・JS 実行・画像/動画収集・Cookie 操作・サイト巡回 (walk)・同期版 sync_paprika・PHP からの Job/Session 操作の引数・戻り値・実行結果。">
 <link rel="canonical" href="https://paps-jp.github.io/paprika/api.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Paprika">
 <meta property="og:title" content="API リファレンス — paprika-client (Python / PHP SDK) 全関数仕様">
-<meta property="og:description" content="paprika-client (Python async / sync) と PHP SDK (Phase 1) の API リファレンス。Playwright スタイルのページ操作・DOM 取得・JS 実行・画像/動画収集・Cookie 操作・サイト巡回 (walk)・同期版 sync_paprika・PHP からの Job/Session 操作。">
+<meta property="og:description" content="paprika-client (Python async / sync) と PHP SDK の API リファレンス。Playwright スタイルのページ操作・DOM 取得・JS 実行・画像/動画収集・Cookie 操作・サイト巡回 (walk)・同期版 sync_paprika・PHP からの Job/Session 操作。">
 <meta property="og:url" content="https://paps-jp.github.io/paprika/api.html">
 <meta property="og:image" content="https://paps-jp.github.io/paprika/img/admin-submit.png">
 <meta property="og:locale" content="ja_JP">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="API リファレンス — paprika-client (Python / PHP SDK) 全関数仕様">
-<meta name="twitter:description" content="paprika-client (Python async / sync) と PHP SDK (Phase 1) の API リファレンス。Playwright スタイルのページ操作・DOM 取得・JS 実行・画像/動画収集・Cookie 操作・サイト巡回 (walk)・同期版 sync_paprika・PHP からの Job/Session 操作。">
+<meta name="twitter:description" content="paprika-client (Python async / sync) と PHP SDK の API リファレンス。Playwright スタイルのページ操作・DOM 取得・JS 実行・画像/動画収集・Cookie 操作・サイト巡回 (walk)・同期版 sync_paprika・PHP からの Job/Session 操作。">
 <meta name="twitter:image" content="https://paps-jp.github.io/paprika/img/admin-submit.png">
 <script type="application/ld+json">{
   "@context": "https://schema.org",
@@ -78,7 +78,7 @@
     <ul>
       <li><a href="#connect">接続</a></li>
       <li><a href="#sync">同期版 (sync)</a></li>
-      <li><a href="#php">PHP SDK (Phase 1)</a></li>
+      <li><a href="#php">PHP SDK</a></li>
       <li><a href="#client">PaprikaClient</a></li>
       <li><a href="#nav">Page: ナビ・操作</a></li>
       <li><a href="#getters">Page: 取得・待機</a></li>
@@ -152,19 +152,19 @@ with sync_paprika.connect() as cli:
     <pre><code>status: completed
 images: 49
 first 3:
-  http://paprika.lan:8000/jobs/08dbe3379087/assets/120px-Felis_chaus_-_…jpg
-  http://paprika.lan:8000/jobs/08dbe3379087/assets/120px-Gustav_chocolate.jpg
-  http://paprika.lan:8000/jobs/08dbe3379087/assets/120px-Orange_tabby_cat_…jpg</code></pre>
+  http://your-hub.example:8000/jobs/08dbe3379087/assets/120px-Felis_chaus_-_…jpg
+  http://your-hub.example:8000/jobs/08dbe3379087/assets/120px-Gustav_chocolate.jpg
+  http://your-hub.example:8000/jobs/08dbe3379087/assets/120px-Orange_tabby_cat_…jpg</code></pre>
     <p>本リファレンスの <code>cli.*</code> / <code>page.*</code> / <code>loc.*</code> がそのまま（同期で）使えます。
     <code>connect(base_url=None, *, token=None, timeout=180.0, auto_start=True)</code> が既定でループを起動します。
     既定では各アクションが <code>[paprika] page.X(...)</code> 形式でログに流れます（無効化は <code>PAPRIKA_CLIENT_ACTION_LOG=0</code>）。</p>
 
-    <h2 id="php">PHP SDK (Phase 1)</h2>
+    <h2 id="php">PHP SDK</h2>
     <p>PHP からも同じハブを叩けます。<strong>同期・外部依存なし (ext-curl のみ)・PHP 8.1+</strong>。
     Composer パッケージ <code>paprika/client</code>。命名は Python 版を <code>snake_case → camelCase</code>
     に直したもの (例: <code>job_images</code> → <code>jobImages</code>)。</p>
-    <p>現在の <strong>Phase 1</strong> は <em>Job API + Session ライフサイクル</em>。
-    Page/Locator/walk は <strong>Phase 2</strong> で対応予定です。</p>
+    <p>現在は <em>Job API + Session ライフサイクル</em>（投入・状態取得・アセット・セッション開閉）まで対応しています。
+    Page/Locator/walk は順次対応予定です。当面 Page 操作が必要なときは Python 版または <a href="http-api.html">HTTP API</a> をご利用ください。</p>
 
     <h3>インストール</h3>
     <pre><code>composer require paprika/client</code></pre>
@@ -193,7 +193,7 @@ $cli-&gt;session('https://example.com', function (Session $sess) use ($cli) {
     // Phase 2: $sess-&gt;goto(...), $sess-&gt;locator(...) ...
 });</code></pre>
 
-    <h3>Phase 1 で使える <code>$cli-&gt;*</code> メソッド (Python 版と1:1)</h3>
+    <h3>現在使える <code>$cli-&gt;*</code> メソッド (Python 版と1:1)</h3>
     <table>
       <thead><tr><th>PHP メソッド</th><th>説明 / Python 版</th></tr></thead>
       <tbody>
@@ -212,12 +212,12 @@ $cli-&gt;session('https://example.com', function (Session $sess) use ($cli) {
       </tbody>
     </table>
 
-    <h3><code>Session</code> の Phase 1 サーフェス</h3>
+    <h3><code>Session</code> の現行サーフェス</h3>
     <ul>
       <li>プロパティ (readonly): <code>$sess-&gt;sessionId</code> / <code>workerId</code> / <code>laneIdx</code> / <code>novncUrl</code></li>
       <li><code>$sess-&gt;close()</code> — <code>DELETE /sessions/{id}</code> (idempotent / 安全)</li>
       <li><code>$sess-&gt;detach()</code> — <code>POST /sessions/{id}/detach</code>。クロージャ form の自動 close をスキップ</li>
-      <li>(Phase 2) <code>goto / click / fill / locator / screenshot / state / outline / ...</code></li>
+      <li>（順次対応） <code>goto / click / fill / locator / screenshot / state / outline / ...</code></li>
     </ul>
 
     <h3>例外</h3>
@@ -225,7 +225,7 @@ $cli-&gt;session('https://example.com', function (Session $sess) use ($cli) {
       <thead><tr><th>クラス</th><th>用途</th></tr></thead>
       <tbody>
         <tr><td><code>Paprika\Client\PaprikaError</code></td><td>HTTP/トランスポート系エラー。<code>$e-&gt;statusCode</code> で HTTP コード取得 (transport なら null)</td></tr>
-        <tr><td><code>Paprika\Client\PaprikaActionError</code></td><td>Page/Locator 系の失敗 (Phase 2 で本格使用)</td></tr>
+        <tr><td><code>Paprika\Client\PaprikaActionError</code></td><td>Page/Locator 系の失敗 (Page サーフェス対応後に本格使用)</td></tr>
       </tbody>
     </table>
 
@@ -457,7 +457,7 @@ if r["status"] == 404:
 page.fill("#email", "user@example.com")
 page.press("Enter")
 page.set_input_files("input[type=file]", ["a.jpg", "b.jpg"])</code></pre></div>
-    <div class="ex-php"><div class="callout info"><strong>PHP は Phase 2 で対応予定</strong>です（現在の Phase 1 は <a href="#php">Job API + Session ライフサイクル</a>のみ）。</div></div>
+    <div class="ex-php"><div class="callout info"><strong>PHP は順次対応中</strong>です（現在は <a href="#php">Job API + Session ライフサイクル</a>まで）。当面は <a href="http-api.html">HTTP API</a> もご利用ください。</div></div>
 
     <h2 id="getters">Page — 取得・待機・状態</h2>
     <div class="pw">
@@ -612,7 +612,7 @@ page.set_input_files("input[type=file]", ["a.jpg", "b.jpg"])</code></pre></div>
 data  = await page.evaluate("fetch('/api').then(r=>r.json())", await_promise=True)</code></pre></div>
     <div class="ex-sync"><pre><code>title = page.evaluate("document.title")
 data  = page.evaluate("fetch('/api').then(r=>r.json())", await_promise=True)</code></pre></div>
-    <div class="ex-php"><div class="callout info"><strong>PHP は Phase 2 で対応予定</strong>です（<code>evaluate</code> は <a href="#php">Page サーフェスの一部</a>として Phase 2 に含まれます）。</div></div>
+    <div class="ex-php"><div class="callout info"><strong>PHP は順次対応中</strong>です（<code>evaluate</code> は Page サーフェスの一部として今後追加されます）。</div></div>
     <table>
       <thead><tr><th>ロケータ生成</th><th>意味</th></tr></thead>
       <tbody>
@@ -827,7 +827,7 @@ page.allow_popups()
 page.zoom(0.5)
 page.block_hosts(["ads.example.net"])
 reply = page.ext("setContentSetting", {"type": "images", "setting": "block"})</code></pre></div>
-    <div class="ex-php"><div class="callout info"><strong>PHP は Phase 2 で対応予定</strong>です（拡張コマンドは <a href="#php">Page サーフェス</a>の一部として Phase 2 に含まれます）。</div></div>
+    <div class="ex-php"><div class="callout info"><strong>PHP は順次対応中</strong>です（拡張コマンドは Page サーフェスの一部として今後追加されます）。</div></div>
 
     <div class="pw">
       <h3><code>page.ext(cmd, args=None, *, timeout=20.0)</code> <span class="pw-ret">&rarr; dict</span></h3>
@@ -1207,7 +1207,7 @@ await rows.first.click()</code></pre></div>
 for r in rows.all():
     print(r.get_attribute("data-id"))
 rows.first.click()</code></pre></div>
-    <div class="ex-php"><div class="callout info"><strong>PHP の Locator は Phase 2 で対応予定</strong>です（チェーン API <code>$page-&gt;locator(...)-&gt;first()-&gt;click()</code> を実装予定）。</div></div>
+    <div class="ex-php"><div class="callout info"><strong>PHP の Locator は順次対応中</strong>です（チェーン API <code>$page-&gt;locator(...)-&gt;first()-&gt;click()</code> を実装予定）。</div></div>
 
     <h2 id="walk">サイト巡回（walk / Walker）</h2>
     <p>「サイト X のページを N 件巡回」のような<strong>クロール</strong>を、キュー・重複除去・ドメイン/パスのフィルタ・
@@ -1223,7 +1223,7 @@ async with async_paprika.connect() as cli:
     <div class="ex-sync"><div class="callout info"><strong>walk は現状 async API のみ</strong>
     sync ファサードからは未公開です。同期スクリプトの中で使う場合は、<code>asyncio.run()</code> で
     上の async 例をラップしてください。</div></div>
-    <div class="ex-php"><div class="callout info"><strong>PHP の walk は Phase 3 で対応予定</strong>です（Walker / Visit クラスを Python 版と同シェイプで移植）。</div></div>
+    <div class="ex-php"><div class="callout info"><strong>PHP の walk は順次対応中</strong>です（Walker / Visit クラスを Python 版と同シェイプで移植予定）。</div></div>
 
     <h2 id="oneshot">ワンショットヘルパー</h2>
     <p>1 動作だけしてセッションを閉じる糖衣です。インポートは <code>from paprika_client import snapshot, outline, state, run</code> です。</p>
@@ -1269,5 +1269,6 @@ async with async_paprika.connect() as cli:
   apply(m);
 })();
 </script>
+{% include footer.html %}
 </body>
 </html>

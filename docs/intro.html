@@ -100,7 +100,7 @@ pip install "git+https://github.com/paps-jp/paprika.git#subdirectory=client/pyth
     <h2 id="connect">ハブに接続</h2>
     <p>接続先は <strong>引数 → 環境変数 <code>PAPRIKA_HUB</code> → <code>http://localhost:8000</code></strong> の順で解決されます。
     引数なしの <code>connect()</code> にしておくと、ローカルでもサンドボックス内でも同じスクリプトが動きます。</p>
-    <pre><code>export PAPRIKA_HUB=http://paprika.lan:8000</code></pre>
+    <pre><code>export PAPRIKA_HUB=http://your-hub.example:8000</code></pre>
     <div class="ex-async">
     <pre><code>import asyncio
 from paprika_client import async_paprika
@@ -168,9 +168,9 @@ echo "status: {$job['status']}\n";
 foreach ($cli-&gt;jobImages($job['job_id']) as $url) {
     echo $url, "\n";
 }</code></pre>
-    <p>PHP SDK は現時点で <strong>Phase 1</strong>（Job API ＋ Session ライフサイクル）に対応しています。
-    Page 操作（<code>$page-&gt;goto()</code>・<code>$page-&gt;click()</code>・Locator チェーン等）は <strong>Phase 2</strong>、<code>walk</code> は <strong>Phase 3</strong> での対応予定です。
-    詳細は <a href="api.html#php">API リファレンス → PHP SDK</a>。</p>
+    <p>PHP SDK は現在、<strong>Job API ＋ Session ライフサイクル</strong>（投入・状態取得・アセット・セッション開閉）まで対応しています。
+    Page 操作（<code>$page-&gt;goto()</code>・<code>$page-&gt;click()</code>・Locator チェーン等）と <code>walk</code> は順次対応中です。
+    当面 Page 操作が必要なときは Python 版または <a href="http-api.html">HTTP API</a> をご利用ください。詳細は <a href="api.html#php">API リファレンス → PHP SDK</a>。</p>
     </div>
     <div class="ex-async">
     <div class="callout tip"><strong>async が苦手なら同期版</strong>
@@ -238,5 +238,6 @@ foreach ($cli-&gt;jobImages($job['job_id']) as $url) {
   apply(m);
 })();
 </script>
+{% include footer.html %}
 </body>
 </html>

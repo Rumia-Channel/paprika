@@ -65,7 +65,7 @@
 
     <div class="callout info">
       <strong>前提</strong>
-      hub が <code>http://paprika.lan:8000</code> (LAN) もしくは <code>http://localhost:8000</code> (ローカル Docker) で起動済みであること。<code>paprika-client</code> は <code>pip install paprika-client</code> でインストールできます。
+      hub が <code>http://your-hub.example:8000</code> (LAN) もしくは <code>http://localhost:8000</code> (ローカル Docker) で起動済みであること。<code>paprika-client</code> は <code>pip install paprika-client</code> でインストールできます。
     </div>
 
     <!-- ==================================================================== -->
@@ -77,7 +77,7 @@ from paprika_client import async_paprika
 async def main():
     # 引数を省略すると環境変数 PAPRIKA_HUB を見る
     # → paprika-runner 内なら何も書かなくて OK
-    async with async_paprika.connect("http://paprika.lan:8000") as cli:
+    async with async_paprika.connect("http://your-hub.example:8000") as cli:
         info = await cli.health()
         print(info)         # {'ok': True, 'store': 'redis', 'workers': 25}
 
@@ -283,7 +283,7 @@ png = await page.screenshot(label="after-login")</code></pre>
 
     from urllib.parse import quote
     for name in result["files"]:
-        print(f"http://paprika.lan:8000/jobs/abc123/assets/{quote(name, safe='')}")</code></pre>
+        print(f"http://your-hub.example:8000/jobs/abc123/assets/{quote(name, safe='')}")</code></pre>
 
     <h3>パターン C: ハイブリッド (deep-trace ON + 明示呼び出し)</h3>
 <pre><code>job = await cli.create_job(
@@ -324,7 +324,7 @@ async with cli.session("https://example.com/login") as page:
 from paprika_client import async_paprika
 
 async def main():
-    async with async_paprika.connect("http://paprika.lan:8000") as cli:
+    async with async_paprika.connect("http://your-hub.example:8000") as cli:
         # 親 job を作っておく (assets を集約させる)
         job = await cli.create_job(
             "about:blank",
@@ -424,7 +424,7 @@ except PaprikaError as e:
     <p>ノートブックや既存の同期コードと混ぜる場合は <code>sync_paprika</code>。<code>await</code> を全部外した同じ API です。</p>
 <pre><code>from paprika_client import sync_paprika
 
-with sync_paprika.connect("http://paprika.lan:8000") as cli:
+with sync_paprika.connect("http://your-hub.example:8000") as cli:
     job = cli.fetch("https://example.com/article", download_video=True)
 
     for url in cli.job_images(job.job_id):
@@ -464,9 +464,10 @@ asyncio.run(main())</code></pre>
 
     <p>ローカル開発で同じスクリプトを動かしたい時は、環境変数だけセットすれば OK:</p>
 <pre><code>import os
-os.environ["PAPRIKA_HUB"] = "http://paprika.lan:8000"
+os.environ["PAPRIKA_HUB"] = "http://your-hub.example:8000"
 # PAPRIKA_JOB_ID をセットしない → assets() は使えないが click / goto は動く</code></pre>
   </main>
 </div>
+{% include footer.html %}
 </body>
 </html>
