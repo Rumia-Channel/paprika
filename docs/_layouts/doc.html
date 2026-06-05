@@ -16,15 +16,44 @@
 <meta property="og:locale" content="ja_JP">
 </head>
 <body>
-{% comment %} Shared site header. `active` (home/learn/reference/ops) comes
+{% comment %} Shared site header. `active` (home/learn/reference/ops/...) comes
    from the page's front matter and lights the matching nav item. {% endcomment %}
 {% include header.html active=page.active %}
 <div class="layout">
+  <aside class="sidebar">
+    <h4>このページ</h4>
+    <ul id="doc-toc"></ul>
+  </aside>
   <main class="content">
     <h1>{{ page.title }}</h1>
     {% if page.description %}<p class="lead">{{ page.description }}</p>{% endif %}
     {{ content }}
   </main>
 </div>
+<script>
+// Build the "このページ" sidebar from the rendered <h2> headings (each gets an
+// id from kramdown auto_ids). No headings -> drop the sidebar column so the
+// content fills the full width instead of sitting in the narrow sidebar slot.
+(function () {
+  var toc = document.getElementById('doc-toc');
+  var heads = document.querySelectorAll('.content h2[id]');
+  if (!toc) return;
+  if (!heads.length) {
+    var aside = document.querySelector('.sidebar');
+    var layout = document.querySelector('.layout');
+    if (aside) aside.style.display = 'none';
+    if (layout) layout.style.gridTemplateColumns = '1fr';
+    return;
+  }
+  heads.forEach(function (h) {
+    var li = document.createElement('li');
+    var a = document.createElement('a');
+    a.href = '#' + h.id;
+    a.textContent = h.textContent;
+    li.appendChild(a);
+    toc.appendChild(li);
+  });
+})();
+</script>
 </body>
 </html>
