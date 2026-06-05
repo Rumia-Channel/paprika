@@ -21,19 +21,23 @@ body {
   margin: 0; color: var(--fg); background: var(--bg);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
                "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
-  font-size: 16px; line-height: 1.7;
+  font-size: 16px; line-height: 1.75;
+  /* Better Latin pair kerning + cleaner glyph edges on macOS retina */
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 code, pre { font-family: ui-monospace, "SF Mono", Consolas, "Liberation Mono", monospace; }
-code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 0.88em; }
+code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 0.92em; }
 pre {
   background: #1f2330; color: #e6edf3; padding: 16px 18px; border-radius: 10px;
-  overflow-x: auto; line-height: 1.55; font-size: 13.5px; margin: 14px 0;
+  overflow-x: auto; line-height: 1.6; font-size: 14.4px; margin: 18px 0;
 }
 pre code { background: transparent; padding: 0; font-size: inherit; color: inherit; }
-table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 0.92em; }
-th, td { border: 1px solid var(--border); padding: 7px 11px; text-align: left; vertical-align: top; }
+table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 0.94em; }
+th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
 th { background: var(--bg-soft); font-weight: 600; }
 
 /* ---- top nav (matches Paprika admin UI: red banner) ---- */
@@ -100,14 +104,24 @@ th { background: var(--bg-soft); font-weight: 600; }
 .content { padding: 32px 40px 100px; max-width: var(--content-max); width: 100%; }
 
 /* ---- typography ---- */
-h1 { font-size: 2.1rem; margin: 0 0 .5em; line-height: 1.25; }
-h2 { font-size: 1.5rem; margin: 2em 0 .6em; padding-bottom: .3em;
+/* Headings get Japanese proportional-spacing ("palt") for tighter, more polished
+   composition than the default full-width metrics. */
+h1, h2, h3, h4, h5, h6 { font-feature-settings: "palt" 1; }
+h1 { font-size: 2.1rem; margin: 0 0 .5em; line-height: 1.3; }
+h2 { font-size: 1.5rem; margin: 2.2em 0 .7em; padding-bottom: .3em; line-height: 1.4;
   border-bottom: 1px solid var(--border-soft); scroll-margin-top: var(--nav-h); }
-h3 { font-size: 1.18rem; margin: 1.6em 0 .5em; scroll-margin-top: var(--nav-h); }
-p { margin: .7em 0; }
-ul, ol { padding-left: 1.4em; }
-li { margin: .3em 0; }
-.lead { font-size: 1.15rem; color: var(--fg-muted); margin: 0 0 1.4em; }
+h3 { font-size: 1.22rem; margin: 1.8em 0 .55em; line-height: 1.4;
+  scroll-margin-top: var(--nav-h); }
+h4 { font-size: 1.05rem; margin: 1.4em 0 .4em; line-height: 1.45; font-weight: 700;
+  scroll-margin-top: var(--nav-h); }
+h5 { font-size: 1rem; margin: 1.2em 0 .3em; font-weight: 700; color: var(--fg-muted); }
+p { margin: 1em 0; }
+ul, ol { padding-left: 1.5em; margin: 1em 0; }
+li { margin: .5em 0; }
+li > p { margin: .4em 0; }
+/* Paragraph immediately after a heading should sit tighter under it. */
+h2 + p, h3 + p, h4 + p { margin-top: .4em; }
+.lead { font-size: 1.15rem; color: var(--fg-muted); margin: 0 0 1.6em; line-height: 1.7; }
 
 /* ---- components ---- */
 .callout { border-radius: 10px; padding: 13px 16px; margin: 16px 0; border: 1px solid;
