@@ -2,34 +2,17 @@
 (partial update). Backed by ``server.hub.settings.SettingsRegistry``,
 instantiated by app.py's lifespan and stashed on
 ``server.hub._state.state.settings``.
-
-SMB mount/unmount endpoints live here too — they read the SMB
-connection fields from SettingsRegistry, shell out to
-``mount -t cifs`` / ``umount``, and update ``storage_dir``
-accordingly.
 """
 
 from __future__ import annotations
 
 import logging
-import shutil
 
 from fastapi import APIRouter, HTTPException
 
 from server.hub._state import config, get_storage_dir, state
 from server.hub.codegen import CODEGEN_LLM_URL, CODEGEN_MODEL_NAME
 from server.hub.settings import SettingsRegistry
-
-# SMB mount logic lives in server.hub.smb_mount so the startup
-# auto-mount + watchdog (app.py lifespan) and these endpoints share a
-# single implementation. ``ensure_smb_mounted`` is the idempotent
-# "mount if configured & not already healthily mounted" entrypoint.
-from server.hub.smb_mount import (
-    _smb_is_mounted,
-    _smb_mount,
-    _smb_unmount,
-    ensure_smb_mounted,
-)
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +22,7 @@ router = APIRouter(tags=["Settings"])
 # endpoint is unauthenticated on the LAN). Redacted to "" in the GET
 # payload; the UI uses the companion ``secrets_set`` map to show whether
 # one is stored. PUT still accepts the real value to (re)set it.
-_SECRET_KEYS = frozenset({"smb_password", "mariadb_password", "s3_secret_key"})
+_SECRET_KEYS = frozenset({"mariadb_password", "s3_secret_key"})
 
 
 def _require_settings() -> SettingsRegistry:
@@ -71,8 +54,6 @@ async def get_settings() -> dict:
         SKILL_RETRIEVAL_LLM_URL,
         SKILL_RETRIEVAL_MODEL_NAME,
     )
-
-    smb_mp = reg.get("smb_mount_point", "/mnt/paprika")
 
     # MariaDB status — show connected/disconnected in the UI
     mdb_status: dict = {"connected": False}
@@ -110,9 +91,9 @@ async def get_settings() -> dict:
     }
 
     # Never ship secret values to the browser. GET /settings is
-    # unauthenticated on the LAN, so returning smb_password /
-    # mariadb_password in cleartext (as reg.all() does) would leak the
-    # NAS + DB credentials to anyone who can curl the hub. Redact the
+    # unauthenticated on the LAN, so returning mariadb_password /
+    # s3_secret_key in cleartext (as reg.all() does) would leak the
+    # DB + object-store credentials to anyone who can curl the hub. Redact the
     # values and instead report whether each secret is set, so the UI
     # can render a "(設定済み — 変更時のみ入力)" placeholder. The PUT
     # path still accepts the real value when the operator types one.
@@ -137,10 +118,6 @@ async def get_settings() -> dict:
             "data_dir": str(config.data_dir.resolve()),
             "storage_dir": str(get_storage_dir().resolve()),
             "store": state.store_kind,
-        },
-        "smb_status": {
-            "mounted": _smb_is_mounted(smb_mp),
-            "mount_point": smb_mp,
         },
         "mariadb_status": mdb_status,
         "s3_status": s3_status,
@@ -173,125 +150,6 @@ async def put_settings(body: dict) -> dict:
     except Exception:
         log.debug("settings write-through/publish failed", exc_info=True)
     return await get_settings()
-
-
-# -------------------------------------------------------------------
-# SMB mount / unmount / status endpoints
-# -------------------------------------------------------------------
-
-@router.post("/settings/smb/mount")
-async def smb_mount() -> dict:
-    """Mount the SMB share using the saved connection settings.
-    On success, ``storage_dir`` is automatically set to the mount point.
-
-    Also (re-)enables ``smb_auto_mount`` so the startup auto-mount +
-    watchdog keep the share mounted across restarts / network blips.
-    A manual mount is the operator saying "I want this share up", which
-    is exactly what auto-mount should track.
-    """
-    reg = _require_settings()
-    if not reg.get("smb_server", "") or not reg.get("smb_share", ""):
-        raise HTTPException(400, "smb_server and smb_share are required")
-
-    # Re-enable auto-mount: a manual mount means the operator wants the
-    # share kept up. (A prior manual unmount sets it False; mounting
-    # again flips it back on.)
-    reg.update({"smb_auto_mount": True})
-
-    # ensure_smb_mounted is idempotent: mounts if needed, remounts a
-    # stale mount, sets storage_dir on success. Run it off the event
-    # loop since it shells out to `mount`.
-    import asyncio
-
-    ok, msg = await asyncio.to_thread(ensure_smb_mounted, reg)
-    if not ok:
-        raise HTTPException(500, f"mount failed: {msg}")
-    mount_point = reg.get("smb_mount_point", "/mnt/paprika")
-    return {"ok": True, "message": msg, "mount_point": mount_point}
-
-
-@router.post("/settings/smb/unmount")
-async def smb_unmount() -> dict:
-    """Unmount the SMB share and revert ``storage_dir`` to default.
-
-    Also disables ``smb_auto_mount`` so the watchdog respects the manual
-    unmount and doesn't immediately re-mount the share on its next tick.
-    Re-mounting via the Mount button flips auto-mount back on.
-    """
-    reg = _require_settings()
-    mount_point = reg.get("smb_mount_point", "/mnt/paprika")
-
-    # Stop the watchdog from fighting a deliberate unmount.
-    reg.update({"smb_auto_mount": False})
-
-    if not _smb_is_mounted(mount_point):
-        # Clear storage_dir anyway
-        reg.update({"storage_dir": ""})
-        return {"ok": True, "message": "not mounted", "mount_point": mount_point}
-
-    err = _smb_unmount(mount_point)
-    if err:
-        raise HTTPException(500, f"unmount failed: {err}")
-
-    reg.update({"storage_dir": ""})
-    return {"ok": True, "message": "unmounted", "mount_point": mount_point}
-
-
-def _fmt_size(num_bytes: int) -> str:
-    """Human-readable size that scales the unit to the magnitude.
-
-    Operators with multi-TB NAS arrays complained that everything was
-    reported in GB (e.g. "12345.6 GB"); pick the largest unit that keeps
-    the number readable so a 12 TB array shows "12.1 TB", a 500 GB share
-    "500.0 GB", and a tiny tmpfs "812.0 MB".
-    """
-    n = float(num_bytes)
-    for unit, factor in (
-        ("PB", 1024**5),
-        ("TB", 1024**4),
-        ("GB", 1024**3),
-        ("MB", 1024**2),
-        ("KB", 1024),
-    ):
-        if n >= factor:
-            return f"{n / factor:.1f} {unit}"
-    return f"{int(n)} B"
-
-
-@router.get("/settings/smb/status")
-async def smb_status() -> dict:
-    """Quick check: is the SMB mount point currently mounted?"""
-    reg = _require_settings()
-    mp = reg.get("smb_mount_point", "/mnt/paprika")
-    mounted = _smb_is_mounted(mp)
-
-    # Disk usage when mounted
-    usage = None
-    if mounted:
-        try:
-            st = shutil.disk_usage(mp)
-            usage = {
-                # Raw GB kept for backwards-compat / programmatic use.
-                "total_gb": round(st.total / (1024**3), 1),
-                "used_gb": round(st.used / (1024**3), 1),
-                "free_gb": round(st.free / (1024**3), 1),
-                # Pre-formatted, unit-scaled strings (GB / TB / PB ...)
-                # the admin UI renders directly.
-                "total_h": _fmt_size(st.total),
-                "used_h": _fmt_size(st.used),
-                "free_h": _fmt_size(st.free),
-            }
-        except Exception:
-            pass
-
-    return {
-        "mounted": mounted,
-        "mount_point": mp,
-        "server": reg.get("smb_server", ""),
-        "share": reg.get("smb_share", ""),
-        "auto_mount": bool(reg.get("smb_auto_mount", True)),
-        "usage": usage,
-    }
 
 
 # -------------------------------------------------------------------
@@ -597,7 +455,7 @@ async def mariadb_migrate_logs() -> dict:
     re-run only sees what's left to do.
 
     At 3K jobs the table was 365 MB with ~2M rows; this endpoint moves
-    that data to flat files under the SMB mount where it's served
+    that data to flat files under the storage dir where it's served
     directly via /jobs/{id}/log.txt with no DB round-trip.
     """
     from server.hub.log_migrate import migrate_logs_to_disk

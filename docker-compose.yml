@@ -44,13 +44,6 @@ services:
       dockerfile: docker/hub/Dockerfile
     restart: unless-stopped
     depends_on: [redis]
-    # Privileged mode: mount.cifs needs full capability set + unconfined
-    # seccomp to mount SMB shares from the Settings UI. SYS_ADMIN alone
-    # is insufficient (mount.cifs's capng_apply fails without
-    # DAC_READ_SEARCH and several other caps). The hub already owns the
-    # Docker socket — effectively host-root — so privileged doesn't
-    # widen the trust boundary.
-    privileged: true
     ports: ["8000:8000"]
     environment:
       - PYTHONUNBUFFERED=1

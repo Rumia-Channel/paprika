@@ -77,8 +77,8 @@ async def get_job_links(job_id: str) -> dict:
     job_dir = get_storage_dir() / job_id
     current_url = info.url if info is not None else ""
 
-    # S3 fallback: pull the artifacts we parse below if the NAS copy is
-    # gone (deleted job row / CIFS drop) but the mirror still has them.
+    # S3 fallback: pull the artifacts we parse below if the local copy is
+    # gone (deleted job row / cache eviction) but the mirror still has them.
     await objstore.ensure_local(job_dir / "page.html")
     await objstore.ensure_local(job_dir / "links_snapshot.jsonl")
 
@@ -181,11 +181,11 @@ async def upload_session_network(job_id: str, body: dict) -> dict:
     job_dir = get_storage_dir() / job_id
 
     # Offload the blocking open()/write() (incl. mkdir/stat) to a worker
-    # thread so a slow storage backend (e.g. SMB/CIFS mount) cannot stall
-    # the single hub event loop and starve every worker's heartbeat/pong.
+    # thread so a slow storage backend cannot stall the single hub event
+    # loop and starve every worker's heartbeat/pong.
     written = await asyncio.to_thread(_append_network_jsonl, job_dir, entries, sid)
     # Mirror to object storage so GET /jobs/{id}/network reads it back after
-    # the local/NAS copy is gone (deleted job row / CIFS drop).
+    # the local copy is gone (deleted job row / cache eviction).
     await objstore.mirror_file(job_dir / "network.jsonl")
     return {"ok": True, "job_id": job_id, "session_id": sid, "written": written}
 
@@ -198,8 +198,8 @@ async def get_job_network(job_id: str) -> dict:
     await _soft_resolve_job(job_id)
     job_dir = get_storage_dir() / job_id
     log_path = job_dir / "network.jsonl"
-    # S3 fallback: pull the dump if the NAS copy is gone (deleted job row /
-    # CIFS drop) but the mirror has it.
+    # S3 fallback: pull the dump if the local copy is gone (deleted job row /
+    # cache eviction) but the mirror has it.
     await objstore.ensure_local(log_path)
     entries: list[dict] = []
     if log_path.exists():
@@ -269,7 +269,7 @@ async def upload_session_links_snapshot(job_id: str, body: dict) -> dict:
     # thread so a slow storage backend cannot stall the hub event loop.
     await asyncio.to_thread(_append_line, job_dir, "links_snapshot.jsonl", line)
     # Mirror to object storage so GET /jobs/{id}/links reads it back after
-    # the local/NAS copy is gone.
+    # the local copy is gone.
     await objstore.mirror_file(job_dir / "links_snapshot.jsonl")
     return {"ok": True, "job_id": job_id, "session_id": sid, "count": len(links)}
 
@@ -427,7 +427,7 @@ async def get_recipe_suggestion(job_id: str) -> dict:
     won't always pick the right segment to wildcard.
     """
     job_dir = get_storage_dir() / job_id
-    # Accept S3-only jobs (deleted row / dropped NAS copy) and pull the
+    # Accept S3-only jobs (deleted row / evicted local copy) and pull the
     # artifacts this aggregator reads below from the bucket when missing.
     await _soft_resolve_job(job_id)
     if objstore.enabled():
@@ -548,8 +548,8 @@ async def list_attempts(job_id: str) -> dict:
     await _soft_resolve_job(job_id)
     job_dir = get_storage_dir() / job_id
     attempts_dir = job_dir / "attempts"
-    # S3-back: when the local attempts tree is gone (deleted row / dropped NAS
-    # copy), pull the files this lister reads so the walk below still works.
+    # S3-back: when the local attempts tree is gone (deleted row / evicted
+    # local copy), pull the files this lister reads so the walk below still works.
     if objstore.enabled() and not attempts_dir.exists():
         for _o in await objstore.list_tree(job_id, "attempts"):
             if _o["rel"].rsplit("/", 1)[-1] in ("result.json", "llm_meta.json", "prompt.txt"):

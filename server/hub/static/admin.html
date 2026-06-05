@@ -91,7 +91,9 @@
           <button type="button" id="presetOverwriteBtn" class="pill" style="background:#eef0ff; border-color:#6a8ec7; color:#3a5ca8; padding:2px 10px; display:none;" title="読み込み中の preset を現在のフォーム状態で上書き保存"><iconify-icon icon="lucide:save"></iconify-icon> <span data-i18n="submit.overwrite">overwrite</span></button>
         </span>
       </div>
-      <input type="text" id="urlInput" placeholder="https://example.com">
+      <input type="text" id="urlInput" placeholder="https://example.com"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+        name="paprika-url-input-no-autocomplete">
       <!-- URL の host を解析して、その host の Cookie / Visited URL を
            Submit する前に直接編集できるショートカット行。
            URL が空 or 不正のときは display:none。 -->
@@ -2578,66 +2580,6 @@ table.aitbl code { font-size:0.95em; }
         <button id="setSaveWebSearchBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> Web search を保存</button>
         <span id="setWebSearchErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
       </div>
-    </div>
-
-    <!-- B5. Storage: SMB / NAS connection settings -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;"><iconify-icon icon="lucide:hard-drive"></iconify-icon> Storage (SMB)
-      <small style="font-weight:normal; color:#888;">— Hub 永続。ジョブデータの外部ストレージ</small>
-    </h3>
-    <p style="margin:4px 0 8px; color:#666; font-size:.88em;">
-      SMB/CIFS 共有をマウントしてジョブのアーティファクト (assets, page.html, log.txt) を NAS に保存。
-      Hub メタデータ (skills, hosts, engines 等) は常にローカル data_dir に残る。
-      未設定ならデフォルトの data_dir をそのまま使用。
-    </p>
-
-    <!-- SMB connection status indicator -->
-    <div id="smbStatusBanner" style="display:none; padding:8px 14px; border-radius:6px; margin-bottom:10px; font-size:.9em; display:flex; align-items:center; gap:8px;">
-    </div>
-
-    <div style="display:grid; grid-template-columns: 200px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
-      <label for="setSmbServer" title="SMB サーバーの IP またはホスト名">SMB サーバー:</label>
-      <div>
-        <input type="text" id="setSmbServer" placeholder="例: 192.168.1.100" style="width:240px; padding:4px 8px;">
-      </div>
-
-      <label for="setSmbShare" title="共有名">共有名:</label>
-      <div>
-        <input type="text" id="setSmbShare" placeholder="例: paprika" style="width:240px; padding:4px 8px;">
-      </div>
-
-      <label for="setSmbUsername" title="SMB ユーザー名 (空 = guest)">ユーザー名:</label>
-      <div>
-        <input type="text" id="setSmbUsername" placeholder="(空 = guest)" style="width:240px; padding:4px 8px;" autocomplete="off">
-      </div>
-
-      <label for="setSmbPassword" title="SMB パスワード">パスワード:</label>
-      <div>
-        <input type="password" id="setSmbPassword" placeholder="" style="width:240px; padding:4px 8px;" autocomplete="off">
-        <button type="button" id="setSmbPasswordToggle" class="pill" style="padding:2px 8px; font-size:.8em; margin-left:4px; background:#f5f5fa; border-color:#ccd; color:#555;" title="パスワード表示/非表示">👁</button>
-      </div>
-
-      <label for="setSmbMountPoint" title="ローカルのマウントポイントパス">マウントポイント:</label>
-      <div>
-        <input type="text" id="setSmbMountPoint" value="/mnt/paprika" style="width:300px; padding:4px 8px;">
-        <small style="color:#888; display:block; margin-top:2px;">コンテナ内のマウント先パス</small>
-      </div>
-
-      <label for="setSmbMountOptions" title="追加の mount -o オプション (例: vers=3.0)">追加オプション:</label>
-      <div>
-        <input type="text" id="setSmbMountOptions" placeholder="例: vers=3.0" style="width:300px; padding:4px 8px;">
-      </div>
-
-      <div></div>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
-        <button id="setSaveSmbBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> 接続設定を保存</button>
-        <button id="setSmbMountBtn" class="pill" style="background:#e8f0ff; border-color:#6a8ec7; color:#2a4a8a;"><iconify-icon icon="lucide:plug"></iconify-icon> マウント</button>
-        <button id="setSmbUnmountBtn" class="pill" style="background:#fee; border-color:#c88; color:#933;"><iconify-icon icon="lucide:plug-zap"></iconify-icon> アンマウント</button>
-        <span id="setSmbErr" style="color:#a00; font-size:.9em; margin-left:4px;"></span>
-      </div>
-
-      <!-- Disk usage (populated by JS when mounted) -->
-      <div></div>
-      <div id="smbDiskUsage" style="font-size:.85em; color:#888; margin-top:4px;"></div>
     </div>
 
     <!-- B6. Reasoning Judge -->

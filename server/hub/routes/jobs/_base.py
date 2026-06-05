@@ -445,9 +445,9 @@ async def _soft_resolve_job(
         check_dir = check_dir / require_subdir
     if check_dir.is_dir():
         return None
-    # S3-backed fallback: when the local/NAS dir is missing, accept the job
-    # if the object store holds its artifacts (e.g. the NAS write was lost
-    # during a CIFS drop but the S3 mirror succeeded). Keeps the gallery
+    # S3-backed fallback: when the local dir is missing, accept the job
+    # if the object store holds its artifacts (e.g. the local copy was
+    # evicted but the S3 mirror still has it). Keeps the gallery
     # resolving without a local copy.
     if objstore.enabled() and await objstore.prefix_exists(job_id, require_subdir):
         return None
@@ -533,8 +533,8 @@ def _asset_href(job_id: str, filename: str) -> str:
 async def _gather_assets(job_id: str) -> list[dict]:
     """The job's top-level assets as ``[{"name", "size"}]``, sourced from
     the object store *unioned* with any local copy -- so the gallery
-    populates whether the files live on the NAS, in S3, or both. This is
-    what makes the gallery survive a dropped CIFS mount: when the local
+    populates whether the files live on local disk, in S3, or both. This is
+    what makes the gallery survive cache eviction: when the local
     dir is gone the S3 listing still supplies every asset.
 
     Excludes ``screenshot-*`` (those belong to the Screenshot tab) and the

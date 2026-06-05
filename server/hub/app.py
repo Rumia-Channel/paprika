@@ -143,9 +143,9 @@ async def lifespan(app: FastAPI):
     # NOTE: ¥/1M default pricing seed runs AFTER MariaDB restore (further
     # down in this lifespan), otherwise MariaDB pulls zero values back
     # and overwrites whatever we seeded here.
-    # Ensure the effective storage directory (SMB mount or data_dir)
-    # exists. get_storage_dir() reads settings.storage_dir which was
-    # just initialised above.
+    # Ensure the effective storage directory (storage_dir override or
+    # data_dir) exists. get_storage_dir() reads settings.storage_dir which
+    # was just initialised above.
     _sdir = get_storage_dir()
     if _sdir != config.data_dir:
         _sdir.mkdir(parents=True, exist_ok=True)
@@ -216,8 +216,8 @@ async def lifespan(app: FastAPI):
                     log.warning("MariaDB registry restore failed: %s", e)
 
                 # Settings overlay (Phase B): pull shared settings from MariaDB
-                # into the local registry BEFORE the SMB mount + first object-
-                # store use below, so a value changed on another hub is in
+                # into the local registry BEFORE the first object-store use
+                # below, so a value changed on another hub is in
                 # effect here without waiting for a live pub/sub event. Excludes
                 # the mariadb_* DSN keys (bootstrap, kept per-hub).
                 try:
@@ -303,7 +303,7 @@ async def lifespan(app: FastAPI):
         # When the MariaDB store activates, log lines persist on disk
         # under {storage_dir}/{job_id}/log.txt instead of the
         # ``job_logs`` table. Passing the callable rather than the
-        # resolved path lets the store pick up SMB (re-)mounts on each
+        # resolved path lets the store pick up storage_dir changes on each
         # write without a restart.
         storage_dir_fn=get_storage_dir,
     )
@@ -404,7 +404,7 @@ async def lifespan(app: FastAPI):
     # admin role: a read-only management service must never evict sessions,
     # delete records, prune the registry, or re-dispatch jobs.
     reaper_task = retire_task = dead_worker_task = job_lease_task = None
-    preview_sub_task = None
+    preview_sub_task = cache_evict_task = stale_reconcile_task = None
     if not _ADMIN_MODE:
         reaper_task = asyncio.create_task(_session_reaper_loop())
         retire_task = asyncio.create_task(_skill_convention_reaper_loop())
@@ -414,6 +414,23 @@ async def lifespan(app: FastAPI):
         from server.hub._reaper import _job_lease_loop
 
         job_lease_task = asyncio.create_task(_job_lease_loop())
+
+        # Durable backstop for orphaned-running + stuck-queued jobs that the
+        # per-process nets (startup orphan-recovery, in-process queued-timeout
+        # guard, worker-disconnect settle) miss under multi-hub + restart churn.
+        # Diffs the store against the fleet-wide live worker set every ~90s.
+        # See _reaper.py:_stale_job_reconciler_loop (incident 2026-06-06).
+        from server.hub._reaper import _stale_job_reconciler_loop
+
+        stale_reconcile_task = asyncio.create_task(_stale_job_reconciler_loop())
+
+        # Local job-store cache eviction (MinIO-as-SoT mode). Bounds the local
+        # cache disk by deleting oldest job dirs that are confirmed durable in
+        # MinIO. Inert unless PAPRIKA_CACHE_EVICT_ENABLED is set, so this is a
+        # no-op until the storage_dir->local cutover. See _cache_evict.py.
+        from server.hub._cache_evict import _cache_evict_loop
+
+        cache_evict_task = asyncio.create_task(_cache_evict_loop())
 
         # Push-based previews: while an admin watches a worker (interest-gated
         # via Redis), tell that worker to self-capture + push frames so the
@@ -432,40 +449,6 @@ async def lifespan(app: FastAPI):
         from server.hub._invalidate import run_invalidation_subscriber
 
         invalidate_task = asyncio.create_task(run_invalidation_subscriber())
-
-    # SMB storage: a cifs mount does not survive a restart, so re-mount
-    # the configured share NOW (before the first job needs storage_dir)
-    # and spawn a watchdog that re-mounts it if it ever drops (NAS
-    # reboot / network blip). No-op when SMB isn't configured or
-    # smb_auto_mount is off. Needs CAP_SYS_ADMIN (same as the manual
-    # /settings/smb/mount endpoint).
-    smb_watchdog_task = None
-    try:
-        from server.hub.smb_mount import (
-            ensure_smb_mounted,
-            smb_is_configured,
-            smb_watchdog_loop,
-        )
-
-        # Skipped in admin role: a management service reads artifacts from the
-        # object store (MinIO) and never needs the privileged CIFS mount.
-        if (
-            not _ADMIN_MODE
-            and state.settings is not None
-            and smb_is_configured(state.settings)
-        ):
-            ok, msg = await asyncio.to_thread(ensure_smb_mounted, state.settings)
-            if ok:
-                log.info("SMB: share mounted at startup (%s)", msg)
-            else:
-                log.warning(
-                    "SMB: startup mount skipped/failed (%s); watchdog will retry",
-                    msg,
-                )
-        if not _ADMIN_MODE:
-            smb_watchdog_task = asyncio.create_task(smb_watchdog_loop())
-    except Exception:
-        log.exception("SMB startup mount / watchdog launch failed")
 
     # Recover from previous hub crash / deploy: any job persisted as
     # `status=running` but no longer driven by a local task is an
@@ -513,11 +496,10 @@ async def lifespan(app: FastAPI):
     yield
 
     for _t in (reaper_task, retire_task, dead_worker_task, job_lease_task,
-               invalidate_task, preview_sub_task):
+               invalidate_task, preview_sub_task, cache_evict_task,
+               stale_reconcile_task):
         if _t is not None:
             _t.cancel()
-    if smb_watchdog_task is not None:
-        smb_watchdog_task.cancel()
     # Stop hub heartbeat + drop the registry row so peers see us as
     # offline within ~1 minute instead of waiting for the 90s TTL.
     if state.hubs is not None:

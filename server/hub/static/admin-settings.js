@@ -109,15 +109,12 @@ async function loadSettingsPanel() {
       if (sxTo) sxTo.value = hub.searxng_timeout_s ?? 15;
       const sxMc = document.getElementById('setWebSearchMaxCalls');
       if (sxMc) sxMc.value = hub.web_search_max_calls ?? 5;
-      // SMB connection settings
+      // Shared field helpers for the MariaDB / S3 sections below.
       const _setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = v ?? ''; };
-      _setVal('setSmbServer', hub.smb_server);
-      _setVal('setSmbShare', hub.smb_share);
-      _setVal('setSmbUsername', hub.smb_username);
-      // Password is redacted server-side (GET never returns it). Leave
-      // the field blank and signal whether one is stored via the
-      // placeholder; saveSettingsSmb omits a blank field so "save
-      // without retyping" keeps the existing password.
+      // Secret fields are redacted server-side (GET never returns them).
+      // Leave the field blank and signal whether one is stored via the
+      // placeholder; the save path omits a blank field so "save without
+      // retyping" keeps the existing secret.
       const _setSecretPw = (id, isSet) => {
         const e = document.getElementById(id);
         if (!e) return;
@@ -125,14 +122,6 @@ async function loadSettingsPanel() {
         e.placeholder = isSet ? '(設定済み — 変更時のみ入力)' : '(未設定)';
       };
       const _secretsSet = d.secrets_set || {};
-      _setSecretPw('setSmbPassword', !!_secretsSet.smb_password);
-      _setVal('setSmbMountPoint', hub.smb_mount_point || '/mnt/paprika');
-      _setVal('setSmbMountOptions', hub.smb_mount_options);
-      // SMB status banner + disk usage
-      const smbSt = d.smb_status || {};
-      _updateSmbStatusBanner(smbSt.mounted, smbSt.mount_point, hub.smb_server, hub.smb_share);
-      // Fetch disk usage asynchronously
-      _refreshSmbDiskUsage();
 
       // ---- Reasoning Judge ----
       const rjMode = hub.reasoning_judge_mode || 'off';
@@ -347,32 +336,7 @@ async function saveSettingsWebSearch() {
   flashSavedHint();
 }
 
-// ---- SMB Storage helpers ----
-
-function _updateSmbStatusBanner(mounted, mountPoint, server, share) {
-  const banner = document.getElementById('smbStatusBanner');
-  if (!banner) return;
-  if (!server && !share) {
-    banner.style.display = 'none';
-    return;
-  }
-  banner.style.display = 'flex';
-  if (mounted) {
-    banner.style.background = '#e6f7e9';
-    banner.style.border = '1px solid #7ab68a';
-    banner.style.color = '#196b2c';
-    banner.innerHTML = '<iconify-icon icon="lucide:check-circle" style="font-size:1.2em;"></iconify-icon>'
-      + ' <strong>接続中</strong>: //' + esc(server || '') + '/' + esc(share || '')
-      + ' → <code>' + esc(mountPoint || '') + '</code>';
-  } else {
-    banner.style.background = '#fff3e0';
-    banner.style.border = '1px solid #e8c97a';
-    banner.style.color = '#7a5a14';
-    banner.innerHTML = '<iconify-icon icon="lucide:alert-circle" style="font-size:1.2em;"></iconify-icon>'
-      + ' <strong>未接続</strong>: //' + esc(server || '') + '/' + esc(share || '')
-      + ' (マウントボタンで接続)';
-  }
-}
+// ---- Status banner helpers ----
 
 function _updateMariadbStatusBanner(st) {
   const banner = document.getElementById('mariadbStatusBanner');
@@ -428,113 +392,6 @@ function _updateS3StatusBanner(st) {
     banner.innerHTML = '<iconify-icon icon="lucide:alert-circle" style="font-size:1.2em;"></iconify-icon>'
       + ' <strong>未接続</strong>: S3 / MinIO に接続できません'
       + (st.error ? ' (' + esc(st.error) + ')' : '') + '。設定を確認してください。';
-  }
-}
-
-async function _refreshSmbDiskUsage() {
-  const el = document.getElementById('smbDiskUsage');
-  if (!el) return;
-  try {
-    const r = await fetch('/settings/smb/status');
-    if (!r.ok) { el.textContent = ''; return; }
-    const d = await r.json();
-    if (d.mounted && d.usage) {
-      // Prefer the server's unit-scaled strings (TB / GB / ...) so a
-      // multi-TB NAS isn't shown as a huge GB number. Fall back to the
-      // legacy *_gb fields for older hubs.
-      const u = d.usage;
-      const used  = u.used_h  || (u.used_gb  + ' GB');
-      const total = u.total_h || (u.total_gb + ' GB');
-      const free  = u.free_h  || (u.free_gb  + ' GB');
-      // Surface that the watchdog will auto-reconnect a dropped mount.
-      const auto = d.auto_mount
-        ? ' <span style="color:#888; font-weight:normal;">· 自動再接続 ON</span>'
-        : ' <span style="color:#c0792a; font-weight:normal;">· 自動再接続 OFF</span>';
-      el.innerHTML = '<iconify-icon icon="lucide:database"></iconify-icon> '
-        + '使用量: ' + used + ' / ' + total
-        + ' (空き ' + free + ')' + auto;
-      el.style.color = '#196b2c';
-    } else if (d.mounted) {
-      el.textContent = 'マウント済み (使用量取得不可)';
-      el.style.color = '#888';
-    } else {
-      el.textContent = '';
-    }
-  } catch (e) {
-    el.textContent = '';
-  }
-}
-
-async function saveSettingsSmb() {
-  const errEl = document.getElementById('setSmbErr');
-  if (errEl) errEl.textContent = '';
-  const body = {
-    smb_server:        (document.getElementById('setSmbServer').value || '').trim(),
-    smb_share:         (document.getElementById('setSmbShare').value || '').trim(),
-    smb_username:      (document.getElementById('setSmbUsername').value || '').trim(),
-    smb_mount_point:   (document.getElementById('setSmbMountPoint').value || '/mnt/paprika').trim(),
-    smb_mount_options: (document.getElementById('setSmbMountOptions').value || '').trim(),
-  };
-  // Only send the password when the operator actually typed one — a
-  // blank field means "keep the stored password" (it's never echoed
-  // back to the form, so a blank save must not wipe it).
-  const _smbPw = document.getElementById('setSmbPassword').value || '';
-  if (_smbPw) body.smb_password = _smbPw;
-  try {
-    const r = await fetch(SETTINGS_URL, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) {
-      const t = await r.text();
-      if (errEl) errEl.textContent = 'save failed (' + r.status + '): ' + t.slice(0, 200);
-      return;
-    }
-  } catch (e) {
-    if (errEl) errEl.textContent = 'save failed: ' + e.message;
-    return;
-  }
-  flashSavedHint();
-}
-
-async function smbMount() {
-  const errEl = document.getElementById('setSmbErr');
-  if (errEl) errEl.textContent = '';
-  // Save settings first, then mount
-  await saveSettingsSmb();
-  const mountBtn = document.getElementById('setSmbMountBtn');
-  if (mountBtn) { mountBtn.disabled = true; mountBtn.textContent = 'マウント中…'; }
-  try {
-    const r = await fetch('/settings/smb/mount', { method: 'POST' });
-    const d = await r.json();
-    if (!r.ok) {
-      if (errEl) errEl.textContent = d.detail || 'mount failed';
-      return;
-    }
-    flashSavedHint();
-    loadSettingsPanel();
-  } catch (e) {
-    if (errEl) errEl.textContent = 'mount failed: ' + e.message;
-  } finally {
-    if (mountBtn) { mountBtn.disabled = false; mountBtn.innerHTML = '<iconify-icon icon="lucide:plug"></iconify-icon> マウント'; }
-  }
-}
-
-async function smbUnmount() {
-  const errEl = document.getElementById('setSmbErr');
-  if (errEl) errEl.textContent = '';
-  try {
-    const r = await fetch('/settings/smb/unmount', { method: 'POST' });
-    const d = await r.json();
-    if (!r.ok) {
-      if (errEl) errEl.textContent = d.detail || 'unmount failed';
-      return;
-    }
-    flashSavedHint();
-    loadSettingsPanel();
-  } catch (e) {
-    if (errEl) errEl.textContent = 'unmount failed: ' + e.message;
   }
 }
 
@@ -832,12 +689,6 @@ async function mdbRefreshTableCounts() {
   if (resetFetch) resetFetch.addEventListener('click', resetFetchDefaults);
   const saveWs = document.getElementById('setSaveWebSearchBtn');
   if (saveWs) saveWs.addEventListener('click', saveSettingsWebSearch);
-  const saveSmb = document.getElementById('setSaveSmbBtn');
-  if (saveSmb) saveSmb.addEventListener('click', saveSettingsSmb);
-  const mountSmb = document.getElementById('setSmbMountBtn');
-  if (mountSmb) mountSmb.addEventListener('click', smbMount);
-  const unmountSmb = document.getElementById('setSmbUnmountBtn');
-  if (unmountSmb) unmountSmb.addEventListener('click', smbUnmount);
   // Reasoning Judge
   const saveRj = document.getElementById('setSaveReasoningJudgeBtn');
   if (saveRj) saveRj.addEventListener('click', saveSettingsReasoningJudge);
@@ -877,12 +728,6 @@ async function mdbRefreshTableCounts() {
   const mdbPwToggle = document.getElementById('setMariadbPasswordToggle');
   if (mdbPwToggle) mdbPwToggle.addEventListener('click', () => {
     const pw = document.getElementById('setMariadbPassword');
-    if (pw) pw.type = pw.type === 'password' ? 'text' : 'password';
-  });
-  // Password toggle
-  const pwToggle = document.getElementById('setSmbPasswordToggle');
-  if (pwToggle) pwToggle.addEventListener('click', () => {
-    const pw = document.getElementById('setSmbPassword');
     if (pw) pw.type = pw.type === 'password' ? 'text' : 'password';
   });
   // Reload the panel each time the Settings tab is activated so the

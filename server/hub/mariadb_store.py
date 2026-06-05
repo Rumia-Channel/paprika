@@ -34,7 +34,7 @@ class MariaDBJobStore:
     ``pool`` is an ``aiomysql.Pool``.
     ``redis_url`` is optional; when given, live log pub/sub uses Redis.
     ``storage_dir_fn`` is a zero-arg callable returning the current
-    storage root (resolved late so SMB remounts are picked up). When
+    storage root (resolved late so storage_dir changes are picked up). When
     provided, log lines persist to ``{root}/{job_id}/log.txt`` instead
     of the MariaDB ``job_logs`` table.
     """
@@ -488,8 +488,8 @@ class MariaDBJobStore:
 
     @staticmethod
     def _sync_append(path: Path, lines: list[str]) -> None:
-        """Blocking append — runs inside ``asyncio.to_thread`` so SMB
-        latency doesn't stall the event loop. Opens with line buffering
+        """Blocking append — runs inside ``asyncio.to_thread`` so slow
+        storage I/O doesn't stall the event loop. Opens with line buffering
         so partial writes flush even when many short lines arrive."""
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8", buffering=1) as f:

@@ -1041,7 +1041,7 @@ function setTab(name, { updateHash = true } = {}) {
   if (name === 'submit' && typeof loadHubSettingsDefaults === 'function') {
     loadHubSettingsDefaults();
   }
-  // Settings tab: load hub settings + MariaDB/SMB status on activation
+  // Settings tab: load hub settings + MariaDB/S3 status on activation
   // so the panel is populated when deep-linking via #settings or on
   // browser refresh. Deferred via setTimeout because setTab() runs at
   // script-parse line ~1065 while SETTINGS_URL / UI_DEFAULTS_FALLBACK

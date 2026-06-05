@@ -44,7 +44,6 @@ x-hub-common: &hub-common
     dockerfile: docker/hub/Dockerfile
   restart: unless-stopped
   depends_on: [redis]
-  privileged: true
   volumes:
     - paprika-data:/data/jobs          # local write-through cache. With
                                         # PAPRIKA_S3_ENABLED set, assets

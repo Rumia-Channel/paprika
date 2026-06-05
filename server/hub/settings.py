@@ -97,28 +97,13 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # ---- Storage: alternative data directory ----------------------------
     # When non-empty, job artifact directories ({job_id}/, assets/,
     # page.html, log.txt, …) are written to this path instead of the
-    # default ``data_dir``.  Designed for mounting an SMB share so large
-    # captures live on a NAS while hub metadata (skills, conventions,
-    # hosts, engines, settings.json) stays on fast local storage.
+    # default ``data_dir``.  Intended as a local cache-dir override (e.g.
+    # a dedicated disk): the durable copy lives in the object store
+    # (MinIO/S3) and reads fall back to it, so this dir is a bounded
+    # write-through cache. Hub metadata (skills, conventions, hosts,
+    # engines, settings.json) always stays in ``data_dir``.
     # Empty string (default) = use ``data_dir`` as before.
     "storage_dir": ("", "str"),
-    # ---- SMB connection settings -----------------------------------------
-    # Full SMB share connection parameters. When configured and mounted,
-    # ``storage_dir`` is automatically set to ``smb_mount_point``.
-    "smb_server": ("", "str"),           # e.g. "192.168.1.100"
-    "smb_share": ("", "str"),            # e.g. "paprika"
-    "smb_username": ("", "str"),         # e.g. "guest"
-    "smb_password": ("", "str"),         # SMB password (stored in settings.json)
-    "smb_mount_point": ("/mnt/paprika", "str"),  # local mount path
-    "smb_mount_options": ("", "str"),    # extra mount -o options (e.g. "vers=3.0")
-    # When True (default) the hub mounts the configured SMB share at
-    # startup and a background watchdog re-mounts it within ~30s if the
-    # mount drops (host/container restart, NAS reboot, network blip).
-    # Set False to manage the mount entirely by hand -- the manual
-    # /settings/smb/unmount endpoint flips this off so the watchdog
-    # doesn't fight a deliberate unmount; /settings/smb/mount flips it
-    # back on. See server/hub/smb_mount.py.
-    "smb_auto_mount": (True, "bool"),
     # ---- Reasoning Judge ------------------------------------------------
     # A second, higher-quality LLM judge that runs alongside (shadow) or
     # instead of (primary) the default judge. Originally "R1 judge"
@@ -190,11 +175,6 @@ def _env_default(key: str, fallback: Any) -> Any:
         "skill_retrieval_top_k": ("SKILL_RETRIEVAL_TOP_K", "int"),
         # Storage: alternative data directory for job artifacts.
         "storage_dir": ("STORAGE_DIR", "str"),
-        "smb_server": ("SMB_SERVER", "str"),
-        "smb_share": ("SMB_SHARE", "str"),
-        "smb_username": ("SMB_USERNAME", "str"),
-        "smb_password": ("SMB_PASSWORD", "str"),
-        "smb_mount_point": ("SMB_MOUNT_POINT", "str"),
         # Codegen web_search: settings.json -> env vars -> static default.
         "searxng_url": ("SEARXNG_URL", "str"),
         "searxng_timeout_s": ("SEARXNG_TIMEOUT_S", "float"),
@@ -252,9 +232,9 @@ class SettingsRegistry:
         self._cache: dict | None = None
         # Guards the read-modify-write in update(). Without it two
         # concurrent updates (e.g. a PUT /settings on the event loop
-        # racing the SMB watchdog's reg.update() running in a worker
-        # thread via asyncio.to_thread) both load the same base dict,
-        # both write, and the second silently drops the first's change.
+        # racing another update() running in a worker thread via
+        # asyncio.to_thread) both load the same base dict, both write,
+        # and the second silently drops the first's change.
         self._lock = threading.Lock()
 
     def _load(self) -> dict:

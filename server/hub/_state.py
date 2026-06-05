@@ -161,8 +161,9 @@ def get_storage_dir() -> Path:
     """Return the effective directory for per-job artifacts.
 
     When the hub operator has configured ``storage_dir`` in Settings
-    (typically an SMB / NAS mount point), that path is used.  Otherwise
-    the default ``config.data_dir`` is returned.
+    (a local cache-dir override -- the durable copy lives in the object
+    store), that path is used.  Otherwise the default ``config.data_dir``
+    is returned.
 
     Hub-internal metadata (skills, conventions, hosts, engines,
     settings.json, …) always lives in ``config.data_dir`` regardless

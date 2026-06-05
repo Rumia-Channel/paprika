@@ -59,8 +59,8 @@ async def get_asset(job_id: str, filename: str, request: Request):
 
     Source order: the local copy first (fast, Range handled by
     FileResponse), then a direct stream from the object store when the
-    local/NAS copy is missing -- no SMB write needed, which is the case a
-    dropped CIFS mount leaves behind. Falls back to the legacy
+    local copy is missing -- no local write needed, which is the case
+    cache eviction leaves behind. Falls back to the legacy
     ensure_local pull last."""
     if not filename or "\\" in filename or filename.startswith("/"):
         raise HTTPException(400, "invalid path")
@@ -80,8 +80,8 @@ async def get_asset(job_id: str, filename: str, request: Request):
         except ValueError:
             raise HTTPException(400, "path escapes assets dir")
         return FileResponse(target)
-    # 2) Object store -- stream directly, honouring Range, without touching
-    #    the (possibly-absent) NAS mount.
+    # 2) Object store -- stream directly, honouring Range, without needing
+    #    the (possibly-absent) local copy.
     if objstore.enabled():
         obj = await objstore.open_object(
             job_id, f"assets/{filename}", request.headers.get("range")
@@ -203,7 +203,7 @@ async def job_screenshots_json(job_id: str) -> dict:
     assets_dir = get_storage_dir() / job_id / "assets"
     # rel-path -> {size, mtime}; local wins on dup. Sourced from the local
     # tree UNIONed with the S3 mirror (recursive list_tree), so the
-    # screenshot stream survives a deleted job row / dropped NAS copy.
+    # screenshot stream survives a deleted job row / evicted local copy.
     by_rel: dict[str, dict] = {}
     if assets_dir.exists():
         for p in assets_dir.rglob("*"):
@@ -281,7 +281,7 @@ async def job_assets(job_id: str) -> str:
     except Exception:
         _info_status = "?"
     # File list comes from the object store unioned with any local copy
-    # (see _gather_assets) -- so the gallery renders even when the NAS copy
+    # (see _gather_assets) -- so the gallery renders even when the local copy
     # is gone. screenshot-* and the .meta/ dir are already filtered there.
     buckets = {"images": [], "videos": [], "audios": [], "others": []}
     for a in await _gather_assets(job_id):

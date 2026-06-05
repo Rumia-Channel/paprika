@@ -54,7 +54,7 @@ _STATE_ATTR = {
 
 # Settings keys that must NOT be shared cross-hub: the MariaDB DSN itself is
 # bootstrap config (each hub needs its own to connect at all), so propagating
-# it would be circular and could lock a hub out. Everything else (S3, SMB,
+# it would be circular and could lock a hub out. Everything else (S3,
 # toggles, fetch defaults) is shared.
 _BOOTSTRAP_KEYS = frozenset({
     "mariadb_host", "mariadb_port", "mariadb_database",

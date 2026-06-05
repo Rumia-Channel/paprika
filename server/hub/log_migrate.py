@@ -72,7 +72,7 @@ async def migrate_logs_to_disk(
 
     # 2. Migrate one job at a time. We hold the pool connection only
     # during the SELECT/DELETE windows — the file write happens
-    # without a connection so a slow SMB write doesn't pin a slot.
+    # without a connection so a slow storage write doesn't pin a slot.
     for idx, jid in enumerate(job_ids, 1):
         try:
             target = storage_root / jid / "log.txt"
