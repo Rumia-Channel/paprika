@@ -1,6 +1,7 @@
 <nav class="topnav">
   <a class="brand" href="index.html"><span class="logo"><img src="icon.svg" alt=""></span> Paprika</a>
   <span class="links">
+    <a href="quickstart.html"{% if include.active == "quickstart" %} class="active"{% endif %}>クイックスタート</a>
     <a href="intro.html"{% if include.active == "intro" %} class="active"{% endif %}>はじめに</a>
     <a href="guides.html"{% if include.active == "guides" %} class="active"{% endif %}>ガイド</a>
     <span class="dropdown">
