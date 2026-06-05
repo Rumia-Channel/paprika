@@ -773,56 +773,104 @@ async def upload_session_links_snapshot(job_id: str, body: dict) -> dict:
 
 @router.get("/jobs/{job_id}/meta")
 async def get_page_meta(job_id: str) -> dict:
-    """Pull the rendered page's ``<title>`` / description / thumbnail
-    out of the saved ``page.html``.
+    """Pull the rendered page's ``<title>`` / description / representative
+    image out of the job's saved artifacts.
 
     Response shape::
 
         {
-          "job_id":        "...",
-          "url":           "https://example.com/page",
-          "title":         "Example -- Welcome",        # or null
-          "description":   "An example page.",          # or null
-          "thumbnail_url": "https://example.com/og.png",# or null
-          "source":        "page.html"
+          "job_id":            "...",
+          "url":               "https://example.com/page",
+          "title":             "Example -- Welcome",        # or null
+          "description":       "An example page.",          # or null
+          "thumbnail_url":     "https://example.com/cover.jpg",  # or null
+          "thumbnail_source":  "live:img",                  # or null
+          "representative_image": {                          # or null
+              "url": "...", "source": "img", "width": 800,
+              "height": 1200, "area": 960000
+          },
+          "source":            "page.html"
         }
 
-    Extraction is "first non-empty" across (in order):
-      * title:         <title> -> og:title -> twitter:title
-      * description:   <meta name=description> -> og:description -> twitter:description
-      * thumbnail_url: og:image{,:url,:secure_url} -> twitter:image -> apple-touch-icon -> icon
+    ``thumbnail_url`` is the page's *representative image* -- the cover /
+    hero a human associates with the page, picked to dodge site logos.
+    Two layers feed it:
 
-    Returns 404 only when the job itself doesn't exist. When the
-    job exists but page.html was never saved (still running, or a
-    download-only / video-only job), the title/description/
-    thumbnail fields are null and the caller can poll again later
-    -- same pattern as /jobs/{id}/links.
+      1. **Live pick** (``meta.json`` sidecar) -- the worker chose the
+         largest ``<img>`` by TRUE ``naturalWidth*naturalHeight`` from
+         the live DOM (after running the OGP -> Twitter -> JSON-LD ->
+         image_src -> largest-img cascade). Preferred when present;
+         ``thumbnail_source`` is then ``live:<source>``.
+      2. **Offline cascade** (re-parse ``page.html``) -- fallback for
+         jobs predating the live pick. Same priority order, but the
+         largest-img step uses declared width/height/srcset rather than
+         real decoded sizes. ``thumbnail_source`` is one of og:image /
+         twitter:image / json-ld / image_src / img / icon.
+
+    title/description always come from ``page.html``:
+      * title:        <title> -> og:title -> twitter:title
+      * description:  <meta name=description> -> og:description -> twitter:description
+
+    Returns 404 only when the job itself doesn't exist. When the job
+    exists but page.html was never saved (still running, or a
+    download-only / video-only job) and there's no sidecar, the
+    title/description/thumbnail fields are null and the caller can poll
+    again later -- same pattern as /jobs/{id}/links.
     """
     info = await _require_job_info(job_id)
-    page_path = get_storage_dir() / job_id / "page.html"
-    await objstore.ensure_local(page_path)
-    if not page_path.exists():
-        return {
-            "job_id": job_id,
-            "url": info.url or "",
-            "title": None,
-            "description": None,
-            "thumbnail_url": None,
-            "source": "page.html",
-        }
-    try:
-        raw = page_path.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        raise HTTPException(500, f"failed to read page.html: {e}")
-    from server.hub.meta import extract_meta
+    job_dir = get_storage_dir() / job_id
 
-    meta = extract_meta(raw, base_url=info.url or "")
+    # Layer 1: the worker's live-DOM representative-image pick (true
+    # naturalWidth cascade), shipped as a meta.json sidecar. Present for
+    # jobs run after this feature shipped; preferred over re-parsing
+    # page.html since a static parse can't measure rendered image sizes.
+    representative = None
+    meta_path = job_dir / "meta.json"
+    try:
+        await objstore.ensure_local(meta_path)
+        if meta_path.exists():
+            sidecar = json.loads(meta_path.read_text(encoding="utf-8"))
+            r = (sidecar or {}).get("representative_image") or {}
+            if isinstance(r, dict) and r.get("url"):
+                representative = r
+    except Exception:
+        representative = None
+
+    # Layer 2: offline cascade over the saved page.html -- always the
+    # source for title/description, and the thumbnail fallback.
+    title = description = None
+    cascade_url = cascade_source = None
+    page_path = job_dir / "page.html"
+    await objstore.ensure_local(page_path)
+    if page_path.exists():
+        try:
+            raw = page_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            raise HTTPException(500, f"failed to read page.html: {e}")
+        from server.hub.meta import extract_meta
+
+        meta = extract_meta(raw, base_url=info.url or "")
+        title = meta.get("title")
+        description = meta.get("description")
+        cascade_url = meta.get("thumbnail_url")
+        cascade_source = meta.get("thumbnail_source")
+
+    # Prefer the live pick; fall back to the page.html cascade.
+    if representative and representative.get("url"):
+        thumbnail_url = representative["url"]
+        thumbnail_source = "live:" + (representative.get("source") or "img")
+    else:
+        thumbnail_url = cascade_url
+        thumbnail_source = cascade_source
+
     return {
         "job_id": job_id,
         "url": info.url or "",
-        "title": meta.get("title"),
-        "description": meta.get("description"),
-        "thumbnail_url": meta.get("thumbnail_url"),
+        "title": title,
+        "description": description,
+        "thumbnail_url": thumbnail_url,
+        "thumbnail_source": thumbnail_source,
+        "representative_image": representative,
         "source": "page.html",
     }
 
@@ -2879,8 +2927,9 @@ async def save_asset_from_url(job_id: str, body: dict) -> dict:
     return {"status": "saved", "name": name, "size": len(content)}
 
 
-# Special files (page.html, log.txt) — worker uploads via the same handler
-# pattern. We accept any of "page.html" / "log.txt" / regular asset names.
+# Special files (page.html, log.txt, meta.json) — worker uploads via the
+# same handler pattern. meta.json carries the live-DOM representative-image
+# pick that /jobs/{id}/meta prefers over re-parsing page.html.
 @router.post("/jobs/{job_id}/files/{kind}")
 async def upload_special(
     job_id: str,
@@ -2888,11 +2937,11 @@ async def upload_special(
     file: UploadFile = File(...),
     secret: str | None = Form(None),
 ):
-    """Upload a special file (currently 'page.html' or 'log.txt')."""
+    """Upload a special file ('page.html', 'log.txt', or 'meta.json')."""
     if config.worker_secret and secret != config.worker_secret:
         raise HTTPException(401, "bad secret")
-    if kind not in ("page.html", "log.txt"):
-        raise HTTPException(400, "kind must be 'page.html' or 'log.txt'")
+    if kind not in ("page.html", "log.txt", "meta.json"):
+        raise HTTPException(400, "kind must be 'page.html', 'log.txt' or 'meta.json'")
     await _require_job_info(job_id)
     target = get_storage_dir() / job_id / kind
     target.parent.mkdir(parents=True, exist_ok=True)

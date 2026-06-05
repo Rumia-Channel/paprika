@@ -1170,6 +1170,130 @@ async def detect_videos(tab) -> dict:
         return {"videos": [], "iframes": []}
 
 
+# Pick the page's "representative image" from the LIVE DOM -- the cover /
+# hero image a human associates with the page, NOT the site logo. Runs
+# the same priority cascade as server.hub.meta but with one signal a
+# static HTML parse can't have: the TRUE decoded size of every <img>
+# (naturalWidth*naturalHeight), so the largest-image fallback (priority
+# 5) is exact rather than guessed from declared width/height attributes.
+#
+# Priority: 1 OGP -> 2 Twitter Card -> 3 JSON-LD (image / thumbnailUrl /
+# thumbnail; @graph + nesting + arrays; value may be a string,
+# {url|contentUrl|@id}, or a list) -> 4 <link rel=image_src> -> 5 biggest
+# <img> by naturalWidth*naturalHeight (currentSrc preferred), with
+# logo / icon / sprite / pixel URLs and implausible aspect ratios
+# filtered out. Returns a JSON string {url, source, width?, height?,
+# area?} or {url:null, source:null}.
+_PICK_REPRESENTATIVE_IMAGE_JS = r"""
+JSON.stringify((() => {
+  const abs = (u) => { try { return new URL(u, document.baseURI).href; } catch (e) { return null; } };
+  const clean = (u) => {
+    if (!u || typeof u !== 'string') return null;
+    u = u.trim();
+    if (!u) return null;
+    const low = u.toLowerCase();
+    if (low.startsWith('data:') || low.startsWith('blob:') ||
+        low.startsWith('javascript:') || low.startsWith('about:')) return null;
+    return abs(u);
+  };
+  const metaC = (sel) => { const el = document.querySelector(sel); return el ? clean(el.getAttribute('content')) : null; };
+
+  // 1. OGP
+  let u = metaC('meta[property="og:image:secure_url"]')
+       || metaC('meta[property="og:image:url"]')
+       || metaC('meta[property="og:image"]')
+       || metaC('meta[name="og:image"]');
+  if (u) return { url: u, source: 'og:image' };
+
+  // 2. Twitter Card
+  u = metaC('meta[name="twitter:image"]')
+   || metaC('meta[name="twitter:image:src"]')
+   || metaC('meta[property="twitter:image"]')
+   || metaC('meta[property="twitter:image:src"]');
+  if (u) return { url: u, source: 'twitter:image' };
+
+  // 3. JSON-LD (recursive)
+  const KEYS = ['image', 'thumbnailurl', 'thumbnail'];
+  const urlFromVal = (v) => {
+    if (!v) return null;
+    if (typeof v === 'string') return clean(v);
+    if (Array.isArray(v)) { for (const it of v) { const r = urlFromVal(it); if (r) return r; } return null; }
+    if (typeof v === 'object') {
+      for (const k in v) {
+        const kl = k.toLowerCase();
+        if (kl === 'url' || kl === 'contenturl' || kl === '@id') { const r = clean(v[k]); if (r) return r; }
+      }
+    }
+    return null;
+  };
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return null;
+    if (Array.isArray(node)) { for (const it of node) { const r = walk(it); if (r) return r; } return null; }
+    const lower = {};
+    for (const k in node) lower[k.toLowerCase()] = k;
+    for (const want of KEYS) { if (want in lower) { const r = urlFromVal(node[lower[want]]); if (r) return r; } }
+    if ('@graph' in lower) { const r = walk(node[lower['@graph']]); if (r) return r; }
+    for (const k in node) { const v = node[k]; if (v && typeof v === 'object') { const r = walk(v); if (r) return r; } }
+    return null;
+  };
+  for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+    let data; try { data = JSON.parse(s.textContent); } catch (e) { continue; }
+    const r = walk(data);
+    if (r) return { url: r, source: 'json-ld' };
+  }
+
+  // 4. <link rel="image_src">
+  { const el = document.querySelector('link[rel="image_src"]');
+    if (el) { const r = clean(el.getAttribute('href')); if (r) return { url: r, source: 'image_src' }; } }
+
+  // 5. Largest <img> by TRUE naturalWidth*naturalHeight (currentSrc preferred)
+  const BAD = /sprite|logo|favicon|\/icons?[\/_-]|[\/_-]icon|avatar|blank|spacer|1x1|pixel|placeholder|loader|loading|emoji|\/flag|badge|[\/_-]btn|button|rating|[\/_-]star|watermark/i;
+  let best = null, bestArea = 0;
+  for (const img of document.images) {
+    const w = img.naturalWidth | 0, h = img.naturalHeight | 0;
+    if (!w || !h) continue;                 // not decoded / broken
+    if (w < 100 || h < 100) continue;       // ignore icons / thumbs
+    const ar = w / h;
+    if (ar > 8 || ar < 0.125) continue;     // skip banners / rules
+    const cand = img.currentSrc || img.src || '';
+    const c = clean(cand);
+    if (!c) continue;
+    if (BAD.test(cand)) continue;
+    const area = w * h;
+    if (area > bestArea) { bestArea = area; best = { url: c, width: w, height: h }; }
+  }
+  if (best) return { url: best.url, source: 'img', width: best.width, height: best.height, area: bestArea };
+
+  return { url: null, source: null };
+})())
+"""
+
+
+async def pick_representative_image(tab) -> dict:
+    """Pick the page's representative (cover/hero) image from the live DOM.
+
+    Runs the OGP -> Twitter -> JSON-LD -> image_src -> largest-<img>
+    cascade. The win over a static page.html parse is priority 5: the
+    biggest <img> is chosen by TRUE naturalWidth*naturalHeight (only
+    knowable in a live browser after image decode), with logos / icons /
+    sprites / tracking pixels filtered out.
+
+    Returns {url, source, width?, height?, area?} or {} when nothing
+    qualified or the probe failed. ``source`` is one of og:image /
+    twitter:image / json-ld / image_src / img."""
+    try:
+        raw = await tab.evaluate(_PICK_REPRESENTATIVE_IMAGE_JS)
+    except Exception:
+        return {}
+    try:
+        out = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(out, dict) or not out.get("url"):
+        return {}
+    return out
+
+
 async def trigger_videos(tab) -> dict:
     """Find videos, play() new <video>s, click the center of visible ones.
     If nothing detected, click viewport center once."""
@@ -1580,6 +1704,12 @@ class FetchResult:
     assets_saved: list[dict] = field(default_factory=list)
     assets_failed: int = 0
     video_detection: dict = field(default_factory=lambda: {"videos": [], "iframes": []})
+    # Representative image picked from the LIVE DOM at capture time
+    # (OGP -> Twitter -> JSON-LD -> image_src -> largest <img> by true
+    # naturalWidth*naturalHeight). Shipped to the hub as a meta.json
+    # sidecar so /jobs/{id}/meta can return a real cover image instead
+    # of the site logo. {} when nothing qualified / the probe failed.
+    representative_image: dict = field(default_factory=dict)
     video_urls_seen: list[str] = field(default_factory=list)
     ytdlp_results: list[dict] = field(default_factory=list)
     # The expanded list of all iframe srcs we found (for diagnostics).
@@ -2355,6 +2485,18 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                 )
 
         result.html = await tab.get_content()
+
+        # Pick the representative (cover/hero) image while the DOM is
+        # still live -- this is the only point where true
+        # naturalWidth*naturalHeight is readable for the largest-image
+        # fallback. Best-effort: a failure here never fails the fetch.
+        try:
+            result.representative_image = await pick_representative_image(tab)
+            _rep = result.representative_image or {}
+            if _rep.get("url"):
+                log(f"  representative image: {_rep['url']} (via {_rep.get('source')})")
+        except Exception as e:
+            log(f"  (representative-image pick failed: {e})")
 
         if assets_dir is not None:
             log(
