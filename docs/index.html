@@ -95,10 +95,27 @@
 
     <h2 id="what">Paprika とは</h2>
     <p>URL を渡すと、フリート上の実ブラウザがページを開き、画像・動画・HTML を収集して返します。
-    ログインが必要・JavaScript で描画される、といった「機械的な巡回が難しいサイト」でも安定して動くことを目指した基盤です。
+    ログインが必要・JavaScript で描画される、といった「機械的な巡回が難しいサイト」でも安定して動くことを目指した基盤です。</p>
+    <p>主な用途は <strong>サイトアーカイブ</strong>・<strong>画像／動画の一括収集</strong>・<strong>証拠保全</strong>・<strong>新着監視</strong>など。
     類似ツール（<a href="https://github.com/browserbase/stagehand" target="_blank" rel="noopener">Stagehand</a>、<a href="https://github.com/browser-use/browser-use" target="_blank" rel="noopener">Browser-Use</a>、<a href="https://www.browserable.ai/" target="_blank" rel="noopener">Browserable</a>）との違いは <a href="why-paprika.html">なぜ Paprika?</a> に整理しています。</p>
-    <p>使い方は 3 通り。<strong>管理 UI</strong> から URL を投入 / <strong><a href="http-api.html">HTTP API</a></strong> を任意の言語から実行 /
-    <strong>paprika-client（<a href="api.html">Python</a> / <a href="api.html#php">PHP</a> SDK）</strong>を使います。</p>
+    <p>使い方は <strong>3 通り</strong>。用途に合わせて選べます。</p>
+    <div class="cards">
+      <a class="card" href="admin.html">
+        <iconify-icon class="card-icon" icon="lucide:layout-dashboard"></iconify-icon>
+        <h3>管理画面</h3>
+        <p>ブラウザだけ。URL を貼って実行ボタン。コード不要。</p>
+      </a>
+      <a class="card" href="http-api.html">
+        <iconify-icon class="card-icon" icon="lucide:terminal"></iconify-icon>
+        <h3>HTTP API</h3>
+        <p><code>curl</code> や任意の言語（JS / Go / Ruby …）から REST/JSON で叩く。</p>
+      </a>
+      <a class="card" href="api.html">
+        <iconify-icon class="card-icon" icon="lucide:code-2"></iconify-icon>
+        <h3>SDK（Python / PHP）</h3>
+        <p>Playwright スタイルで本格スクリプト。async / sync 両対応。</p>
+      </a>
+    </div>
 
     <h2 id="why">できること</h2>
     <div class="cards">
