@@ -2,8 +2,9 @@
   <a class="brand" href="index.html"><span class="logo"><img src="icon.svg" alt=""></span> Paprika</a>
   <span class="links">
     <span class="dropdown">
-      <a class="dropdown-toggle{% if include.active == "intro" or include.active == "quickstart" %} active{% endif %}" href="intro.html">はじめに ▾</a>
+      <a class="dropdown-toggle{% if include.active == "why-paprika" or include.active == "intro" or include.active == "quickstart" %} active{% endif %}" href="why-paprika.html">はじめに ▾</a>
       <span class="dropdown-menu">
+        <a href="why-paprika.html"{% if include.active == "why-paprika" %} class="active"{% endif %}>なぜ Paprika?</a>
         <a href="intro.html"{% if include.active == "intro" %} class="active"{% endif %}>Client インストール</a>
         <a href="quickstart.html"{% if include.active == "quickstart" %} class="active"{% endif %}>Server インストール</a>
       </span>
