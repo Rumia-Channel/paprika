@@ -7,8 +7,14 @@
 <title>Worker 自己回復(self-healing) — Paprika</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
+{% include favicon.html %}
 <meta name="description" content="Paprika worker の自己回復（self-healing）設計。起動時にCPUコアへレーン数を自動調整、hub 接続が切れてもその場で無期限に再接続（自滅しない）、N ジョブごとに drain して自動リサイクル、hub 側は心拍の途絶えた worker を自動 reap。worker のライフサイクル図と設定一覧。">
 <link rel="canonical" href="https://paps-jp.github.io/paprika/worker-resilience.html">
+<meta property="og:image" content="https://paps-jp.github.io/paprika/img/admin-submit.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Worker 自己回復(self-healing) — Paprika">
+<meta name="twitter:description" content="Paprika worker の自己回復（self-healing）設計。起動時にCPUコアへレーン数を自動調整、hub 接続が切れてもその場で無期限に再接続（自滅しない）、N ジョブごとに drain して自動リサイクル、hub 側は心拍の途絶えた worker を自動 reap。worker のライフサイクル図と設定一覧。">
+<meta name="twitter:image" content="https://paps-jp.github.io/paprika/img/admin-submit.png">
 </head>
 <body>
 

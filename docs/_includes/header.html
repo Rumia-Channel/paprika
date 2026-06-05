@@ -39,6 +39,39 @@
     <a href="operations.html"{% if include.active == "operations" or include.active == "engine-setup" or include.active == "scaling" or include.active == "worker-resilience" or include.active == "worker-autodeploy" %} class="active"{% endif %}>運用</a>
     <a href="architecture.html"{% if include.active == "architecture" or include.active == "architecture-hub" or include.active == "architecture-worker" or include.active == "vision-mouse" or include.active == "vnc-embed" %} class="active"{% endif %}>設計</a>
   </span>
-  <a class="gh" href="search.html" title="サイト内検索" aria-label="サイト内検索" style="padding:5px 10px; margin-right:6px;"><iconify-icon icon="lucide:search" style="font-size:1.05rem; vertical-align:-3px;"></iconify-icon></a>
+  <a class="search" href="search.html" title="サイト内検索" aria-label="サイト内検索"><iconify-icon icon="lucide:search" style="font-size:1.05rem; vertical-align:-3px;"></iconify-icon></a>
   <a class="gh" href="https://github.com/paps-jp/paprika">GitHub ↗</a>
 </nav>
+<script>
+// Mobile (or no-hover) dropdowns: tap once to open, second tap follows the link.
+// Hover-only dropdowns broke touch users — tapping "はじめに ▾" jumped straight
+// to why-paprika.html and they never saw the submenu.
+(function(){
+  var mq = window.matchMedia('(hover: none), (max-width: 800px)');
+  function bind(){
+    document.querySelectorAll('.topnav .dropdown').forEach(function(d){
+      var toggle = d.querySelector('.dropdown-toggle');
+      if (!toggle || toggle.dataset.tapBound) return;
+      toggle.dataset.tapBound = '1';
+      toggle.addEventListener('click', function(e){
+        if (!mq.matches) return;          // desktop: hover still works
+        if (!d.classList.contains('open')) {
+          e.preventDefault();
+          document.querySelectorAll('.topnav .dropdown.open').forEach(function(o){
+            if (o !== d) o.classList.remove('open');
+          });
+          d.classList.add('open');
+        }
+        // second tap (already open) → fall through to navigate
+      });
+    });
+  }
+  document.addEventListener('click', function(e){
+    if (!e.target.closest('.topnav .dropdown')) {
+      document.querySelectorAll('.topnav .dropdown.open').forEach(function(d){ d.classList.remove('open'); });
+    }
+  });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+})();
+</script>

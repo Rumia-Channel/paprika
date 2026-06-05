@@ -5,15 +5,22 @@
 <title>{{ page.title }} — Paprika</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="{{ '/style.css' | relative_url }}">
+{% include favicon.html %}
 <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
 {% if page.description %}<meta name="description" content="{{ page.description }}">{% endif %}
 <link rel="canonical" href="{{ page.url | absolute_url }}">
+{% assign og_image = page.image | default: '/img/admin-submit.png' %}
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Paprika">
 <meta property="og:title" content="{{ page.title }} — Paprika">
 {% if page.description %}<meta property="og:description" content="{{ page.description }}">{% endif %}
 <meta property="og:url" content="{{ page.url | absolute_url }}">
+<meta property="og:image" content="{{ og_image | absolute_url }}">
 <meta property="og:locale" content="ja_JP">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ page.title }} — Paprika">
+{% if page.description %}<meta name="twitter:description" content="{{ page.description }}">{% endif %}
+<meta name="twitter:image" content="{{ og_image | absolute_url }}">
 </head>
 <body>
 {% comment %} Shared site header. `active` (home/learn/reference/ops/...) comes
