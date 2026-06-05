@@ -39,7 +39,11 @@
     <a href="operations.html"{% if include.active == "operations" or include.active == "engine-setup" or include.active == "scaling" or include.active == "worker-resilience" or include.active == "worker-autodeploy" %} class="active"{% endif %}>運用</a>
     <a href="architecture.html"{% if include.active == "architecture" or include.active == "architecture-hub" or include.active == "architecture-worker" or include.active == "vision-mouse" or include.active == "vnc-embed" %} class="active"{% endif %}>設計</a>
   </span>
-  <a class="search" href="search.html" title="サイト内検索" aria-label="サイト内検索"><iconify-icon icon="lucide:search" style="font-size:1.05rem; vertical-align:-3px;"></iconify-icon></a>
+  <button class="theme-toggle" type="button" aria-label="ライト/ダークテーマ切替" onclick="window.__paprikaToggleTheme&&__paprikaToggleTheme()">
+    <iconify-icon class="icon-light" icon="lucide:moon" style="font-size:1.05rem; vertical-align:-3px;"></iconify-icon>
+    <iconify-icon class="icon-dark" icon="lucide:sun" style="font-size:1.05rem; vertical-align:-3px;"></iconify-icon>
+  </button>
+  <a class="search" href="search.html" title="サイト内検索 (Ctrl+K)" aria-label="サイト内検索"><iconify-icon icon="lucide:search" style="font-size:1.05rem; vertical-align:-3px;"></iconify-icon></a>
   <a class="gh" href="https://github.com/paps-jp/paprika">GitHub ↗</a>
 </nav>
 <script>
@@ -73,5 +77,159 @@
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();
+})();
+
+// === Theme toggle (light / dark) ===
+// Early apply runs in <head> via favicon.html to avoid FOUC. Here we expose
+// the toggle function so the button can flip the state at click time.
+window.__paprikaToggleTheme = function(){
+  try {
+    var next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    if (next === 'dark') document.documentElement.dataset.theme = 'dark';
+    else delete document.documentElement.dataset.theme;
+    localStorage.setItem('paprika.theme', next);
+  } catch(_){}
+};
+
+// === Copy button on every <pre> code block ===
+(function(){
+  function addCopy(pre){
+    if (pre.dataset.copyAdded) return;
+    pre.dataset.copyAdded = '1';
+    var btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.type = 'button';
+    btn.setAttribute('aria-label', 'コードをコピー');
+    btn.title = 'コピー';
+    btn.innerHTML = '<iconify-icon icon="lucide:copy"></iconify-icon>';
+    btn.addEventListener('click', async function(){
+      var code = pre.querySelector('code') || pre;
+      var text = (code.innerText || code.textContent || '').replace(/\u00a0/g, ' ');
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.classList.add('copied');
+        btn.innerHTML = '<iconify-icon icon="lucide:check"></iconify-icon>';
+        setTimeout(function(){
+          btn.classList.remove('copied');
+          btn.innerHTML = '<iconify-icon icon="lucide:copy"></iconify-icon>';
+        }, 1500);
+      } catch(e) {
+        // Fallback: select+execCommand for older browsers
+        var range = document.createRange(); range.selectNodeContents(code);
+        var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        try { document.execCommand('copy'); btn.classList.add('copied'); } catch(_){}
+        sel.removeAllRanges();
+      }
+    });
+    pre.appendChild(btn);
+  }
+  function init(){ document.querySelectorAll('pre').forEach(addCopy); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+
+// === Cmd+K / Ctrl+K command palette (inline search modal) ===
+(function(){
+  var modal = null, lunrIdx = null, searchDocs = null, loaded = false, loading = null;
+  var BASE = '{{ "/" | relative_url }}'.replace(/\/$/, '');
+  function buildModal(){
+    modal = document.createElement('div');
+    modal.className = 'cmdk-modal';
+    modal.innerHTML = '<div class="cmdk-panel" role="dialog" aria-label="サイト内検索">' +
+      '<input type="search" placeholder="検索...　(↑↓ で選択, Enter で開く, Esc で閉じる)" autocomplete="off" autocapitalize="off">' +
+      '<div class="cmdk-results"></div>' +
+      '<div class="cmdk-hint"><kbd>↑</kbd> <kbd>↓</kbd> 選択　<kbd>Enter</kbd> 開く　<kbd>Esc</kbd> 閉じる</div>' +
+    '</div>';
+    modal.addEventListener('click', function(e){ if (e.target === modal) close(); });
+    var input = modal.querySelector('input');
+    input.addEventListener('input', function(){ render(input.value); });
+    input.addEventListener('keydown', handleKey);
+    document.body.appendChild(modal);
+  }
+  function open(){
+    if (!modal) buildModal();
+    modal.style.display = 'flex';
+    var input = modal.querySelector('input');
+    setTimeout(function(){ input.focus(); }, 30);
+    ensureIndex();
+  }
+  function close(){ if (modal) modal.style.display = 'none'; }
+  async function ensureIndex(){
+    if (loaded) return; if (loading) return loading;
+    loading = (async function(){
+      if (!window.lunr) {
+        await new Promise(function(res, rej){
+          var s = document.createElement('script');
+          s.src = 'https://unpkg.com/lunr@2.3.9/lunr.min.js';
+          s.onload = res; s.onerror = rej; document.head.appendChild(s);
+        });
+      }
+      var res = await fetch(BASE + '/search.json');
+      var text = await res.text();
+      // Be lenient with non-strict JSON the build might emit (newlines in content):
+      try { searchDocs = JSON.parse(text); }
+      catch(e){ searchDocs = parseLenient(text) || []; }
+      lunrIdx = lunr(function(){
+        this.ref('url');
+        this.field('title', { boost: 10 });
+        this.field('description', { boost: 5 });
+        this.field('content');
+        searchDocs.forEach(function(d){ try { this.add(d); } catch(_){} }, this);
+      });
+      loaded = true;
+    })();
+    return loading;
+  }
+  function parseLenient(text){
+    // Strip control chars then retry
+    try { return JSON.parse(text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]+/g, ' ')); }
+    catch(_){ return null; }
+  }
+  function render(q){
+    var out = modal.querySelector('.cmdk-results');
+    out.innerHTML = '';
+    if (!loaded) { out.innerHTML = '<p class="cmdk-noresults">読み込み中…</p>'; return; }
+    if (!q || q.trim().length < 1) return;
+    var hits = [];
+    try { hits = lunrIdx.search(q.trim() + '*').slice(0, 10); } catch(_){}
+    if (!hits.length) { out.innerHTML = '<p class="cmdk-noresults">該当なし</p>'; return; }
+    hits.forEach(function(hit, i){
+      var doc = searchDocs.find(function(d){ return d.url === hit.ref; });
+      if (!doc) return;
+      var a = document.createElement('a');
+      a.href = BASE + doc.url.replace(/^\/paprika/, '');
+      a.className = 'cmdk-result' + (i === 0 ? ' selected' : '');
+      a.innerHTML = '<div class="cmdk-title"></div><div class="cmdk-desc"></div>';
+      a.querySelector('.cmdk-title').textContent = doc.title;
+      a.querySelector('.cmdk-desc').textContent = (doc.description || '').slice(0, 110);
+      out.appendChild(a);
+    });
+  }
+  function handleKey(e){
+    if (e.key === 'Escape') { close(); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      var items = modal.querySelectorAll('.cmdk-result');
+      if (!items.length) return;
+      var cur = modal.querySelector('.cmdk-result.selected');
+      var idx = cur ? Array.prototype.indexOf.call(items, cur) : -1;
+      idx += (e.key === 'ArrowDown' ? 1 : -1);
+      idx = (idx + items.length) % items.length;
+      if (cur) cur.classList.remove('selected');
+      items[idx].classList.add('selected');
+      items[idx].scrollIntoView({ block: 'nearest' });
+    }
+    if (e.key === 'Enter') {
+      var cur = modal.querySelector('.cmdk-result.selected');
+      if (cur) window.location.href = cur.href;
+    }
+  }
+  document.addEventListener('keydown', function(e){
+    var typed = e.key && e.key.toLowerCase() === 'k';
+    if ((e.metaKey || e.ctrlKey) && typed) { e.preventDefault(); open(); }
+    if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+      e.preventDefault(); open();
+    }
+  });
 })();
 </script>

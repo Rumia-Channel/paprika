@@ -1,3 +1,7 @@
 <link rel="icon" type="image/svg+xml" href="{{ '/icon.svg' | relative_url }}">
 <link rel="icon" type="image/png" sizes="180x180" href="{{ '/icon.png' | relative_url }}">
 <link rel="apple-touch-icon" href="{{ '/icon.png' | relative_url }}">
+<script>
+// Apply persisted theme BEFORE body renders to avoid a flash of light content.
+(function(){try{var s=localStorage.getItem('paprika.theme');var d=s==='dark'||(s==null&&matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.dataset.theme='dark';}catch(_){}})();
+</script>
