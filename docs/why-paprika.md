@@ -7,7 +7,11 @@ active: why-paprika
 
 **Playwright と書き味は同じまま、フリート（複数ホストの Chrome）と AI で動かす**。Paprika は「ブラウザ自動化のフレームワーク」ではなく、**収集ワークロードを丸ごと面倒見るプラットフォーム**です。
 
-<img class="shot" src="img/admin-live.gif" alt="Paprika 管理画面で複数の Chrome Lane が同時にページを取得している様子">
+<video class="shot" autoplay loop muted playsinline preload="metadata" aria-label="Paprika 管理画面で複数の Chrome Lane が同時にページを取得している様子">
+  <source src="img/admin-live.webm" type="video/webm">
+  <source src="img/admin-live.mp4" type="video/mp4">
+  <img src="img/admin-live.gif" alt="Paprika 管理画面で複数の Chrome Lane が同時にページを取得している様子">
+</video>
 <p class="shot-cap">分散ワーカー上の Chrome が並列でページを取得している様子（管理画面 Live プレビュー）。</p>
 
 > 採用判断のためのページです。導入は [Server インストール](quickstart.html)、SDK の使い方は [Client インストール](intro.html)、内部構造は [アーキテクチャ概要](architecture.html) を参照。

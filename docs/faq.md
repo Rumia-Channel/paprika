@@ -7,7 +7,11 @@ active: faq
 
 使う側でよく出る質問とハマりどころをまとめました。基本の使い方は [はじめに](intro.html) / [ガイド](guides.html)、API は [HTTP API](http-api.html) / [API リファレンス](api.html) を参照してください。
 
-<img class="shot" src="img/admin-live.gif" alt="管理画面の Live パネル — ジョブの実行ログとブラウザ画面がリアルタイムに表示される">
+<video class="shot" autoplay loop muted playsinline preload="metadata" aria-label="管理画面の Live パネル — ジョブの実行ログとブラウザ画面がリアルタイムに表示される">
+  <source src="img/admin-live.webm" type="video/webm">
+  <source src="img/admin-live.mp4" type="video/mp4">
+  <img src="img/admin-live.gif" alt="管理画面の Live パネル — ジョブの実行ログとブラウザ画面がリアルタイムに表示される">
+</video>
 <p class="shot-cap">うまく動かないときの一次情報は管理画面の <strong>Live パネル</strong>（実行ログ＋ noVNC ライブ画面）です。</p>
 
 ## `503 fleet at capacity` が返る
