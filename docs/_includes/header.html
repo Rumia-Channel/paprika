@@ -3,11 +3,12 @@
   <span class="links">
     <a href="quickstart.html"{% if include.active == "quickstart" %} class="active"{% endif %}>クイックスタート</a>
     <a href="intro.html"{% if include.active == "intro" %} class="active"{% endif %}>はじめに</a>
-    <a href="guides.html"{% if include.active == "guides" %} class="active"{% endif %}>ガイド</a>
     <span class="dropdown">
-      <a class="dropdown-toggle{% if include.active == "examples" or include.active == "video" or include.active == "faq" %} active{% endif %}" href="examples.html">学ぶ ▾</a>
+      <a class="dropdown-toggle{% if include.active == "guides" or include.active == "examples" or include.active == "video" or include.active == "usecases" or include.active == "faq" %} active{% endif %}" href="guides.html">学ぶ ▾</a>
       <span class="dropdown-menu">
+        <a href="guides.html"{% if include.active == "guides" %} class="active"{% endif %}>ガイド</a>
         <a href="examples.html"{% if include.active == "examples" %} class="active"{% endif %}>サンプル</a>
+        <a href="usecases.html"{% if include.active == "usecases" %} class="active"{% endif %}>ユースケース</a>
         <a href="video.html"{% if include.active == "video" %} class="active"{% endif %}>動画</a>
         <a href="faq.html"{% if include.active == "faq" %} class="active"{% endif %}>FAQ</a>
       </span>
