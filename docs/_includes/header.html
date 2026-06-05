@@ -1,5 +1,9 @@
+<a class="skip-link" href="#main-content">メインコンテンツへスキップ</a>
 <nav class="topnav">
   <a class="brand" href="index.html"><span class="logo"><img src="icon.svg" alt=""></span> Paprika</a>
+  <button class="hamburger" type="button" aria-label="メニューを開く" aria-expanded="false" onclick="document.body.classList.toggle('nav-open'); this.setAttribute('aria-expanded', document.body.classList.contains('nav-open'));">
+    <iconify-icon icon="lucide:menu"></iconify-icon>
+  </button>
   <span class="links">
     <span class="dropdown">
       <a class="dropdown-toggle{% if include.active == "why-paprika" or include.active == "intro" or include.active == "quickstart" %} active{% endif %}" href="why-paprika.html">はじめに ▾</a>

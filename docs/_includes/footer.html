@@ -1,3 +1,45 @@
+{% if page.path and page.path != "404.html" and page.path != "search.html" %}
+<aside class="page-actions" aria-label="このページについて">
+  <a class="page-action edit-link" href="https://github.com/paps-jp/paprika/edit/main/docs/{{ page.path }}" target="_blank" rel="noopener">
+    <iconify-icon icon="lucide:pencil"></iconify-icon> このページを編集
+  </a>
+  <span class="page-feedback" data-url="{{ page.url | absolute_url }}" data-title="{{ page.title | escape }}">
+    <span class="feedback-label">役に立ちましたか?</span>
+    <button class="feedback-btn" type="button" data-vote="up" aria-label="役に立った">
+      <iconify-icon icon="lucide:thumbs-up"></iconify-icon>
+    </button>
+    <button class="feedback-btn" type="button" data-vote="down" aria-label="役に立たなかった">
+      <iconify-icon icon="lucide:thumbs-down"></iconify-icon>
+    </button>
+    <span class="feedback-thanks" hidden>ありがとうございます！</span>
+  </span>
+</aside>
+<script>
+// Feedback: 👍 just shows thanks. 👎 opens a prefilled GitHub issue so the
+// reader can tell us *why* the page didn't help.
+(function(){
+  document.querySelectorAll('.page-feedback').forEach(function(box){
+    var url   = box.dataset.url;
+    var title = box.dataset.title;
+    var thanks = box.querySelector('.feedback-thanks');
+    box.querySelectorAll('.feedback-btn').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var vote = btn.dataset.vote;
+        box.querySelectorAll('.feedback-btn').forEach(function(b){ b.classList.remove('voted'); });
+        btn.classList.add('voted');
+        if (vote === 'down') {
+          var t = encodeURIComponent('docs: ' + title + ' — 改善提案');
+          var b = encodeURIComponent('対象ページ: ' + url + '\n\n## 分かりにくかった点\n\n\n## こうだとよかった\n\n');
+          window.open('https://github.com/paps-jp/paprika/issues/new?labels=docs&title=' + t + '&body=' + b, '_blank', 'noopener');
+        }
+        thanks.hidden = false;
+      });
+    });
+  });
+})();
+</script>
+{% endif %}
+
 <footer class="site-footer">
   <div class="site-footer-inner">
     <div class="site-footer-row">

@@ -60,11 +60,11 @@ active: admin
     </ul>
   </aside>
 
-  <main class="content">
+  <main id="main-content" class="content">
     <h1>管理画面ガイド</h1>
     <p class="lead">ブラウザだけで Paprika を操作できる管理 UI の使い方。コードを書かずに URL を投げ、進行をライブで見て、収集物を確認できます。</p>
 
-    <img class="shot" src="img/admin-submit.png" alt="Paprika 管理画面の実行（Submit）タブ">
+    <img class="shot" src="img/admin-submit.png" alt="Paprika 管理画面の実行（Submit）タブ" loading="lazy">
     <p class="shot-cap">実行（Submit）タブ。上の赤いヘッダー＋タブが管理画面。</p>
 
     <!-- ================================================================ -->
@@ -77,7 +77,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="header">ヘッダー</h2>
     <p>画面上部に固定される赤いバー。</p>
-    <img class="shot" src="img/cap-header.png" alt="管理画面ヘッダー">
+    <img class="shot" src="img/cap-header.png" alt="管理画面ヘッダー" loading="lazy">
     <table>
       <thead><tr><th>要素</th><th>意味</th></tr></thead>
       <tbody>
@@ -91,7 +91,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="tabs">タブ一覧</h2>
     <p>ヘッダー直下のタブで画面を切り替えます。各タブはURL の <code>#hash</code> に対応（例 <code>/#jobs</code>）し、ブックマーク・直リンク可能。数字バッジは件数。</p>
-    <img class="shot" src="img/cap-tabs.png" alt="管理画面のタブバー">
+    <img class="shot" src="img/cap-tabs.png" alt="管理画面のタブバー" loading="lazy">
 
     <h3>常時表示タブ</h3>
     <table>
@@ -123,7 +123,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="submit">実行（Submit）</h2>
     <p>URL を入れて <strong>実行モード</strong>を選び <strong>実行</strong>。投入すると下に Live パネルが開きます。モードは 3 つ：</p>
-    <img class="shot" src="img/cap-modes.png" alt="実行モードの選択（Fetch / Script / AI）">
+    <img class="shot" src="img/cap-modes.png" alt="実行モードの選択（Fetch / Script / AI）" loading="lazy">
     <p class="shot-cap">実行モードのカード。クリックで切り替えできます。</p>
     <table>
       <thead><tr><th>モード</th><th>内部 mode</th><th>用途</th></tr></thead>
@@ -144,7 +144,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="live">Live パネル</h2>
     <p>ジョブ投入直後や「watch live」から開く、実行中のジョブを観察するパネル。上部に LIVE バッジ・ジョブID・ステータス・収集数が表示され、その下のタブで見方を切り替えます。</p>
-    <img class="shot" src="img/cap-gallery.png" alt="Live パネルのギャラリータブ（収集画像のサムネイル）">
+    <img class="shot" src="img/cap-gallery.png" alt="Live パネルのギャラリータブ（収集画像のサムネイル）" loading="lazy">
     <p class="shot-cap">Live パネルの「ギャラリー」タブ。収集した画像のサムネイルが並ぶ。</p>
     <table>
       <thead><tr><th>タブ</th><th>内容</th></tr></thead>
@@ -168,7 +168,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="jobs">最近のジョブ（Recent jobs）</h2>
     <p>投入済みジョブの一覧。ページネーション対応の API から取得（<code>GET /jobs?offset=0&amp;limit=50</code>）。</p>
-    <img class="shot" src="img/cap-jobs.png" alt="最近のジョブ一覧">
+    <img class="shot" src="img/cap-jobs.png" alt="最近のジョブ一覧" loading="lazy">
     <p class="shot-cap">最近のジョブ。</p>
 
     <h3>カラムトグル</h3>
@@ -213,7 +213,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="workers">ワーカー（Workers）</h2>
     <p>接続中のワーカー一覧。各ワーカーのレーン数・実行中ジョブ数・状態が見えます。切断済みワーカーはグレーアウトして下に表示されます。</p>
-    <img class="shot" src="img/cap-workers.png" alt="ワーカー一覧">
+    <img class="shot" src="img/cap-workers.png" alt="ワーカー一覧" loading="lazy">
 
     <h3>状態切替</h3>
     <p>各ワーカーの状態をドロップダウンで切り替え：</p>
@@ -258,7 +258,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="knowledge">AI Knowledge</h2>
     <p>「…その他」メニューから開く。ホストごとに蓄積された AI の学習知識を閲覧・管理するタブ。Paprika が過去のジョブ実行から自動的に学習した「各サイトの攻略情報」をまとめたデータベースです。</p>
-    <img class="shot" src="img/cap-knowledge.png" alt="AI Knowledge タブ（ホスト別の信頼度・バリア・抽出手法一覧）">
+    <img class="shot" src="img/cap-knowledge.png" alt="AI Knowledge タブ（ホスト別の信頼度・バリア・抽出手法一覧）" loading="lazy">
     <p class="shot-cap">AI Knowledge タブ。ホストごとの信頼度・バリア・抽出手法が一覧で確認できる。</p>
 
     <h3>サマリーバッジ</h3>
@@ -302,7 +302,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="plugins">Plugins</h2>
     <p>「…その他」メニューから開く。インストール済みプラグインの一覧と呼び出し履歴を管理するタブ。プラグインはジョブ実行時に capability ベースで自動起動されます。</p>
-    <img class="shot" src="img/cap-plugins.png" alt="Plugins タブ（プラグイン一覧と呼び出し履歴）">
+    <img class="shot" src="img/cap-plugins.png" alt="Plugins タブ（プラグイン一覧と呼び出し履歴）" loading="lazy">
     <p class="shot-cap">Plugins タブ。インストール済みプラグインの capability・呼び出し履歴が確認できる。</p>
 
     <h3>サマリーバッジ</h3>
@@ -340,7 +340,7 @@ active: admin
     <!-- ================================================================ -->
     <h2 id="settings">Settings</h2>
     <p>「…その他」メニューから開く。ハブ全体のデフォルト設定。</p>
-    <img class="shot" src="img/cap-settings.png" alt="Settings タブ（Submit デフォルト / 学習動作）">
+    <img class="shot" src="img/cap-settings.png" alt="Settings タブ（Submit デフォルト / 学習動作）" loading="lazy">
     <p class="shot-cap">Settings タブ。Submit のデフォルトや codegen の動作を設定できます。</p>
     <ul>
       <li>Submit のデフォルトオプション（最小ファイルサイズ / スクロール / 待機秒数等）</li>

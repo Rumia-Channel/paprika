@@ -10,7 +10,7 @@ active: faq
 <video class="shot" width="1096" height="664" autoplay loop muted playsinline preload="metadata" aria-label="管理画面の Live パネル — ジョブの実行ログとブラウザ画面がリアルタイムに表示される">
   <source src="img/admin-live.webm" type="video/webm">
   <source src="img/admin-live.mp4" type="video/mp4">
-  <img src="img/admin-live.gif" alt="管理画面の Live パネル — ジョブの実行ログとブラウザ画面がリアルタイムに表示される">
+  <img src="img/admin-live.gif" alt="管理画面の Live パネル — ジョブの実行ログとブラウザ画面がリアルタイムに表示される" loading="lazy">
 </video>
 <p class="shot-cap">うまく動かないときの一次情報は管理画面の <strong>Live パネル</strong>（実行ログ＋ noVNC ライブ画面）です。</p>
 

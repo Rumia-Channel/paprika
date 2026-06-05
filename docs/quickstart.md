@@ -61,7 +61,7 @@ curl http://localhost:8000/health
 http://localhost:8000/
 ```
 
-<img class="shot" src="img/admin-submit.png" alt="Paprika 管理画面の Submit タブ">
+<img class="shot" src="img/admin-submit.png" alt="Paprika 管理画面の Submit タブ" loading="lazy">
 <p class="shot-cap">起動直後の管理画面（実行タブ）。URL を入れて押すだけでジョブを投入できます。</p>
 
 ## 5. 最初のジョブを投げる

@@ -21,7 +21,7 @@ active: locator
 | `page.get_by_test_id(id)` | `page.get_by_test_id("submit-btn")` | `data-testid="..."` 属性 |
 | `page.get_by_placeholder(text)` | `page.get_by_placeholder("メール")` | `placeholder="..."` |
 | `page.get_by_title(text)` | `page.get_by_title("ヘルプ")` | `title="..."` |
-| `page.get_by_alt_text(text)` | `page.get_by_alt_text("ロゴ")` | `<img alt="...">` |
+| `page.get_by_alt_text(text)` | `page.get_by_alt_text("ロゴ")` | `<img alt="..." loading="lazy">` |
 
 > **解決はアクション時**です。`Locator` を作っても DOM 検索はまだ走りません。`click()` / `wait_for()` などを呼んだときに初めて探します。
 

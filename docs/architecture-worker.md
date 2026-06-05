@@ -7,7 +7,7 @@ active: architecture-worker
 
 Worker は実際にブラウザを動かすホストです。自律的に動き、`--hub-url` を渡すだけで **自分を登録 → 心拍 → 割り当てジョブを実行 → 完了報告**まで行います。全体像は [アーキテクチャ概要](architecture.html)。
 
-<img class="shot" src="img/cap-workers.png" alt="管理画面のワーカー一覧 — 接続中のワーカーと各 Lane の状態が一覧表示">
+<img class="shot" src="img/cap-workers.png" alt="管理画面のワーカー一覧 — 接続中のワーカーと各 Lane の状態が一覧表示" loading="lazy">
 <p class="shot-cap">管理画面の <strong>ワーカー</strong> タブ。各ワーカーの Lane 数・状態・バージョン・所属 Hub が一目で分かります。</p>
 
 ## Lane プール
@@ -56,10 +56,10 @@ Lane の Chrome に対して、**操作（自動化）** と **ライブ閲覧**
 
 ## アセットの取り方（passive network capture）
 
-Paprika は HTML をパースして `<img src=>` を読み、その URL に**再リクエスト**する方式ではありません。CDP の `Network.responseReceived` イベントを **passive にサブスクライブ**して、**ブラウザが実際にダウンロードしたレスポンス本体**をそのまま回収します。
+Paprika は HTML をパースして `<img src= loading="lazy">` を読み、その URL に**再リクエスト**する方式ではありません。CDP の `Network.responseReceived` イベントを **passive にサブスクライブ**して、**ブラウザが実際にダウンロードしたレスポンス本体**をそのまま回収します。
 
 ```text
-通常のスクレイパ:  ページ取得 → HTML パース → <img src> から URL 取り出し → 改めてその URL に GET
+通常のスクレイパ:  ページ取得 → HTML パース → <img src loading="lazy"> から URL 取り出し → 改めてその URL に GET
 Paprika:           ページ取得 → Chrome が画像をロード → CDP イベントで Paprika がレスポンスを横取り
 ```
 
