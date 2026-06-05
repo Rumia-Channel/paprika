@@ -90,6 +90,7 @@
       <li><a href="#locator">Locator</a></li>
       <li><a href="#walk">サイト巡回 (walk)</a></li>
       <li><a href="#oneshot">ワンショット</a></li>
+      <li><a href="#events">ライブログ (WebSocket)</a></li>
       <li><a href="#errors">例外</a></li>
     </ul>
   </aside>
@@ -1210,8 +1211,8 @@ rows.first.click()</code></pre></div>
 
     <h2 id="walk">サイト巡回（walk / Walker）</h2>
     <p>「サイト X のページを N 件巡回」のような<strong>クロール</strong>を、キュー・重複除去・ドメイン/パスのフィルタ・
-    オフスコープ redirect 対応まで込みで回す高レベルヘルパー。手書きのループより堅牢です。
-    <code>walk(page, **opts)</code> は <code>Visit</code> を yield する非同期イテレータ（クラス版は <code>Walker</code>）。</p>
+    オフスコープ redirect 対応まで込みで回す高レベルヘルパー。<code>walk(page, **opts)</code> は <code>Visit</code> を yield する非同期イテレータ（クラス版は <code>Walker</code>）。</p>
+    <p>全オプション（15 項目）・<code>Visit</code> フィールド・attempt 跨ぎ再開・パスの正規表現フィルタなどの完全リファレンスは <strong><a href="walk.html">walk リファレンス</a></strong> に集約しました。</p>
     <div class="ex-async"><pre><code>from paprika_client import async_paprika, walk
 
 async with async_paprika.connect() as cli:
@@ -1221,24 +1222,8 @@ async with async_paprika.connect() as cli:
             await page.save_assets("out/images")   # 各ページで画像保存など</code></pre></div>
     <div class="ex-sync"><div class="callout info"><strong>walk は現状 async API のみ</strong>
     sync ファサードからは未公開です。同期スクリプトの中で使う場合は、<code>asyncio.run()</code> で
-    上の async 例をラップしてください（または walk 部分だけ async で書き、結果を集めてから同期処理に戻す）。</div></div>
+    上の async 例をラップしてください。</div></div>
     <div class="ex-php"><div class="callout info"><strong>PHP の walk は Phase 3 で対応予定</strong>です（Walker / Visit クラスを Python 版と同シェイプで移植）。</div></div>
-    <p><code>Visit</code> は <code>n</code> / <code>url</code> / <code>requested_url</code> / <code>depth</code> /
-    <code>outline</code> / <code>page</code> を持ちます（<code>page</code> はそのページに居る Page）。</p>
-    <table>
-      <thead><tr><th>主なオプション</th><th>既定</th><th>説明</th></tr></thead>
-      <tbody>
-        <tr><td><code>start_url</code></td><td>現在地</td><td>巡回の起点</td></tr>
-        <tr><td><code>target_pages</code></td><td>100</td><td>訪問ページ数の上限</td></tr>
-        <tr><td><code>same_domain</code> / <code>allowed_domains</code></td><td>True / —</td><td>ドメイン制限</td></tr>
-        <tr><td><code>allow_paths</code> / <code>deny_paths</code> / <code>deny_defaults</code></td><td>— / — / True</td><td>パスの許可・除外（既定の除外パターンあり）</td></tr>
-        <tr><td><code>order</code></td><td>"bfs"</td><td>探索順（bfs / dfs）</td></tr>
-        <tr><td><code>max_depth</code></td><td>—</td><td>リンク深さの上限</td></tr>
-        <tr><td><code>per_page_timeout_s</code></td><td>30.0</td><td>1 ページあたりの上限秒</td></tr>
-        <tr><td><code>persist_state</code></td><td>True</td><td>進捗を parent job に永続化（attempt 跨ぎ再開）</td></tr>
-        <tr><td><code>host_dedup</code></td><td>False</td><td>ホスト横断の既訪 URL 重複除去</td></tr>
-      </tbody>
-    </table>
 
     <h2 id="oneshot">ワンショットヘルパー</h2>
     <p>1 動作だけしてセッションを閉じる糖衣です。インポートは <code>from paprika_client import snapshot, outline, state, run</code> です。</p>
@@ -1251,6 +1236,12 @@ async with async_paprika.connect() as cli:
         <tr><td><code>await run(actions, *, initial_url=None)</code> → dict</td><td>act.* のアクション列を実行</td></tr>
       </tbody>
     </table>
+
+    <h2 id="events">ライブログ（WebSocket）</h2>
+    <p>ジョブの実行ログを **リアルタイム** で受信する WebSocket。長時間ジョブやライブ表示で使います。</p>
+    <pre><code>ws://&lt;hub&gt;/jobs/{job_id}/events?since=N</code></pre>
+    <p>メッセージは JSON 1 行（<code>{type: "log" | "done" | "error", data: ...}</code>）。<code>since=</code> で途中接続・再接続にも追従できます。</p>
+    <p>仕様・JS/Python の実装例・再接続戦略は <strong><a href="ws-events.html">WebSocket リファレンス</a></strong> を参照。</p>
 
     <h2 id="errors">例外</h2>
     <table>
