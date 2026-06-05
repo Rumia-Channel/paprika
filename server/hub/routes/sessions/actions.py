@@ -1,7 +1,6 @@
-"""Playwright-shape interaction primitives: navigate / click / fill / press / type / scroll / back / forward / history_first / zoom / evaluate / set_input_files / ext.
+"""Interaction primitives: navigate/click/fill/press/type/scroll/back/forward/history_first/zoom/evaluate/set_input_files/ext.
 
-Part of the sessions/ route package (split from routes/sessions.py).
-Shared helpers + router live in sessions/_base.py."""
+Part of the sessions/ package; shared bits in _base.py."""
 
 from __future__ import annotations
 import asyncio

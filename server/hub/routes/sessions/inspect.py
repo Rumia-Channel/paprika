@@ -1,7 +1,6 @@
-"""Read-only session queries: state / outline / links / last_response / network / visited / screenshot / cookies.
+"""Read-only queries: state/outline/links/last_response/network/visited/screenshot/cookies.
 
-Part of the sessions/ route package (split from routes/sessions.py).
-Shared helpers + router live in sessions/_base.py."""
+Part of the sessions/ package; shared bits in _base.py."""
 
 from __future__ import annotations
 import asyncio

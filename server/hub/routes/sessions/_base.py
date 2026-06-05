@@ -1,8 +1,4 @@
-"""Shared core for the /sessions route package: router + the cross-hub
-forwarding helpers (_FWD_MARK / _proxy_request_to_hub / _hub_internal_url
-/ _maybe_forward_session / _send_session_action ...) and session helpers.
-Imported via ``from ._base import *`` by every sessions.* sub-module and
-re-exported from sessions/__init__.py for external callers."""
+"""Shared core for /sessions: router + cross-hub forwarding + session helpers."""
 
 from __future__ import annotations
 import asyncio
