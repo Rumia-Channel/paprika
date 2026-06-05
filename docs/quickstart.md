@@ -1,13 +1,13 @@
 ---
 layout: doc
-title: クイックスタート（セルフホスト）
-description: docker compose で Paprika を自分の環境に立ち上げる最短手順 — ハブ + ワーカー + Redis 一式を起動、最初のジョブを投げ、結果を取得。動作確認まで 5 分。
+title: Server インストール（セルフホスト）
+description: docker compose で Paprika を自分の環境に立ち上げる最短手順 — Hub + Worker + Redis 一式を起動、最初のジョブを投げ、結果を取得。動作確認まで 5 分。
 active: quickstart
 ---
 
-`docker compose up` で **Paprika 一式（Hub + Worker + Redis）** を自分の環境に立ち上げ、最初のジョブを投げて結果を取るまでの最短手順です。**5 分**で動作確認できます。
+Paprika の **サーバー側**（Hub + Worker + Redis 一式）を自分の環境に立ち上げる手順です。`docker compose up` で一式を起動し、最初のジョブを投げて結果を取るまで **5 分**で動作確認できます。
 
-> 概念と全体構成は [はじめに](intro.html) / [アーキテクチャ概要](architecture.html) を、API は [HTTP API](http-api.html) を参照。
+> クライアント側（SDK）から接続するだけなら [Client インストール](intro.html) へ。概念は [アーキテクチャ概要](architecture.html)、API は [HTTP API](http-api.html) を参照。
 
 ## 必要なもの
 
