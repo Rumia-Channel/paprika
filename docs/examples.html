@@ -41,6 +41,7 @@ active: examples
 
 {% include header.html active="examples" %}
 
+{% include breadcrumbs.html %}
 <div class="layout">
   <aside class="sidebar">
     <h4>サンプル</h4>
@@ -66,6 +67,16 @@ active: examples
   <main id="main-content" class="content">
     <h1>サンプルコード集</h1>
     <p class="lead">用途別に「コピペで動く」スニペットを集めました。API の網羅的な仕様は <a href="api.html">API リファレンス</a>、概念面の解説は <a href="guides.html">ガイド</a> をご覧ください。</p>
+
+    <div class="tldr">
+      <span class="tldr-label">📋 TL;DR</span>
+      <ul>
+        <li>このページは <strong>用途別の「コピペで動く」スニペット</strong>。概念解説は <a href="guides.html">ガイド</a>、関数仕様は <a href="api.html">API リファレンス</a>。</li>
+        <li>各サンプルは <code>cli = await async_paprika.connect()</code> 済みの状態を前提（<a href="intro.html">Client インストール</a>）。</li>
+        <li>動かない・エラーが出るときは <a href="faq.html">FAQ</a> または <a href="errors.html">エラーリファレンス</a> を参照。</li>
+      </ul>
+    </div>
+
 
     <div class="callout info">
       <strong>前提</strong>

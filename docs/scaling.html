@@ -23,6 +23,7 @@ active: scaling
 
 {% include header.html active="scaling" %}
 
+{% include breadcrumbs.html %}
 <div class="layout">
   <aside class="sidebar">
     <h4>Hub スケーリング</h4>
@@ -42,6 +43,16 @@ active: scaling
     <h1>Hub スケーリング</h1>
     <p class="lead">Worker 200 台規模に対応するための Hub 側のパフォーマンス設計。
     LogBatcher による Redis ops 50 分の 1 削減と、将来のマルチプロセス拡張パスを解説します。</p>
+
+    <div class="tldr">
+      <span class="tldr-label">📋 TL;DR</span>
+      <ul>
+        <li>1 Hub では数十 Worker 規模まで。それ以上は <strong>複数 Hub を nginx ラウンドロビン</strong>で並べて水平スケール。</li>
+        <li>ジョブ・コンフィグは <strong>MariaDB</strong>、アセットは <strong>MinIO</strong>、Worker 調整は <strong>Redis</strong> という 3 ストア構成で Hub をステートレス化。</li>
+        <li>Worker は IP から決定的に <code>w50&lt;3rd&gt;&lt;4th&gt;</code> 形式で worker_id を生成、ハッシュリングで Hub に均等分配。</li>
+      </ul>
+    </div>
+
 
     <h2 id="overview">概要</h2>
     <p>Paprika の Hub は単一の asyncio プロセスです。Worker が WebSocket で接続し、

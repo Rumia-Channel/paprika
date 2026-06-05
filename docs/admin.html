@@ -41,6 +41,7 @@ active: admin
 
 {% include header.html active="admin" %}
 
+{% include breadcrumbs.html %}
 <div class="layout">
   <aside class="sidebar">
     <h4>管理画面ガイド</h4>
@@ -63,6 +64,15 @@ active: admin
   <main id="main-content" class="content">
     <h1>管理画面ガイド</h1>
     <p class="lead">ブラウザだけで Paprika を操作できる管理 UI の使い方。コードを書かずに URL を投げ、進行をライブで見て、収集物を確認できます。</p>
+
+    <div class="tldr">
+      <span class="tldr-label">📋 TL;DR</span>
+      <ul>
+        <li><code>http://your-hub.example:8000</code> を開く → URL を貼って <strong>実行ボタン</strong>。コード不要。</li>
+        <li>実行中は <strong>Live パネル</strong> (noVNC + ログ + ギャラリー) で進行を目視確認。終わったらアセット (画像・動画) をその場でダウンロード。</li>
+        <li>SDK でスクリプトを書きたいときは <a href="intro.html">Client インストール</a>、API は <a href="http-api.html">HTTP API</a> へ。</li>
+      </ul>
+    </div>
 
     <img class="shot" src="img/admin-submit.png" alt="Paprika 管理画面の実行（Submit）タブ" loading="lazy">
     <p class="shot-cap">実行（Submit）タブ。上の赤いヘッダー＋タブが管理画面。</p>

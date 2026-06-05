@@ -24,7 +24,7 @@
       </span>
     </span>
     <span class="dropdown">
-      <a class="dropdown-toggle{% if include.active == "api" or include.active == "http-api" or include.active == "job-options" or include.active == "walk" or include.active == "locator" or include.active == "ws-events" or include.active == "errors" or include.active == "cli" or include.active == "bridge-extension" or include.active == "profile" or include.active == "host-recipe" or include.active == "admin" %} active{% endif %}" href="api.html">リファレンス ▾</a>
+      <a class="dropdown-toggle{% if include.active == "api" or include.active == "http-api" or include.active == "job-options" or include.active == "walk" or include.active == "locator" or include.active == "ws-events" or include.active == "errors" or include.active == "cli" or include.active == "bridge-extension" or include.active == "profile" or include.active == "host-recipe" or include.active == "admin" or include.active == "glossary" %} active{% endif %}" href="api.html">リファレンス ▾</a>
       <span class="dropdown-menu">
         <a href="api.html"{% if include.active == "api" %} class="active"{% endif %}>API</a>
         <a href="http-api.html"{% if include.active == "http-api" %} class="active"{% endif %}>HTTP API</a>
@@ -38,6 +38,7 @@
         <a href="profile.html"{% if include.active == "profile" %} class="active"{% endif %}>use_profile</a>
         <a href="host-recipe.html"{% if include.active == "host-recipe" %} class="active"{% endif %}>Host レシピ</a>
         <a href="admin.html"{% if include.active == "admin" %} class="active"{% endif %}>管理画面</a>
+        <a href="glossary.html"{% if include.active == "glossary" %} class="active"{% endif %}>用語集</a>
       </span>
     </span>
     <a href="operations.html"{% if include.active == "operations" or include.active == "engine-setup" or include.active == "scaling" or include.active == "worker-resilience" or include.active == "worker-autodeploy" %} class="active"{% endif %}>運用</a>
@@ -194,8 +195,9 @@ window.__paprikaToggleTheme = function(){
     out.innerHTML = '';
     if (!loaded) { out.innerHTML = '<p class="cmdk-noresults">読み込み中…</p>'; return; }
     if (!q || q.trim().length < 1) return;
+    var qTrim = q.trim();
     var hits = [];
-    try { hits = lunrIdx.search(q.trim() + '*').slice(0, 10); } catch(_){}
+    try { hits = lunrIdx.search(qTrim + '*').slice(0, 10); } catch(_){}
     if (!hits.length) { out.innerHTML = '<p class="cmdk-noresults">該当なし</p>'; return; }
     hits.forEach(function(hit, i){
       var doc = searchDocs.find(function(d){ return d.url === hit.ref; });
@@ -205,9 +207,28 @@ window.__paprikaToggleTheme = function(){
       a.className = 'cmdk-result' + (i === 0 ? ' selected' : '');
       a.innerHTML = '<div class="cmdk-title"></div><div class="cmdk-desc"></div>';
       a.querySelector('.cmdk-title').textContent = doc.title;
-      a.querySelector('.cmdk-desc').textContent = (doc.description || '').slice(0, 110);
+      // Build a snippet: prefer content match, fall back to description
+      var snip = buildSnippet(doc.content || '', qTrim) || (doc.description || '').slice(0, 110);
+      var descEl = a.querySelector('.cmdk-desc');
+      // Highlight matched terms with <mark>
+      var safe = snip.replace(/[&<>]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; });
+      try {
+        var re = new RegExp('(' + qTrim.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + ')', 'gi');
+        safe = safe.replace(re, '<mark>$1</mark>');
+      } catch(_){}
+      descEl.innerHTML = safe;
       out.appendChild(a);
     });
+  }
+  function buildSnippet(content, q){
+    if (!content || !q) return null;
+    var idx = content.toLowerCase().indexOf(q.toLowerCase());
+    if (idx < 0) return null;
+    var start = Math.max(0, idx - 40);
+    var end = Math.min(content.length, idx + q.length + 70);
+    var pre = start > 0 ? '… ' : '';
+    var post = end < content.length ? ' …' : '';
+    return pre + content.slice(start, end) + post;
   }
   function handleKey(e){
     if (e.key === 'Escape') { close(); return; }

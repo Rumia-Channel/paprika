@@ -5,6 +5,16 @@ description: Playwright スタイルの API で書きやすく、分散ワーカ
 active: why-paprika
 ---
 
+<div class="tldr">
+  <span class="tldr-label">📋 TL;DR</span>
+  <ul>
+    <li><strong>Playwright スタイル API + 分散フリート + AI</strong>を 1 つに統合したプラットフォーム。書き味はほぼ Playwright のまま、複数ホストの Chrome を Hub が束ねて並列ジョブを捌く。</li>
+    <li><strong>収集に最適化</strong>: ブラウザが読み込んだバイト列を passive 回収（再 GET しない）、yt-dlp 連携で動画も統合取得、画像/動画/HTML を <code>meta.json</code> で返す。</li>
+    <li><strong>AI モード (<code>codegen-loop</code>)</strong>: <code>goal</code> を自然言語で渡せば LLM がスクリプト生成・実行・失敗時に再生成。成功したスクリプトは <code>mode: rerun</code> で決定的に再利用。</li>
+    <li>E2E テストや 1 台のスクリプトで足りる用途には Playwright / Selenium が素直。複数ホスト・長時間運用の <strong>収集ワークロード</strong>のとき Paprika が活きる。</li>
+  </ul>
+</div>
+
 **Playwright と書き味は同じまま、フリート（複数ホストの Chrome）と AI で動かす**。Paprika は「ブラウザ自動化のフレームワーク」ではなく、**収集ワークロードを丸ごと面倒見るプラットフォーム**です。
 
 <video class="shot" width="1096" height="664" autoplay loop muted playsinline preload="metadata" aria-label="Paprika 管理画面で複数の Chrome Lane が同時にページを取得している様子">

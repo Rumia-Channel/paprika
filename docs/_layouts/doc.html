@@ -26,6 +26,7 @@
 {% comment %} Shared site header. `active` (home/learn/reference/ops/...) comes
    from the page's front matter and lights the matching nav item. {% endcomment %}
 {% include header.html active=page.active %}
+{% include breadcrumbs.html %}
 <div class="layout">
   <aside class="sidebar">
     <h4>このページ</h4>

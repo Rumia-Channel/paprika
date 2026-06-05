@@ -64,6 +64,8 @@ active: home
       <li><a href="#why">できること</a></li>
       <li><a href="#example">最短の例</a></li>
       <li><a href="#next">次のステップ</a></li>
+      <li><a href="#paths">　· 用途別の最短経路</a></li>
+      <li><a href="#all-pages">　· すべてのリンク</a></li>
       <li><a href="#background">背景 — paps / ProtectionAI</a></li>
       <li><a href="#why-evidence">なぜ証拠保全が必要か</a></li>
       <li><a href="#usage">利用について</a></li>
@@ -100,6 +102,72 @@ active: home
     <h2 id="what">Paprika とは</h2>
     <p>URL を渡すと、フリート上の実ブラウザがページを開き、画像・動画・HTML を収集して返します。
     ログインが必要・JavaScript で描画される、といった「機械的な巡回が難しいサイト」でも安定して動くことを目指した基盤です。</p>
+
+    <figure class="arch-diagram" aria-label="Paprika 全体構成図">
+      <svg viewBox="0 0 880 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Client SDK / 管理画面 / HTTP API が Hub に接続し、Hub が WebSocket で 複数の Worker (Chrome × N Lane) を束ねる図">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#59636e"/></marker>
+        </defs>
+        <!-- 左: クライアント側 -->
+        <g font-family="ui-monospace, monospace" font-size="12">
+          <rect x="10" y="14" width="160" height="40" rx="6" fill="#fff" stroke="#c0392b" stroke-width="1.5"/>
+          <text x="90" y="32" text-anchor="middle" font-weight="700" fill="#c0392b">paprika-client SDK</text>
+          <text x="90" y="48" text-anchor="middle" fill="#59636e">Python / PHP</text>
+
+          <rect x="10" y="68" width="160" height="40" rx="6" fill="#fff" stroke="#0969da" stroke-width="1.5"/>
+          <text x="90" y="86" text-anchor="middle" font-weight="700" fill="#0969da">管理画面</text>
+          <text x="90" y="102" text-anchor="middle" fill="#59636e">ブラウザだけ・コード不要</text>
+
+          <rect x="10" y="122" width="160" height="40" rx="6" fill="#fff" stroke="#8a6d00" stroke-width="1.5"/>
+          <text x="90" y="140" text-anchor="middle" font-weight="700" fill="#8a6d00">HTTP API</text>
+          <text x="90" y="156" text-anchor="middle" fill="#59636e">curl / 任意言語</text>
+        </g>
+
+        <!-- 矢印 → Hub -->
+        <g stroke="#59636e" stroke-width="1.6" fill="none" marker-end="url(#arr)">
+          <line x1="170" y1="34" x2="305" y2="100"/>
+          <line x1="170" y1="88" x2="305" y2="115"/>
+          <line x1="170" y1="142" x2="305" y2="130"/>
+        </g>
+        <text x="240" y="178" font-family="ui-monospace, monospace" font-size="11" fill="#59636e" text-anchor="middle">HTTP / WS</text>
+
+        <!-- Hub -->
+        <g font-family="ui-monospace, monospace" font-size="13">
+          <rect x="305" y="75" width="170" height="80" rx="10" fill="#fdeceb" stroke="#c0392b" stroke-width="2"/>
+          <text x="390" y="100" text-anchor="middle" font-weight="700" fill="#c0392b" font-size="15">Hub</text>
+          <text x="390" y="121" text-anchor="middle" fill="#59636e" font-size="11">ジョブ受付・分配</text>
+          <text x="390" y="137" text-anchor="middle" fill="#59636e" font-size="11">管理画面 / API / WS</text>
+          <text x="390" y="153" text-anchor="middle" fill="#59636e" font-size="11">localhost:8000</text>
+        </g>
+
+        <!-- 矢印 → Workers -->
+        <g stroke="#59636e" stroke-width="1.6" fill="none" marker-end="url(#arr)">
+          <line x1="475" y1="100" x2="600" y2="50"/>
+          <line x1="475" y1="115" x2="600" y2="115"/>
+          <line x1="475" y1="130" x2="600" y2="180"/>
+        </g>
+        <text x="538" y="200" font-family="ui-monospace, monospace" font-size="11" fill="#59636e" text-anchor="middle">WebSocket</text>
+
+        <!-- Workers -->
+        <g font-family="ui-monospace, monospace" font-size="12">
+          <rect x="600" y="30" width="260" height="40" rx="6" fill="#fff" stroke="#5c9138" stroke-width="1.5"/>
+          <text x="616" y="48" font-weight="700" fill="#5c9138">Worker #1</text>
+          <text x="616" y="62" fill="#59636e">Chrome × N Lanes (Xvfb + noVNC)</text>
+
+          <rect x="600" y="95" width="260" height="40" rx="6" fill="#fff" stroke="#5c9138" stroke-width="1.5"/>
+          <text x="616" y="113" font-weight="700" fill="#5c9138">Worker #2</text>
+          <text x="616" y="127" fill="#59636e">Chrome × N Lanes</text>
+
+          <rect x="600" y="160" width="260" height="40" rx="6" fill="#fff" stroke="#5c9138" stroke-width="1.5"/>
+          <text x="616" y="178" font-weight="700" fill="#5c9138">Worker #N</text>
+          <text x="616" y="192" fill="#59636e">…台数だけ並列度が上がる</text>
+        </g>
+
+        <text x="440" y="245" font-family="ui-monospace, monospace" font-size="11" fill="#59636e" text-anchor="middle">3 つの操作経路 ──&gt; Hub ──&gt; フリート (実ブラウザの並列実行)</text>
+      </svg>
+      <figcaption class="arch-diagram-cap">クライアント (SDK / 管理画面 / HTTP API) が Hub に接続し、Hub が WebSocket で複数 Worker のフリートを束ねる。各 Worker は複数 Lane (=独立 Chrome) を持ち、合計で N×M の並列度が出る。</figcaption>
+    </figure>
+
     <p>主な用途は <strong>サイトアーカイブ</strong>・<strong>画像／動画の一括収集</strong>・<strong>証拠保全</strong>・<strong>新着監視</strong>など。
     類似ツール（<a href="https://github.com/browserbase/stagehand" target="_blank" rel="noopener">Stagehand</a>、<a href="https://github.com/browser-use/browser-use" target="_blank" rel="noopener">Browser-Use</a>、<a href="https://www.browserable.ai/" target="_blank" rel="noopener">Browserable</a>）との違いは <a href="why-paprika.html">なぜ Paprika?</a> に整理しています。</p>
     <p>使い方は <strong>3 通り</strong>。用途に合わせて選べます。</p>
@@ -188,6 +256,49 @@ asyncio.run(main())</code></pre>
     await page.screenshot(path="shot.png")</code></pre>
 
     <h2 id="next">次のステップ</h2>
+
+    <h3 id="paths">用途別の最短経路</h3>
+    <p>自分の目的に近い行に沿って読み進めると最短です。</p>
+    <div class="learning-paths">
+      <div class="learning-path">
+        <h3>🔍 まず試したい</h3>
+        <p class="who">「これは何ができるツール?」を 5 分で確認したい</p>
+        <ol>
+          <li><a href="why-paprika.html">なぜ Paprika?</a> ← 採用判断</li>
+          <li><a href="admin.html">管理画面</a> ← ブラウザだけで実行</li>
+          <li><a href="usecases.html">ユースケース集</a></li>
+        </ol>
+      </div>
+      <div class="learning-path">
+        <h3>💻 スクリプトを書きたい</h3>
+        <p class="who">既存 Hub に SDK で繋いで自動化スクリプトを書く</p>
+        <ol>
+          <li><a href="intro.html">Client インストール</a> ← 5 分</li>
+          <li><a href="examples.html">サンプル集</a> ← コピペで動く</li>
+          <li><a href="api.html">API リファレンス</a></li>
+        </ol>
+      </div>
+      <div class="learning-path">
+        <h3>🏗 サーバーを立てたい</h3>
+        <p class="who">Hub と Worker を自分の環境で動かす</p>
+        <ol>
+          <li><a href="quickstart.html">Server インストール</a> ← Docker 一発</li>
+          <li><a href="operations.html">サーバー運用</a></li>
+          <li><a href="scaling.html">Hub スケーリング</a> ← 規模拡大時</li>
+        </ol>
+      </div>
+      <div class="learning-path">
+        <h3>🧠 内部を知りたい</h3>
+        <p class="who">どう動いているか・どこを変えれば良いか</p>
+        <ol>
+          <li><a href="architecture.html">アーキテクチャ概要</a></li>
+          <li><a href="worker-resilience.html">Worker 自己回復</a></li>
+          <li><a href="vnc-embed.html">VNC 埋め込み</a> / <a href="vision-mouse.html">Vision AI</a></li>
+        </ol>
+      </div>
+    </div>
+
+    <h3 id="all-pages">すべてのリンク</h3>
     <div class="cards">
       <a class="card" href="why-paprika.html"><h3>なぜ Paprika? →</h3><p>Playwright / Selenium との違い・選び方。評価入口。</p></a>
       <a class="card" href="quickstart.html"><h3>Server インストール →</h3><p><code>docker compose up</code> で自分の環境に立ち上げる（5 分）。</p></a>

@@ -76,6 +76,7 @@ active: api
 
 {% include header.html active="api" %}
 
+{% include breadcrumbs.html %}
 <div class="layout">
   <aside class="sidebar">
     <h4>API リファレンス</h4>
@@ -103,6 +104,20 @@ active: api
     <h1>API リファレンス</h1>
     <p class="lead">paprika_client の全公開関数。
     <code>Session</code> は <code>Page</code> を継承するので <code>page.*</code> はセッションでもそのまま使えます。</p>
+
+    <div class="tldr">
+      <span class="tldr-label">📋 ナビ</span>
+      <p>主に <strong>async Python</strong>。<a href="#connect">接続</a> → <a href="#client">PaprikaClient</a> → <a href="#nav">Page</a> → <a href="#session">Session</a> の順で読むのが定石です。</p>
+      <ul>
+        <li><strong>速習</strong>: <a href="#connect">接続</a> · <a href="#client">PaprikaClient (<code>cli.*</code>)</a> · <a href="#nav">Page ナビ・操作</a></li>
+        <li><strong>Page 詳細</strong>: <a href="#getters">取得・待機・状態</a> · <a href="#evaluate">JS 実行</a> · <a href="#assets">収集・Cookie・LLM</a> · <a href="#agent-ext">拡張機能コマンド</a> · <a href="#tabs">タブ・ライフサイクル</a></li>
+        <li><strong>ライブセッション</strong>: <a href="#session">Session 固有</a> · <a href="#events">WebSocket ライブログ</a></li>
+        <li><strong>巡回・要素指定</strong>: <a href="#walk">walk / Walker</a> · <a href="#locator">Locator</a> · <a href="#oneshot">ワンショットヘルパー</a> · <a href="#errors">例外</a></li>
+        <li><strong>別言語・別方式</strong>: <a href="#sync">同期版 (sync_paprika)</a> · <a href="#php">PHP SDK</a> · <a href="http-api.html">HTTP API</a> · <a href="cli.html">CLI</a></li>
+        <li>用語が分からないときは <a href="glossary.html">用語集</a> へ。</li>
+      </ul>
+    </div>
+
     <div class="api-toggle" role="tablist" aria-label="Code example mode">
       <button data-mode="async">Python Async（推奨）</button>
       <button data-mode="sync">Python Sync</button>

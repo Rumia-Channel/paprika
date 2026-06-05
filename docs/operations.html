@@ -41,6 +41,7 @@ active: operations
 
 {% include header.html active="operations" %}
 
+{% include breadcrumbs.html %}
 <div class="layout">
   <aside class="sidebar">
     <h4>サーバー</h4>
@@ -63,6 +64,16 @@ active: operations
     <h1>サーバー</h1>
     <p class="lead">Paprika を動かすサーバー側（Hub・Worker）のセットアップ・運用ガイド。
     操作する側（SDK）の使い方は <a href="intro.html">Client インストール</a> へ。</p>
+
+    <div class="tldr">
+      <span class="tldr-label">📋 TL;DR</span>
+      <ul>
+        <li>Paprika サーバーは <strong>Docker Compose 一発</strong>で立ち上がります（<code>docker compose up -d --build</code>）。redis + Hub + Worker が同時起動。</li>
+        <li>規模が大きくなったら <strong>Hub 1 台 + Worker N 台</strong>に分割。Worker は WebSocket で Hub に繋ぐだけ。台数を増やすほど並列度が上がる。</li>
+        <li>運用中は管理画面（<code>http://your-hub.example:8000</code>）からジョブ投入・ライブ閲覧・ワーカー状態確認ができる。複数 Hub での水平スケールは <a href="scaling.html">Hub スケーリング</a> へ。</li>
+      </ul>
+    </div>
+
 
     <!-- 1. PATTERNS ---------------------------------------------------- -->
     <h2 id="patterns">3 つの構成パターン</h2>

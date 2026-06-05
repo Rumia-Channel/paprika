@@ -42,6 +42,7 @@ active: intro
 
 {% include header.html active="intro" %}
 
+{% include breadcrumbs.html %}
 <div class="layout">
   <aside class="sidebar">
     <h4>Client インストール</h4>
@@ -60,6 +61,15 @@ active: intro
   <main id="main-content" class="content">
     <h1>Client インストール</h1>
     <p class="lead">Paprika に <strong>クライアント側</strong>から接続して使い始めます。SDK のインストール、ハブへの接続、最初のスクリプトまで 5 分です。サーバー自体を自前で立ち上げたい場合は <a href="quickstart.html">Server インストール</a> へ。</p>
+
+    <div class="tldr">
+      <span class="tldr-label">📋 TL;DR</span>
+      <ul>
+        <li><strong>動かす本体（Hub・Worker）</strong>と <strong>SDK（paprika-client）</strong>は別物。SDK だけインストールして既存 Hub に繋ぐのが最速。</li>
+        <li><code>pip install -e ./client/python</code> → <code>export PAPRIKA_HUB=http://your-hub.example:8000</code> → <code>async with cli.session(url) as page:</code></li>
+        <li>用語に迷ったら <a href="glossary.html">用語集</a>、エラーは <a href="errors.html">エラーリファレンス</a> へ。</li>
+      </ul>
+    </div>
 
     <h2 id="overview">Paprika の動かし方</h2>
     <p>Paprika は 2 つの部分に分かれます。役割を分けて考えると分かりやすいです。</p>
@@ -112,6 +122,7 @@ from paprika_client import async_paprika
 async def main():
     async with async_paprika.connect() as cli:   # PAPRIKA_HUB を自動参照
         print(await cli.health())
+        # → {'ok': True, 'store': 'redis', 'workers': 25, 'lanes_busy': 3}
 
 asyncio.run(main())</code></pre>
     </div>
@@ -119,7 +130,8 @@ asyncio.run(main())</code></pre>
     <pre><code>from paprika_client import sync_paprika
 
 with sync_paprika.connect() as cli:              # PAPRIKA_HUB を自動参照
-    print(cli.health())</code></pre>
+    print(cli.health())
+    # → {'ok': True, 'store': 'redis', 'workers': 25, 'lanes_busy': 3}</code></pre>
     </div>
     <div class="ex-php">
     <pre><code>&lt;?php
@@ -141,8 +153,12 @@ async def main():
     async with async_paprika.connect() as cli:
         async with cli.session("https://news.ycombinator.com") as page:
             print(await page.title())
+            # → "Hacker News"
             for url in await page.links(urls_only=True):
                 print(url)
+            # → "https://news.ycombinator.com/item?id=12345"
+            # → "https://news.ycombinator.com/item?id=12346"
+            # → ... (ページ上の全リンク)
 
 asyncio.run(main())</code></pre>
     <p><code>async with cli.session(url)</code> がブラウザのタブを 1 つ確保し、ブロックを抜けると自動で閉じます。
@@ -154,8 +170,11 @@ asyncio.run(main())</code></pre>
 with sync_paprika.connect() as cli:
     with cli.session("https://news.ycombinator.com") as page:
         print(page.title())
+        # → "Hacker News"
         for url in page.links(urls_only=True):
-            print(url)</code></pre>
+            print(url)
+        # → "https://news.ycombinator.com/item?id=12345"
+        # → ... (全リンクが順に出力される)</code></pre>
     <p><code>with cli.session(url)</code> がブラウザのタブを 1 つ確保し、ブロックを抜けると自動で閉じます。
     <code>await</code> を外すだけで async 版と同じ API です。一覧は <a href="api.html">API リファレンス</a>。</p>
     </div>
