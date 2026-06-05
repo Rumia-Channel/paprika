@@ -243,7 +243,7 @@ $cli-&gt;session('https://example.com', function (Session $sess) use ($cli) {
     <table>
       <thead><tr><th>メソッド</th><th>説明</th></tr></thead>
       <tbody>
-        <tr><td><code>cli.create_job(url, **opts)</code> → dict</td><td><code>POST /jobs</code>。投入のみ。<code>opts</code> は JobOptions（mode / scroll / goal / use_profile / cookies_from …）</td></tr>
+        <tr><td><code>cli.create_job(url, **opts)</code> → dict</td><td><code>POST /jobs</code>。投入のみ。<code>opts</code> は <strong><a href="job-options.html">JobOptions</a></strong>（mode / scroll / goal / use_profile / cookies_from …の全フィールド）</td></tr>
         <tr><td><code>cli.fetch(url, *, wait=True, poll_interval=2.0, timeout=600.0, scroll=True, **opts)</code> → dict</td><td>fetch 投入 ＋ 完了待ち。<code>wait=False</code> で投げっぱなし</td></tr>
         <tr><td><code>cli.get_job(id)</code> → dict</td><td>現在の状態（status / progress …）</td></tr>
         <tr><td><code>cli.list_jobs()</code> → list</td><td>全ジョブ（新しい順）</td></tr>

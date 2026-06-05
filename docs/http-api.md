@@ -165,19 +165,19 @@ async function submit(body, hub = process.env.PAPRIKA_HUB) {
 }
 ```
 
-## 主な `options`
+## 主な `options`（よく使うもの）
 
 | キー | 既定 | 説明 |
 |---|---|---|
 | `mode` | `fetch` | `fetch`（高速・レシピ）/ `codegen-loop`（AI）/ `rerun`（コード直接実行） |
 | `download_video` | `false` | 通信トレース + yt-dlp で動画を取得 |
 | `capture_assets` | `true` | 取得物をサーバに保存 |
-| `scroll` | 設定依存 | 最後までスクロールして遅延ロード（lazy）を拾う |
+| `scroll` | `false` | 最後までスクロールして遅延ロード（lazy）を拾う |
 | `headless` | `false` | 画面を出さずに実行 |
-| `min_asset_size_bytes` | 設定依存 | これ未満の画像を除外（`0` で全部拾う） |
-| `use_profile` | — | アップロード済み Chrome プロファイル名（ログイン状態の持ち込み） |
-| `goal` | — | `codegen-loop` 時の目標（自然言語） |
+| `min_asset_size_bytes` | `0` | これ未満のアセットを除外（`0` = 制限なし） |
+| `use_profile` | `null` | アップロード済み Chrome プロファイル名 |
+| `goal` | `null` | `codegen-loop` 時の目標（自然言語、必須） |
 | `max_codegen_attempts` | `3` | `codegen-loop` の再試行回数 |
-| `attempt_timeout_s` | — | 1 試行のタイムアウト（秒） |
+| `attempt_timeout_s` | `180` | 1 試行のタイムアウト（秒） |
 
-オプションの完全な一覧と SDK での指定方法は [API リファレンス](api.html) を参照してください。
+**`options` の全フィールド・型・既定値・制約は [JobOptions リファレンス](job-options.html) に集約しています。**
