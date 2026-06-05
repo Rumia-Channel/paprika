@@ -63,12 +63,29 @@ wait
 if [ -n "${DRY_RUN:-}" ]; then say "DRY_RUN: stopping before any restart."; exit 0; fi
 if [ "$worker_needed" = 0 ] && [ "$hub_needed" = 0 ]; then say "==> nothing changed; verifying only."; fi
 
-# -- 3) rolling hub restart (only if hub code changed / forced)
+# -- 3) rolling hub restart (only if hub code changed / forced). The hub's
+#       uvicorn graceful-shutdown HANGS waiting for long-lived worker WS to
+#       close, so force a quick SIGKILL (-t 8) and GATE on /health == 200
+#       before the next hub. A hub that doesn't come back ABORTS the deploy --
+#       never silently leave the fleet a hub short (this bit us: hub-35 hung in
+#       "Waiting for connections to close" and the old `&& say` swallowed it).
 hubs_restarted=0
 if [ "$hub_needed" = 1 ] && [ -z "${SKIP_HUBS:-}" ]; then
-  say "==> [3] hub code changed -> rolling hub restart (sequential keeps 2/3 serving)"
+  say "==> [3] hub code changed -> rolling hub restart (gated on /health)"
   for H in "${HUBS[@]}"; do
-    ssh "${SSHO[@]}" "root@$H" "docker restart -t 20 $HUB_CONTAINER >/dev/null 2>&1" && say "    restarted hub $H"
+    say "    restarting hub $H ..."
+    ssh "${SSHO[@]}" "root@$H" "docker restart -t 8 $HUB_CONTAINER >/dev/null 2>&1" \
+      || say "    (docker restart returned non-zero on $H; checking /health anyway)"
+    healthy=0
+    for _ in $(seq 1 20); do
+      h=$(ssh "${SSHO[@]}" "root@$H" "curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:8100/health" 2>/dev/null)
+      [ "$h" = "200" ] && { healthy=1; break; }
+      sleep 2
+    done
+    if [ "$healthy" = 1 ]; then say "    hub $H healthy"; else
+      say "    !! hub $H NOT /health 200 after restart -- ABORTING. Fix $H ('ssh root@$H docker restart hub-hub-a-1') then re-run. Other hubs untouched."
+      exit 1
+    fi
   done
   hubs_restarted=1
 else
@@ -93,14 +110,25 @@ else
   say "==> [4] no worker convergence/rebalance needed"
 fi
 
-# -- 5) verify
-say "==> [5] verify"
-declare -A seen=()
-for H in "${HUBS[@]}"; do
-  v=$(ssh "${SSHO[@]}" "root@$H" "curl -s -D - -o /dev/null http://localhost:8100/worker-source.tar.gz | tr -d '\r' | grep -i x-paprika-version | cut -d' ' -f2")
-  say "    hub $H serves: $v"; seen[$v]=1
+# -- 5) verify -- POLL until settled (the fleet needs time to reconnect +
+#       respawn lanes after a restart; a one-shot verify fires too early and
+#       reports spurious 503s / empty versions).
+say "==> [5] verify (polling until settled, up to ~2min)"
+settled=0
+for attempt in $(seq 1 12); do
+  vers=""
+  for H in "${HUBS[@]}"; do
+    v=$(ssh "${SSHO[@]}" "root@$H" "curl -s --max-time 8 -D - -o /dev/null http://localhost:8100/worker-source.tar.gz | tr -d '\r' | grep -i x-paprika-version | cut -d' ' -f2" 2>/dev/null)
+    vers="$vers ${v:-EMPTY}"
+  done
+  nuniq=$(printf '%s\n' $vers | sort -u | grep -c .)
+  elig=$(curl -fsS --max-time 10 "$FRONT/workers" 2>/dev/null | python3 -c 'import sys,json;d=json.load(sys.stdin);ws=d.get("workers") or [];L=lambda w:len(w.get("lane_novnc_urls") or []);print(sum(1 for w in ws if w.get("alive") and w.get("status")=="active" and (w.get("in_flight") or 0)<(w.get("capacity") or 0) and L(w)>0))' 2>/dev/null || echo 0)
+  if [ "$nuniq" = 1 ] && ! printf '%s' "$vers" | grep -q EMPTY && [ "${elig:-0}" -ge 6 ]; then
+    say "    settled: all hubs serve$(printf '%s' "$vers" | awk '{print " "$1}'), eligible=$elig"; settled=1; break
+  fi
+  say "    settling (attempt $attempt): hubs='$vers' eligible=$elig"; sleep 10
 done
-[ "${#seen[@]}" -gt 1 ] && say "    !! WARNING: hubs serve DIFFERENT versions (${!seen[*]}) — re-run with FORCE_HUBS=1"
+[ "$settled" = 1 ] || say "    !! did NOT settle in ~2min -- inspect hubs (served: $vers) + fleet manually"
 curl -fsS --max-time 12 "$FRONT/workers" | python3 -c '
 import sys,json
 from collections import Counter
