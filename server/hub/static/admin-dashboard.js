@@ -1,3 +1,27 @@
+// --- Worker tag colouring + hub-badge stability (Workers tab) ---------------
+// Stable per-string colour: hash -> hue, spread by *137 (golden-angle-ish) so
+// near-identical strings (hub-35 / hub-36 / hub-37 differ by ONE char) still get
+// well-separated hues. Tints the hub badge (a colour per hub) and the version
+// cell (a colour per worker version) so the operator reads the fleet's hub
+// spread + version rollout at a glance.
+function _wkrHashHue(s) {
+  s = String(s == null ? '' : s);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return (Math.abs(h) * 137) % 360;
+}
+function _wkrTagStyle(s) {
+  const hue = _wkrHashHue(s);
+  return `background:hsl(${hue},64%,91%); color:hsl(${hue},58%,30%); border-color:hsl(${hue},48%,78%);`;
+}
+// Last hub_id seen per worker, so the "which hub" badge survives a TRANSIENT
+// null while a worker self-updates (disconnect -> download -> reconnect): in
+// that window no hub holds its control-WS so the cross-hub aggregate reports
+// hub_id="" for a few seconds. We then show the cached hub (dimmed) rather than
+// dropping the badge. (Confirmed: a settled fleet has hub_id on every row; only
+// mid-update rows go briefly blank.)
+const _wkrLastHub = {};
+
 // --- Submit panel sub-tabs (ジョブの実行 / Live) ----------------------
 // Two sub-panes share the Submit panel. The form sub-pane holds the job
 // submission UI; the live sub-pane holds the inline #liveJobPanel that
@@ -275,9 +299,16 @@ async function refresh() {
         const status = w.status || 'active';
         const wid = esc(w.worker_id);
         const alive = !!w.alive;
-        // Which hub this worker's control-WS is connected to (multi-hub deploy).
-        const hubBadge = w.hub_id
-          ? ` <span class="badge" style="background:#e8f0fe; color:#1a56c4; border-color:#c2d6fb; font-size:.8em;" title="connected to hub ${esc(w.hub_id)}">${esc(w.hub_id)}</span>`
+        // Which hub this worker's control-WS is connected to (multi-hub deploy),
+        // colour-coded per hub. Prefer the live value; fall back to the
+        // last-known one so the badge doesn't vanish mid-self-update (the
+        // aggregate reports hub_id="" while the worker is briefly disconnected).
+        let _hub = w.hub_id || '';
+        if (_hub) { _wkrLastHub[w.worker_id] = _hub; }
+        else { _hub = _wkrLastHub[w.worker_id] || ''; }
+        const _hubCached = !w.hub_id && !!_hub;
+        const hubBadge = _hub
+          ? ` <span class="badge" style="${_wkrTagStyle(_hub)}${_hubCached ? ' opacity:.55;' : ''} font-size:.8em;" title="${_hubCached ? 'last-known hub (updating / reconnecting): ' : 'connected to hub '}${esc(_hub)}">${esc(_hub)}</span>`
           : '';
         // Historical workers render in greyed-out rows with no
         // status-toggle (the worker isn't here to honour it). Selecting
@@ -287,8 +318,10 @@ async function refresh() {
           `<option value="${s}"${s === status ? ' selected' : ''}>${s}</option>`
         ).join('');
         const selectDisabled = alive ? '' : 'disabled';
+        // Colour-coded per version so the operator sees the rollout spread
+        // (old vs new hash) at a glance.
         const version = w.version
-          ? `<code title="${esc(w.version)}">${esc(w.version.split(' ')[0])}</code>`
+          ? `<code title="${esc(w.version)}" style="${_wkrTagStyle(w.version.split(' ')[0])} padding:1px 5px; border-radius:3px;">${esc(w.version.split(' ')[0])}</code>`
           : '<span class="empty">—</span>';
         // Profile-cache status: number of prefetched profiles + a
         // hover tooltip listing names + sizes. Click pivots to the
