@@ -67,6 +67,11 @@ th { background: var(--bg-soft); font-weight: 600; }
   background: #fff; border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0,0,0,.12); padding: 6px 0; min-width: 190px; z-index: 100; }
 .topnav .dropdown:hover .dropdown-menu { display: block; }
+/* Invisible hover-bridge across the gap between toggle and menu so the pointer
+   can travel from one to the other without the menu closing (the menu is
+   position:absolute, so the 4px gap is otherwise outside .dropdown's hover box). */
+.topnav .dropdown-menu::before { content: ""; position: absolute; top: -8px;
+  left: 0; right: 0; height: 8px; }
 .topnav .dropdown-menu a { display: block; color: var(--fg); padding: 8px 18px;
   font-size: 0.9rem; font-weight: 400; white-space: nowrap; }
 .topnav .dropdown-menu a:hover { background: var(--bg-soft); text-decoration: none; }

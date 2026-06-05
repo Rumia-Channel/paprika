@@ -1,12 +1,11 @@
 <nav class="topnav">
   <a class="brand" href="index.html"><span class="logo"><img src="icon.svg" alt=""></span> Paprika</a>
   <span class="links">
-    <a href="index.html"{% if include.active == "home" %} class="active"{% endif %}>Home</a>
+    <a href="intro.html"{% if include.active == "intro" %} class="active"{% endif %}>はじめに</a>
+    <a href="guides.html"{% if include.active == "guides" %} class="active"{% endif %}>ガイド</a>
     <span class="dropdown">
-      <a class="dropdown-toggle{% if include.active == "intro" or include.active == "guides" or include.active == "examples" or include.active == "video" or include.active == "faq" %} active{% endif %}" href="intro.html">学ぶ ▾</a>
+      <a class="dropdown-toggle{% if include.active == "examples" or include.active == "video" or include.active == "faq" %} active{% endif %}" href="examples.html">学ぶ ▾</a>
       <span class="dropdown-menu">
-        <a href="intro.html"{% if include.active == "intro" %} class="active"{% endif %}>はじめに</a>
-        <a href="guides.html"{% if include.active == "guides" %} class="active"{% endif %}>ガイド</a>
         <a href="examples.html"{% if include.active == "examples" %} class="active"{% endif %}>サンプル</a>
         <a href="video.html"{% if include.active == "video" %} class="active"{% endif %}>動画</a>
         <a href="faq.html"{% if include.active == "faq" %} class="active"{% endif %}>FAQ</a>
@@ -20,20 +19,8 @@
         <a href="admin.html"{% if include.active == "admin" %} class="active"{% endif %}>管理画面</a>
       </span>
     </span>
-    <span class="dropdown">
-      <a class="dropdown-toggle{% if include.active == "architecture" or include.active == "architecture-hub" or include.active == "architecture-worker" or include.active == "operations" or include.active == "engine-setup" or include.active == "scaling" or include.active == "vision-mouse" or include.active == "worker-autodeploy" or include.active == "vnc-embed" or include.active == "worker-resilience" %} active{% endif %}" href="operations.html">運用・設計 ▾</a>
-      <span class="dropdown-menu">
-        <a href="architecture.html"{% if include.active == "architecture" %} class="active"{% endif %}>アーキテクチャ概要</a>
-        <a href="architecture-hub.html"{% if include.active == "architecture-hub" %} class="active"{% endif %}>Hub の仕組み</a>
-        <a href="architecture-worker.html"{% if include.active == "architecture-worker" %} class="active"{% endif %}>Worker の仕組み</a>
-        <a href="operations.html"{% if include.active == "operations" %} class="active"{% endif %}>サーバー構成</a>
-        <a href="engine-setup.html"{% if include.active == "engine-setup" %} class="active"{% endif %}>エンジン設定</a>
-        <a href="scaling.html"{% if include.active == "scaling" %} class="active"{% endif %}>Hub スケーリング</a>
-        <a href="vision-mouse.html"{% if include.active == "vision-mouse" %} class="active"{% endif %}>Vision AI とマウス</a>
-        <a href="worker-autodeploy.html"{% if include.active == "worker-autodeploy" %} class="active"{% endif %}>ワーカー自動デプロイ</a>
-        <a href="vnc-embed.html"{% if include.active == "vnc-embed" %} class="active"{% endif %}>VNC 埋め込み</a>
-      </span>
-    </span>
+    <a href="operations.html"{% if include.active == "operations" or include.active == "engine-setup" or include.active == "scaling" or include.active == "worker-resilience" %} class="active"{% endif %}>運用</a>
+    <a href="architecture.html"{% if include.active == "architecture" or include.active == "architecture-hub" or include.active == "architecture-worker" or include.active == "vision-mouse" %} class="active"{% endif %}>設計</a>
   </span>
   <a class="gh" href="https://github.com/paps-jp/paprika">GitHub ↗</a>
 </nav>
