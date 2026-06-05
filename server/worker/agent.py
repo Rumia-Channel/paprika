@@ -2455,6 +2455,10 @@ class WorkerAgent:
                 f"drain-for-update; proceeding anyway",
                 exc_info=True,
             )
+        _logger.info(
+            f"[worker {self.worker_id}] begin rolling self-update -> "
+            f"{(expected or '')[:12]} (trigger: {source})"
+        )
         self._self_update_task = asyncio.create_task(self._drain_and_self_update())
 
     async def _drain_and_self_update(self) -> None:
