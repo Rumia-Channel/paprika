@@ -90,7 +90,7 @@ done
 curl -s "http://localhost:8000/jobs/$JID/assets.json"
 ```
 
-API の詳しい使い方は [HTTP API](http-api.html) を、SDK は [はじめに](intro.html) を参照。
+API の詳しい使い方は [HTTP API](http-api.html) を、SDK は [Client インストール](intro.html) を参照。
 
 ## 6. SDK から叩く（任意）
 
@@ -165,7 +165,7 @@ docker compose up -d
 
 ## 次のステップ
 
-- [はじめに](intro.html) — 概念と基本操作
+- [Client インストール](intro.html) — 概念と基本操作
 - [ガイド](guides.html) — 画像/動画取得、ログイン、`walk` など実用パターン
 - [HTTP API](http-api.html) — 任意の言語から叩く
 - [サーバー構成](operations.html) — 本格運用への 3 つのパターン

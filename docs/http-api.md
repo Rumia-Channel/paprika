@@ -7,7 +7,7 @@ active: http-api
 
 Paprika SDK（Python / PHP）を使わなくても、Paprika は素の **HTTP / JSON API** で操作できます。`curl` でも JavaScript / Go / Ruby / どの言語からでも、やることは「**ジョブを投げて、結果を取る**」だけです。
 
-> SDK の使い方は [API リファレンス](api.html)、概念は [はじめに](intro.html) を参照。困ったら [FAQ](faq.html) へ。
+> SDK の使い方は [API リファレンス](api.html)、概念は [Client インストール](intro.html) を参照。困ったら [FAQ](faq.html) へ。
 
 ## ベース URL と認証
 
