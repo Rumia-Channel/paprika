@@ -885,18 +885,38 @@ class WorkerRegistry:
             ids = await self._r.zrange(_k_index(), 0, -1)
         except Exception:
             return []
+        # Build the candidate id list (skip the alive set already in snap),
+        # then batch ALL per-worker reads into ONE Redis pipeline round-trip.
+        # The old path issued 4 SEQUENTIAL awaits per worker inside this loop;
+        # with ~80 known rows (alive + offline history, incl. not-yet-reaped
+        # stale ids) that was ~320 sequential cross-host RTTs (.35/.36/.37 hub
+        # -> .34 redis) on EVERY /overview admin poll (~2s) + tab switch. A
+        # brief RTT inflation turned that into a 10-20s poll hang ("もっさり").
+        # Pipelining collapses it to ~1 RTT regardless of fleet/history size.
         out: list[dict] = []
+        wids: list[str] = []
         for raw_id in ids:
             wid = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
             if wid in exclude_ids:
                 continue
-            try:
-                row = await self._r.get(_k_worker(wid))
-                last_ts = await self._r.zscore(_k_index(), wid)
-                owner = await self._r.get(_k_owner(wid))
-                counts = await self._r.hgetall(_k_worker(wid) + ":counts")
-            except Exception:
-                continue
+            wids.append(wid)
+        if not wids:
+            return out
+        try:
+            pipe = self._r.pipeline(transaction=False)
+            for wid in wids:
+                pipe.get(_k_worker(wid))
+                pipe.zscore(_k_index(), wid)
+                pipe.get(_k_owner(wid))
+                pipe.hgetall(_k_worker(wid) + ":counts")
+            results = await pipe.execute()
+        except Exception:
+            return out
+        for _i, wid in enumerate(wids):
+            row = results[_i * 4]
+            last_ts = results[_i * 4 + 1]
+            owner = results[_i * 4 + 2]
+            counts = results[_i * 4 + 3]
             if not row:
                 continue
             try:
@@ -1004,7 +1024,17 @@ class WorkerRegistry:
         if self._r is None:
             return snap
         seen = {w["worker_id"] for w in snap["workers"]}
-        snap["workers"].extend(await self._fetch_known_workers(seen))
+        # Defensive ceiling: _fetch_known_workers is now pipelined (~1 RTT),
+        # but if redis itself stalls we must NOT hang the /overview admin poll
+        # (called every ~2s). Degrade to the local-hub snapshot instead of
+        # blocking the UI for seconds.
+        try:
+            extra = await asyncio.wait_for(
+                self._fetch_known_workers(seen), timeout=1.5
+            )
+        except Exception:
+            extra = []
+        snap["workers"].extend(extra)
         snap["count"] = len(snap["workers"])
         return snap
 
