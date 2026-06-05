@@ -36,6 +36,7 @@ from core.fetcher import (
 from server.protocol import (
     AssetInfo,
     HubAssignJob,
+    HubExpectedVersion,
     HubProfileDelete,
     HubProfileSync,
     HubRegistered,
@@ -2420,6 +2421,42 @@ class WorkerAgent:
             await ws.send(encode_msg(msg))
 
     # ---------------------------------------------------- rolling self-update
+    async def _maybe_begin_self_update(
+        self, expected: str | None, *, source: str,
+    ) -> None:
+        """Start the rolling drain + self-update if our version meaningfully
+        differs from the hub-advertised ``expected``.
+
+        Idempotent: a no-op when an update is already in flight or auto-exit is
+        disabled. Shared by the register handshake AND the periodic
+        ``HubExpectedVersion`` heartbeat advert, so a worker self-updates WITHOUT
+        needing a hub restart to force a reconnect. The hub's ``HubUpdateGate``
+        still caps concurrency, so triggering many workers at once just makes
+        them all drain + queue -- the fetch/exit rollout stays batched."""
+        local_version = default_worker_version()
+        if not _versions_meaningfully_differ(
+            local=local_version, expected=expected or "",
+        ):
+            return
+        _print_version_mismatch_banner(
+            local=local_version, expected=expected or "", source=source,
+        )
+        if not (_auto_exit_on_version_mismatch() and self._self_update_task is None):
+            # warn-only mode, or a self-update is already draining -> nothing to do.
+            return
+        self._pending_update_to = expected or ""
+        self._draining = True
+        self._update_gate.clear()
+        try:
+            await self._send(WorkerDraining(to_version=self._pending_update_to))
+        except Exception:
+            _logger.warning(
+                f"[worker {self.worker_id}] could not notify hub of "
+                f"drain-for-update; proceeding anyway",
+                exc_info=True,
+            )
+        self._self_update_task = asyncio.create_task(self._drain_and_self_update())
+
     async def _drain_and_self_update(self) -> None:
         """Drain in-flight work, await the hub's update slot, sleep
         for the assigned jitter, fetch source, exit(42).
@@ -2879,64 +2916,13 @@ class WorkerAgent:
         # restart policy can pick up a freshly-pulled image. Dev builds
         # on either side disable the check (see
         # _versions_meaningfully_differ).
-        expected = ack.expected_worker_version
-        local_version = default_worker_version()
-        if _versions_meaningfully_differ(local=local_version, expected=expected or ""):
-            _print_version_mismatch_banner(
-                local=local_version,
-                expected=expected or "",
-                source=f"Hub ({self.hub_http_url})",
-            )
-            # Rolling self-update.  Replaces the previous
-            # "immediately fetch + exit(42)" pattern that caused the
-            # whole fleet to go dark simultaneously whenever the hub
-            # advertised a new version (~20+ workers all fetching the
-            # tarball + restarting within the same 10-30s window).
-            #
-            # New sequence:
-            #   1. Send WorkerDraining(to_version=expected) so the hub
-            #      records us as draining and stops sending new jobs.
-            #   2. Wait for in-flight work (sessions + jobs) to complete
-            #      naturally, up to DRAIN_DEADLINE_S.
-            #   3. Wait for the hub's HubUpdateGate(allow_now=True) --
-            #      the hub caps concurrent updaters at
-            #      PAPRIKA_ROLLING_UPDATE_MAX_PARALLEL.
-            #   4. Sleep for the hub-assigned jitter (0..30s) so even
-            #      within one batch the actual fetch + exit moments
-            #      spread out across the network link.
-            #   5. Fetch source tarball + exit(42); docker restart
-            #      picks up the new code.
-            #
-            # ``_auto_exit_on_version_mismatch`` (env-gated, default ON)
-            # still controls whether step 5 runs at all; the rest is
-            # always done so the operator's bind-mount update flow
-            # stays observable in the admin UI even when auto-exit
-            # is disabled.
-            if (
-                _auto_exit_on_version_mismatch()
-                and self._self_update_task is None
-            ):
-                self._pending_update_to = expected or ""
-                self._draining = True
-                self._update_gate.clear()
-                try:
-                    await self._send(
-                        WorkerDraining(to_version=self._pending_update_to)
-                    )
-                except Exception:
-                    _logger.warning(
-                        f"[worker {self.worker_id}] could not notify hub "
-                        f"of drain-for-update; proceeding anyway",
-                        exc_info=True,
-                    )
-                self._self_update_task = asyncio.create_task(
-                    self._drain_and_self_update()
-                )
-            elif not _auto_exit_on_version_mismatch():
-                # Operator opted out: stay running on old code, just
-                # log. They are expected to update the bind-mounted
-                # source manually (git pull / rsync / whatever).
-                pass
+        # Rolling self-update on a hub-advertised version mismatch. Also
+        # triggerable mid-connection via HubExpectedVersion (heartbeat) so a
+        # worker-code deploy rolls out without a hub restart -- see
+        # _maybe_begin_self_update + _handle_hub_message.
+        await self._maybe_begin_self_update(
+            ack.expected_worker_version, source=f"Hub ({self.hub_http_url})",
+        )
 
         _logger.info(
             f"[worker {self.worker_id}] registered. server_time={ack.server_time}"
@@ -3472,6 +3458,14 @@ class WorkerAgent:
         if isinstance(msg, HubAssignJob):
             t = asyncio.create_task(self._run_assigned_job(msg))
             t.add_done_callback(self._on_job_task_done)
+            return
+        if isinstance(msg, HubExpectedVersion):
+            # Hub re-advertised its expected worker version mid-connection
+            # (heartbeat). Run the SAME rolling self-update check as at handshake
+            # so a worker-code deploy rolls out without a hub restart.
+            await self._maybe_begin_self_update(
+                msg.expected_worker_version, source="hub heartbeat",
+            )
             return
         if isinstance(msg, HubScreenshotRequest):
             # Don't block the recv loop on ffmpeg; fan out to a task.
@@ -5911,6 +5905,20 @@ class WorkerAgent:
                 # Persist page.html + log to local workdir
                 page_path = workdir / "page.html"
                 page_path.write_text(result.html, encoding="utf-8")
+                # Sidecar: the live-DOM representative-image pick (true
+                # naturalWidth cascade). /jobs/{id}/meta prefers this over
+                # re-parsing page.html so the thumbnail is a real cover
+                # image rather than the site logo. Skipped when nothing
+                # qualified; old jobs without it fall back to meta.py.
+                _rep = getattr(result, "representative_image", None) or {}
+                if _rep.get("url"):
+                    try:
+                        (workdir / "meta.json").write_text(
+                            json.dumps({"representative_image": _rep}, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                    except Exception as _e:
+                        _log(f"  (meta.json write failed: {type(_e).__name__}: {_e})")
                 log_fp.close()
 
                 # Upload all outputs to hub. Assets already shipped by the
@@ -6573,6 +6581,10 @@ class WorkerAgent:
         done = already_uploaded if already_uploaded is not None else set()
         await self._upload_log(assign, workdir / "log.txt")
         await self._upload_special(assign, workdir / "page.html", "page.html")
+        # Representative-image sidecar (written only when a pick was made).
+        _meta_sidecar = workdir / "meta.json"
+        if _meta_sidecar.exists():
+            await self._upload_special(assign, _meta_sidecar, "meta.json")
         # Page URL = the URL the user told us to fetch. Every captured
         # asset is "on" this page from the gallery's point of view.
         page_url = assign.url or None

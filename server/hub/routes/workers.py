@@ -923,6 +923,7 @@ from server.protocol import (
     LINKS_CAPTURE_MARKER,
     NET_CAPTURE_MARKER,
     HubRegistered,
+    HubExpectedVersion,
     JobResult,
     JobStatus,
     HubUpdateGate,
@@ -1581,6 +1582,24 @@ async def _handle_worker_message(worker, msg) -> None:
             worker.profiles_cached = [p.model_dump() for p in (msg.profiles_cached or [])]
         except Exception:
             worker.profiles_cached = []
+        # Zero-downtime rolling update: nudge an OUTDATED worker to self-update
+        # without a hub restart. HubRegistered.expected_worker_version only fires
+        # on connect; re-advertising the current source hash each heartbeat lets
+        # a worker on a stale build start its rolling drain + self-update within
+        # ~one heartbeat of a deploy. Skip workers already draining
+        # (pending_update_to) to avoid re-sending; the worker side is idempotent
+        # and the hub's HubUpdateGate still batches the actual fetch/exit.
+        try:
+            if not getattr(worker, "pending_update_to", None):
+                _exp = _hub_version()
+                _caps = getattr(worker, "capabilities", None)
+                _wv = (getattr(_caps, "version", "") or "") if _caps else ""
+                if _exp and _wv and _wv != _exp:
+                    await worker.send(
+                        HubExpectedVersion(expected_worker_version=_exp)
+                    )
+        except Exception:
+            pass
         return
 
     if isinstance(msg, WorkerJobAccepted):

@@ -1128,6 +1128,20 @@ class HubUpdateGate(BaseModel):
     jitter_s: float = 0.0
 
 
+class HubExpectedVersion(BaseModel):
+    """Hub re-advertises the worker source version it expects, OUTSIDE the
+    register handshake, so a connected worker self-updates without waiting for a
+    reconnect. ``HubRegistered.expected_worker_version`` only fires on connect;
+    the hub now also sends this on heartbeat to any worker whose reported version
+    differs from the hub's current source hash. The worker runs the SAME
+    version-mismatch check + rolling drain/self-update (HubUpdateGate still gates
+    concurrency) it does at handshake -- so a worker-code deploy rolls out with
+    NO hub restart / WS-drop (no session loss, no reconnect storm)."""
+
+    type: Literal["expected_version"] = "expected_version"
+    expected_worker_version: str | None = None
+
+
 class HubSessionInteraction(BaseModel):
     """Notify the worker that an operator is actively driving a session
     via noVNC (RFB KeyEvent / PointerEvent / ClientCutText detected
@@ -1167,6 +1181,7 @@ HubToWorkerMsg = Annotated[
         HubProfileDelete,
         HubSessionInteraction,
         HubUpdateGate,
+        HubExpectedVersion,
     ],
     Field(discriminator="type"),
 ]
