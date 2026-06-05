@@ -916,7 +916,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from server.hub._state import config, get_storage_dir
 from server.hub.routes.profiles import _sync_all_profiles_to_worker
-from server.hub.sessions import SessionInfo
+from server.hub.sessions import SessionInfo, session_from_json
 from server.protocol import (
     ASSET_CAPTURE_MARKER,
     JOB_PROGRESS_MARKER,
@@ -1512,8 +1512,33 @@ async def _reconcile_worker_sessions(worker, snapshots: list) -> None:
                 except Exception:
                     pass
         if not rebuilt_from_job:
-            # No JobInfo trail -> true orphan. Tell the worker to end
-            # this session so its lane comes back to the pool.
+            # P2: no JobInfo trail, but a job-less interactive session can still
+            # have survived in the Redis owner map (full SessionInfo). If it
+            # has, rebuild it HERE and take ownership -- the worker re-homed to
+            # this hub (consistent-hash re-route after a restart), so the
+            # session follows it -- instead of orphan-ending a live session.
+            rec = None
+            try:
+                rec = await state.sessions.get_redis_record(sid)
+            except Exception:
+                rec = None
+            if isinstance(rec, dict):
+                try:
+                    sinfo = session_from_json(rec)
+                    sinfo.worker_id = worker.worker_id
+                    if sinfo.lane_idx is None and snap.lane_idx is not None:
+                        sinfo.lane_idx = snap.lane_idx
+                    if snap.is_fetch_owned:
+                        sinfo.state = "fetch_running"
+                    sinfo.detached = bool(snap.detached or sinfo.detached)
+                    state.sessions.add(sinfo)  # add() re-writes Redis hub = us
+                    rebuilt += 1
+                    rebuilt_from_job = True
+                except Exception:
+                    pass
+        if not rebuilt_from_job:
+            # No JobInfo trail and not in Redis -> true orphan. Tell the worker
+            # to end this session so its lane comes back to the pool.
             try:
                 await worker.end_session(sid, timeout=10.0)
                 orphaned += 1
