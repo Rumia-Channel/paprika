@@ -60,9 +60,16 @@
       <li><a href="#why">できること</a></li>
       <li><a href="#example">最短の例</a></li>
       <li><a href="#next">次のステップ</a></li>
-      <li><a href="#background">背景 (paps / ProtectionAI)</a></li>
+      <li><a href="#background">背景 — paps / ProtectionAI</a></li>
       <li><a href="#why-evidence">なぜ証拠保全が必要か</a></li>
       <li><a href="#usage">利用について</a></li>
+    </ul>
+    <h4 style="margin-top:18px;">クイックリンク</h4>
+    <ul>
+      <li><a href="quickstart.html">Server インストール</a></li>
+      <li><a href="intro.html">Client インストール</a></li>
+      <li><a href="api.html">API リファレンス</a></li>
+      <li><a href="faq.html">FAQ</a></li>
     </ul>
   </aside>
 
@@ -72,8 +79,9 @@
       <h1>Paprika</h1>
       <p class="lead">分散ワーカー上の Chrome を <strong>Playwright スタイルの Python・PHP</strong> で操作、
       <strong>AI</strong> を使って、ページの<strong>画像・動画・リンク</strong>をまとめて収集するブラウザ自動化プラットフォーム。</p>
-      <a class="btn" href="intro.html">はじめる →</a>
-      <a class="btn ghost" href="guides.html">ガイドを見る</a>
+      <a class="btn" href="quickstart.html">5 分で動かす →</a>
+      <a class="btn ghost" href="why-paprika.html">なぜ Paprika?</a>
+      <a class="btn ghost" href="intro.html">Client インストール</a>
     </div>
 
     <figure style="margin: 22px 0 36px;">
@@ -84,9 +92,9 @@
     <h2 id="what">Paprika とは</h2>
     <p>URL を渡すと、フリート上の実ブラウザがページを開き、画像・動画・HTML を収集して返します。
     ログインが必要・JavaScript で描画される、といった「機械的な巡回が難しいサイト」でも安定して動くことを目指した基盤です。
-    同様のものに <a href="https://github.com/browserbase/stagehand" target="_blank" rel="noopener">Stagehand</a>、<a href="https://github.com/browser-use/browser-use" target="_blank" rel="noopener">Browser-Use</a>、<a href="https://www.browserable.ai/" target="_blank" rel="noopener">Browserable</a> があります。</p>
-    <p>使い方は 3 通り。<strong>管理 UI</strong> から URL を POST / <strong>HTTP API</strong> を実行 /
-    <strong>paprika-client（Python / PHP SDK）</strong>を使います。</p>
+    類似ツール（<a href="https://github.com/browserbase/stagehand" target="_blank" rel="noopener">Stagehand</a>、<a href="https://github.com/browser-use/browser-use" target="_blank" rel="noopener">Browser-Use</a>、<a href="https://www.browserable.ai/" target="_blank" rel="noopener">Browserable</a>）との違いは <a href="why-paprika.html">なぜ Paprika?</a> に整理しています。</p>
+    <p>使い方は 3 通り。<strong>管理 UI</strong> から URL を投入 / <strong><a href="http-api.html">HTTP API</a></strong> を任意の言語から実行 /
+    <strong>paprika-client（<a href="api.html">Python</a> / <a href="api.html#php">PHP</a> SDK）</strong>を使います。</p>
 
     <h2 id="why">できること</h2>
     <div class="cards">
@@ -103,22 +111,22 @@
       <div class="card">
         <iconify-icon class="card-icon" icon="lucide:cookie"></iconify-icon>
         <h3>ログイン必須サイト</h3>
-        <p>一度ログインして Cookie を保存すれば、以後の収集で自動的に再利用されます。</p>
+        <p>一度ログインして Cookie を保存すれば、以後の収集で自動的に再利用。<a href="bridge-extension.html">Bridge 拡張</a> / <a href="profile.html">use_profile</a> / <a href="host-recipe.html">Host レシピ</a> から選べます。</p>
       </div>
       <div class="card">
         <iconify-icon class="card-icon" icon="lucide:wand-sparkles"></iconify-icon>
-        <h3>LLM / Vision エージェント</h3>
-        <p>自然言語のゴールを渡すとスクリプトを生成・実行します。CSS が効かない画面は画面を見て操作します。</p>
+        <h3>AI コード生成（codegen-loop）</h3>
+        <p>自然言語のゴールを渡すと LLM がスクリプトを生成・実行・失敗時に再生成。成功した script はそのまま <code>rerun</code> で再利用（次回からは LLM 不要・決定的）。</p>
       </div>
       <div class="card">
         <iconify-icon class="card-icon" icon="lucide:monitor"></iconify-icon>
         <h3>ライブ noVNC</h3>
-        <p>実行中のブラウザをブラウザ上で観察・手動操作できます。人手への引き継ぎも可能です。</p>
+        <p>実行中のブラウザをブラウザ上で観察・手動操作できます。人手への引き継ぎや <a href="vnc-embed.html">自前ページへの埋め込み</a> も可能。</p>
       </div>
       <div class="card">
         <iconify-icon class="card-icon" icon="lucide:cpu"></iconify-icon>
         <h3>分散フリート</h3>
-        <p>多数のワーカーが並列実行。1 台で複数の独立ブラウザ（Lane）を保持。</p>
+        <p>多数のワーカーが並列実行。1 台で複数の独立ブラウザ（Lane）を保持。<a href="scaling.html">複数 Hub に水平スケール</a> も可能。</p>
       </div>
     </div>
 
@@ -141,11 +149,14 @@ asyncio.run(main())</code></pre>
 
     <h2 id="next">次のステップ</h2>
     <div class="cards">
-      <a class="card" href="intro.html"><h3>はじめに →</h3><p>インストール・接続・最初のスクリプト・コア概念。</p></a>
+      <a class="card" href="why-paprika.html"><h3>なぜ Paprika? →</h3><p>Playwright / Selenium との違い・選び方。評価入口。</p></a>
+      <a class="card" href="quickstart.html"><h3>Server インストール →</h3><p><code>docker compose up</code> で自分の環境に立ち上げる（5 分）。</p></a>
+      <a class="card" href="intro.html"><h3>Client インストール →</h3><p>SDK をインストールしてハブに接続、最初のスクリプト。</p></a>
+      <a class="card" href="usecases.html"><h3>ユースケース →</h3><p>目的別の End-to-End（画像・動画・ログイン・サイトアーカイブ）。</p></a>
       <a class="card" href="guides.html"><h3>ガイド →</h3><p>画像/動画の取得、ログイン、ブラウザ操作、LLM の使い分け。</p></a>
-      <a class="card" href="examples.html"><h3>サンプル集 →</h3><p>用途別の動くスニペット。セッション・goto・click・動画 DL。</p></a>
-      <a class="card" href="api.html"><h3>API リファレンス →</h3><p>SDK の全関数：引数・戻り値・例。</p></a>
-      <a class="card" href="operations.html"><h3>サーバー →</h3><p>3つの構成パターン・Docker / CLI 起動・環境変数・デプロイ。</p></a>
+      <a class="card" href="api.html"><h3>API リファレンス →</h3><p>SDK の全関数：引数・戻り値・例。<a href="http-api.html">HTTP API</a> / <a href="job-options.html">JobOptions</a> / <a href="errors.html">エラー一覧</a> も。</p></a>
+      <a class="card" href="architecture.html"><h3>アーキテクチャ →</h3><p>Client → Router → Hub → Worker → Lane の全体像と内部構造。</p></a>
+      <a class="card" href="faq.html"><h3>FAQ →</h3><p>503 リトライ、ログイン、動画、ハマりどころ救済。</p></a>
     </div>
 
     <h2 id="background">背景 — paps / ProtectionAI</h2>
@@ -209,7 +220,7 @@ asyncio.run(main())</code></pre>
     </div>
     <div class="pager">
       <span></span>
-      <a class="next" href="intro.html"><div class="dir">次へ →</div><div class="ttl">はじめに</div></a>
+      <a class="next" href="why-paprika.html"><div class="dir">次へ →</div><div class="ttl">なぜ Paprika?</div></a>
     </div>
   </main>
 </div>
