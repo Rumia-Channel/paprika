@@ -305,6 +305,50 @@ class MariaDBJobStore:
                     by_mode[m or "fetch"] = int(n)
         return by_status, by_mode, total
 
+    async def summary_counts(
+        self, *, window_ts: list[float] | None = None,
+    ) -> tuple[dict[str, int], dict[str, int], int, list[tuple[dict[str, int], int]]]:
+        """One-acquire job summary for ``GET /jobs/summary``.
+
+        Returns ``(by_status, by_mode, total, windows)`` where ``windows[i]`` is
+        ``(by_status, total)`` for jobs with ``created_at >=
+        FROM_UNIXTIME(window_ts[i])``. Conditional aggregation folds every recent
+        window into the ONE GROUP-BY-status query (plus one GROUP-BY-mode), so
+        the whole summary is 2 queries on 1 connection instead of the old
+        3-queries-per-window (9 queries, ~2 s of round-trips at ~8.5k rows --
+        which made the admin "最近のジョブ" tab block until it returned)."""
+        wins = [float(t) for t in (window_ts or [])]
+        win_sel = "".join(
+            f", SUM(created_at >= FROM_UNIXTIME(%s)) AS w{i}"
+            for i in range(len(wins))
+        )
+        by_status: dict[str, int] = {}
+        by_mode: dict[str, int] = {}
+        total = 0
+        windows: list[list] = [[{}, 0] for _ in wins]
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT status, COUNT(*) AS c{win_sel} "
+                    "FROM jobs GROUP BY status",
+                    tuple(wins),
+                )
+                for row in await cur.fetchall():
+                    s = row[0]
+                    if not s:
+                        continue
+                    c = int(row[1] or 0)
+                    by_status[s] = c
+                    total += c
+                    for i in range(len(wins)):
+                        wc = int(row[2 + i] or 0)
+                        windows[i][0][s] = wc
+                        windows[i][1] += wc
+                await cur.execute("SELECT mode, COUNT(*) FROM jobs GROUP BY mode")
+                for m, n in await cur.fetchall():
+                    by_mode[m or "fetch"] = int(n)
+        return by_status, by_mode, total, [(w[0], w[1]) for w in windows]
+
     async def delete_job(self, job_id: str) -> bool:
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:

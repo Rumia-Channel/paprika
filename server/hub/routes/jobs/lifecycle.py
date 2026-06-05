@@ -51,7 +51,7 @@ from server.hub.routes.jobs._base import *  # noqa: F401,F403 (router + helpers)
 async def list_jobs(
     request: Request,
     offset: int = 0,
-    limit: int = 0,
+    limit: int = 20,
     status: str | None = None,
     mode: str | None = None,
     q: str | None = None,
@@ -60,8 +60,9 @@ async def list_jobs(
 
     Query params:
       * ``offset`` -- skip this many entries (default 0).
-      * ``limit``  -- max entries to return (default 0 = all, max 500).
-                      **Recommended** for MCP / CLI callers: ``limit=50``.
+      * ``limit``  -- max entries to return. **Default 20, hard cap 500.**
+                      ``limit<=0`` is treated as the default (NOT "all").
+                      Page through more via ``offset``.
       * ``status`` -- filter by status (``running``, ``completed``,
                       ``failed``, ``cancelled``, ``queued``).
                       Comma-separated for multiple: ``status=completed,failed``.
@@ -72,11 +73,11 @@ async def list_jobs(
 
         {total, count, offset, limit, jobs: [...]}
 
-    When ``limit=0`` (the default), **all** matching jobs are returned
-    (``jobs`` is the full array) so existing callers that expect a bare
-    list keep working -- they just need to read ``resp.jobs`` (or
-    iterate the array when the response *is* a list for the legacy
-    ``Accept: application/json`` path).
+    .. versionchanged:: 2026-06-05
+       ``limit`` now DEFAULTS TO 20 (was 0 = unbounded) and is hard-capped at
+       500. A full fetch hydrated thousands of JobInfos -- ~25s at 8.5k rows --
+       and made the admin "最近のジョブ" tab block on it. Callers that need
+       everything must page via ``offset`` (the response carries ``total``).
 
     .. versionchanged:: 2026-05-26
        Added pagination (offset/limit) and filters (status/mode/q).
@@ -84,7 +85,11 @@ async def list_jobs(
        dict above.  The admin UI was updated in the same commit.
     """
     assert state.store is not None
-    lim = max(0, min(int(limit or 0), 500))
+    # Default 20, hard cap 500. limit<=0 means "use the default" (NOT "all"):
+    # a full fetch hydrates thousands of JobInfos (~25s at 8.5k rows) and
+    # blocked the admin Jobs tab. Page via offset for more.
+    _l = int(limit or 0)
+    lim = 20 if _l <= 0 else min(_l, 500)
     off = max(0, int(offset or 0))
 
     # ------------------------------------------------------------------
@@ -234,23 +239,45 @@ async def get_jobs_summary() -> dict:
     assert state.store is not None
     wall_now = _time.time()
 
-    # ----- by_status / by_mode / total (fast path when store exposes it)
-    fast_counts = getattr(state.store, "count_by_status_and_mode", None)
-    if callable(fast_counts):
-        by_status, by_mode, total = await fast_counts()
-    else:
-        by_status, by_mode, total = await _summary_python_count(None)
-
-    # ----- recent windows (1h, 24h)
-    recent: dict[str, dict] = {}
-    for hours in _JOBS_SUMMARY_RECENT_WINDOWS_H:
-        ts_cut = wall_now - hours * 3600
-        if callable(fast_counts):
-            rec_by_status, _rec_by_mode, rec_total = await fast_counts(
-                created_after_ts=ts_cut,
+    # ----- by_status / by_mode / total + recent windows.
+    # Prefer the combined one-acquire ``summary_counts`` (MariaDB: 2 queries for
+    # EVERYTHING, incl. the recent windows via conditional aggregation -- ~5x
+    # fewer DB round-trips than the per-window path below, which ran 3 queries
+    # per window = 9 total and made the admin Jobs tab block ~2s). Fall back to
+    # ``count_by_status_and_mode`` (3 queries/window) or the Python walk.
+    windows_h = list(_JOBS_SUMMARY_RECENT_WINDOWS_H)
+    by_status = None
+    by_mode: dict = {}
+    total = 0
+    win_results: list[tuple[dict, int]] | None = None
+    fast_summary = getattr(state.store, "summary_counts", None)
+    if callable(fast_summary):
+        try:
+            by_status, by_mode, total, win_results = await fast_summary(
+                window_ts=[wall_now - h * 3600 for h in windows_h],
             )
+        except Exception:
+            log.warning(
+                "jobs/summary: summary_counts failed; falling back", exc_info=True
+            )
+            by_status = None
+    if by_status is None:
+        fast_counts = getattr(state.store, "count_by_status_and_mode", None)
+        if callable(fast_counts):
+            by_status, by_mode, total = await fast_counts()
         else:
-            rec_by_status, _rec_by_mode, rec_total = await _summary_python_count(ts_cut)
+            by_status, by_mode, total = await _summary_python_count(None)
+        win_results = []
+        for hours in windows_h:
+            ts_cut = wall_now - hours * 3600
+            if callable(fast_counts):
+                rb, _rm, rt = await fast_counts(created_after_ts=ts_cut)
+            else:
+                rb, _rm, rt = await _summary_python_count(ts_cut)
+            win_results.append((rb, rt))
+
+    recent: dict[str, dict] = {}
+    for hours, (rec_by_status, rec_total) in zip(windows_h, win_results or []):
         completed = rec_by_status.get("completed", 0)
         failed = rec_by_status.get("failed", 0)
         terminal = completed + failed
