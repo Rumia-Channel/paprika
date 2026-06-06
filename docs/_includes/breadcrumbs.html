@@ -11,13 +11,13 @@
     {% case a %}
       {% when "why-paprika" or "intro" or "quickstart" %}
         <li><a href="{{ '/why-paprika.html' | relative_url }}">はじめに</a></li>
-      {% when "guides" or "examples" or "usecases" or "faq" or "video" %}
+      {% when "guides" or "examples" or "usecases" or "faq" %}
         <li><a href="{{ '/guides.html' | relative_url }}">学ぶ</a></li>
-      {% when "api" or "http-api" or "cli" or "job-options" or "walk" or "locator" or "ws-events" or "errors" or "bridge-extension" or "profile" or "host-recipe" or "admin" or "glossary" %}
+      {% when "api" or "api-page" or "http-api" or "cli" or "job-options" or "walk" or "locator" or "ws-events" or "auth" or "admin" or "glossary" %}
         <li><a href="{{ '/api.html' | relative_url }}">リファレンス</a></li>
       {% when "operations" or "engine-setup" or "scaling" or "worker-resilience" or "worker-autodeploy" %}
         <li><a href="{{ '/operations.html' | relative_url }}">運用</a></li>
-      {% when "architecture" or "architecture-hub" or "architecture-worker" or "vision-mouse" or "vnc-embed" %}
+      {% when "architecture" or "vision-mouse" or "vnc-embed" %}
         <li><a href="{{ '/architecture.html' | relative_url }}">設計</a></li>
       {% when "changelog" %}
         <li><a href="{{ '/changelog.html' | relative_url }}">変更履歴</a></li>

@@ -18,6 +18,7 @@ kramdown:
 # (replacing the old hand-written 9-URL list that drifted out of sync).
 plugins:
   - jekyll-sitemap
+  - jekyll-redirect-from
 
 # jekyll-sitemap uses these defaults to set <lastmod> / <priority>.
 defaults:

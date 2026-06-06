@@ -1,0 +1,1040 @@
+---
+title: API リファレンス — Page クラス
+description: paprika-client の Page クラス全メソッド (Playwright スタイル)。ナビゲーション・取得・JS 実行・収集・拡張機能コマンド・タブ操作の仕様 (引数・戻り値・実例)。Session は Page を継承するので session でもそのまま使えます。
+active: api-page
+---
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>API リファレンス — Page クラス全メソッド</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+{% include favicon.html %}
+<script>(function(){try{var m=localStorage.getItem('paprika.api.mode')||'async';if(!['async','sync','php'].includes(m))m='async';document.documentElement.classList.add('mode-'+m);}catch(_){document.documentElement.classList.add('mode-async');}})();</script>
+<meta name="description" content="paprika-client の Page クラス全メソッド (Playwright スタイル)。ナビゲーション・取得・JS 実行・収集・拡張機能コマンド・タブ操作の仕様 (引数・戻り値・実例)。">
+<link rel="canonical" href="https://paps-jp.github.io/paprika/api-page.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Paprika">
+<meta property="og:title" content="API リファレンス — Page クラス全メソッド">
+<meta property="og:description" content="paprika-client の Page クラス全メソッド (Playwright スタイル)。ナビゲーション・取得・JS 実行・収集・拡張機能コマンド・タブ操作の仕様 (引数・戻り値・実例)。">
+<meta property="og:url" content="https://paps-jp.github.io/paprika/api-page.html">
+<meta property="og:image" content="https://paps-jp.github.io/paprika/img/admin-submit.png">
+<meta property="og:locale" content="ja_JP">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="API リファレンス — Page クラス全メソッド">
+<meta name="twitter:description" content="paprika-client の Page クラス全メソッド (Playwright スタイル)。ナビゲーション・取得・JS 実行・収集・拡張機能コマンド・タブ操作の仕様 (引数・戻り値・実例)。">
+<meta name="twitter:image" content="https://paps-jp.github.io/paprika/img/admin-submit.png">
+<style>
+  table.apiref { table-layout: fixed; }
+  table.apiref th:nth-child(1), table.apiref td:nth-child(1) { width: 23%; }
+  table.apiref th:nth-child(2), table.apiref td:nth-child(2) { width: 27%; }
+  table.apiref th:nth-child(3), table.apiref td:nth-child(3) { width: 15%; }
+  table.apiref td { vertical-align: top; word-break: break-word; }
+  table.apiref td:nth-child(1) code, table.apiref td:nth-child(2) code,
+  table.apiref td:nth-child(3) code { font-size: 0.88em; }
+  table.apiref .ret { color: var(--stem); font-weight: 600; }
+
+  .pw { margin: 30px 0 0; padding-top: 26px; border-top: 2px solid var(--border); }
+  h2 + .pw { border-top: none; padding-top: 10px; margin-top: 14px; }
+  .pw > h3 { font-family: ui-monospace, Consolas, monospace; font-size: 1.04rem;
+    font-weight: 700; margin: 0 0 .55em; padding: 9px 14px; line-height: 1.5;
+    background: var(--bg-soft); border-left: 4px solid var(--accent);
+    border-radius: 0 7px 7px 0; }
+  .pw > h3 .pw-ret { color: var(--stem); font-weight: 600; }
+  .pw > p { margin: .4em 0 .2em; }
+  .pw-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--fg-muted); font-weight: 700; margin: 12px 0 5px; }
+  .pw-args { list-style: none; margin: 0 0 6px; padding: 0; }
+  .pw-args > li { padding: 3px 0 3px 13px; border-left: 2px solid var(--border-soft);
+    margin: 5px 0; line-height: 1.6; }
+  .pw-args code.arg { font-weight: 600; }
+  .pw-type { font-family: ui-monospace, Consolas, monospace; font-size: .8em;
+    background: var(--bg-soft); border: 1px solid var(--border-soft);
+    border-radius: 5px; padding: 1px 6px; color: var(--accent); white-space: nowrap; }
+  .pw-opt { font-style: italic; color: var(--fg-muted); font-size: .85em; }
+  .pw pre { margin: 4px 0 8px; }
+</style>
+</head>
+<body>
+
+{% include header.html active="api-page" %}
+
+{% include breadcrumbs.html %}
+<div class="layout">
+  <aside class="sidebar">
+    <h4>Page クラス</h4>
+    <ul>
+      <li><a href="#nav">ナビゲーション・操作</a></li>
+      <li><a href="#getters">取得・待機・状態</a></li>
+      <li><a href="#evaluate">JS 実行・ロケータ生成</a></li>
+      <li><a href="#assets">収集・Cookie・LLM・永続状態</a></li>
+      <li><a href="#agent-ext">拡張機能コマンド (Agent ext)</a></li>
+      <li><a href="#tabs">タブ・ライフサイクル</a></li>
+    </ul>
+    <h4 style="margin-top: 18px;">関連</h4>
+    <ul>
+      <li><a href="api.html">API トップ</a></li>
+      <li><a href="api.html#session">Session 固有</a></li>
+      <li><a href="api.html#locator">Locator</a></li>
+      <li><a href="api.html#walk">walk</a></li>
+    </ul>
+  </aside>
+
+  <main id="main-content" class="content">
+    <h1>API リファレンス — Page クラス</h1>
+    <p class="lead">Playwright スタイルの Page 全メソッド。<code>Session</code> は <code>Page</code> を継承するので、ここに書かれた API はすべて <code>session.*</code> でも使えます。
+    クライアントの接続方法・<code>Session</code> 固有 API・例外・ライブログは <a href="api.html">API リファレンス（トップ）</a> を参照してください。</p>
+
+    <div class="api-toggle" role="tablist" aria-label="Code example mode">
+      <button data-mode="async">Python Async（推奨）</button>
+      <button data-mode="sync">Python Sync</button>
+      <button data-mode="php">PHP</button>
+      <span class="hint">コード例の表示モード</span>
+    </div>
+
+    <h2 id="nav">Page — ナビゲーション・操作</h2>
+    <p>プロパティ（I/O なし）: <code>page.url</code> / <code>session_id</code> / <code>worker_id</code> / <code>lane_idx</code> / <code>novnc_url</code> / <code>page_id</code>。</p>
+    <div class="pw">
+      <h3><code>page.goto(url)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>ページを遷移します。<code>result["response"]</code> に Playwright 互換の HTTP レスポンス（<code>status</code>/<code>ok</code>/<code>headers</code>/<code>mime</code>/<code>url</code>）が入ります。<code>pap.response_of(reply)</code> で安全に取り出せます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>reply = await page.goto("https://example.com")
+r = pap.response_of(reply)   # {url, status, ok, headers, mime}</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">url</code> <span class="pw-type">str</span> &mdash; 遷移先 URL</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["response"]</code> に HTTP レスポンス</li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.back()</code> / <code>forward()</code> / <code>history_first()</code> / <code>reload()</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>履歴移動・再読み込み（境界で安全）。<code>goto()</code> と同じく <code>result["response"]</code> を持ちます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.back()
+await page.reload()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["response"]</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.last_response()</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>直近のメインドキュメント HTTP レスポンス。<strong>クリック起因のナビゲーション</strong>（リンク・フォーム送信・<code>location.href=</code>）後の status 取得に使います。常に <code>{url,status,status_text,ok,headers,mime}</code> を返します（<code>status=0</code> は「未取得」）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.locator(".titleline > a").first.click()
+r = await page.last_response()
+if r["status"] == 404:
+    return None</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>{url, status, status_text, ok, headers, mime}</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.click(selector)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>要素をクリックします。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.click("button.play")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ。<code>[@N]</code> は <code>[data-paprika-id="N"]</code> に展開</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.fill(selector, value)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>input / textarea に値をセットします（input/change を発火）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.fill("#email", "user@example.com")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li>
+        <li><code class="arg">value</code> <span class="pw-type">str</span> &mdash; 入力する値</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.press(key, *, count=1, modifiers=None)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>フォーカス要素にキーを送ります。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.press("Enter")
+await page.press("a", modifiers=["Ctrl"])</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">key</code> <span class="pw-type">str</span> &mdash; キー名（例 <code>"Enter"</code>）</li>
+        <li><code class="arg">count</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 1)</span> &mdash; 押下回数</li>
+        <li><code class="arg">modifiers</code> <span class="pw-type">list</span> <span class="pw-opt">(optional, None)</span> &mdash; 例 <code>["Ctrl"]</code></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.type(text)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>フォーカス要素に文字列を挿入します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.type("hello")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">text</code> <span class="pw-type">str</span> &mdash; 挿入する文字列</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.scroll(direction="down", pixels=800)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>ページをスクロールします。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.scroll("down", 1200)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">direction</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "down")</span> &mdash; <code>up</code> / <code>down</code></li>
+        <li><code class="arg">pixels</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 800)</span> &mdash; スクロール量</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.hover()</code> / <code>dblclick()</code> / <code>focus()</code> / <code>scroll_into_view_if_needed()</code> <span class="pw-ret">&rarr; bool</span></h3>
+      <p>合成入力イベント系。いずれも同じ引数を取ります。複数一致時は <code>index</code> 番目の要素が対象。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.hover(".thumb")
+await page.dblclick("video")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li>
+        <li><code class="arg">index</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 0)</span> &mdash; 何番目の一致要素か</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">bool</span> &mdash; 成功なら True</li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.select_option(selector, value, *, index=0)</code> <span class="pw-ret">&rarr; bool</span></h3>
+      <p><code>&lt;select&gt;</code> の選択肢を選びます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.select_option("#country", "JP")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; <code>&lt;select&gt;</code> のセレクタ</li>
+        <li><code class="arg">value</code> <span class="pw-type">str</span> &mdash; 選択する value</li>
+        <li><code class="arg">index</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 0)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">bool</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.check()</code> / <code>uncheck()</code> <span class="pw-ret">&rarr; bool</span></h3>
+      <p>チェックボックスを ON / OFF します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.check("#agree")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li>
+        <li><code class="arg">index</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 0)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">bool</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.set_input_files(selector, files)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>ファイルアップロード（CDP）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.set_input_files("input[type=file]", ["a.jpg", "b.jpg"])</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; file input のセレクタ</li>
+        <li><code class="arg">files</code> <span class="pw-type">str | list[str]</span> &mdash; ファイルパス（単体 or 複数）</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+    <div class="ex-async"><pre><code>import paprika_client as pap
+
+# HTTP ステータスの取得（Playwright 互換 Response）
+reply = await page.goto("https://example.com/missing")
+r = pap.response_of(reply)          # {url,status,status_text,ok,headers,mime}
+if r["status"] == 404:
+    return None
+if not r["ok"]:
+    raise RuntimeError(f"HTTP {r['status']}")
+
+# クリック起因のナビゲーション後は last_response() を使う
+await page.locator(".titleline > a").first.click()
+r = await page.last_response()
+if r["status"] == 404:
+    return None
+
+await page.fill("#email", "user@example.com")
+await page.press("Enter")
+await page.set_input_files("input[type=file]", ["a.jpg", "b.jpg"])</code></pre></div>
+    <div class="ex-sync"><pre><code>import paprika_client as pap
+
+reply = page.goto("https://example.com/missing")
+r = pap.response_of(reply)
+if r["status"] == 404:
+    return None
+
+# クリック起因のナビゲーション（sync でも await 不要）
+page.locator(".titleline > a").first.click()
+r = page.last_response()
+if r["status"] == 404:
+    return None
+
+page.fill("#email", "user@example.com")
+page.press("Enter")
+page.set_input_files("input[type=file]", ["a.jpg", "b.jpg"])</code></pre></div>
+    <div class="ex-php"><div class="callout info"><strong>PHP は順次対応中</strong>です（現在は <a href="#php">Job API + Session ライフサイクル</a>まで）。当面は <a href="http-api.html">HTTP API</a> もご利用ください。</div></div>
+
+    <h2 id="getters">Page — 取得・待機・状態</h2>
+    <div class="pw">
+      <h3><code>page.text_content()</code> / <code>inner_text()</code> / <code>inner_html()</code> / <code>input_value()</code> <span class="pw-ret">&rarr; str | None</span></h3>
+      <p>要素のテキスト / 表示テキスト / 内部 HTML / 入力値を取得します。一致なしは <code>None</code>。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>title = await page.text_content("h1")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li>
+        <li><code class="arg">index</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 0)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">str | None</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.get_attribute(selector, name, *, index=0)</code> <span class="pw-ret">&rarr; str | None</span></h3>
+      <p>指定属性の値を取得します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>href = await page.get_attribute("a.next", "href")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li>
+        <li><code class="arg">name</code> <span class="pw-type">str</span> &mdash; 属性名</li>
+        <li><code class="arg">index</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 0)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">str | None</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.count(selector)</code> <span class="pw-ret">&rarr; int</span></h3>
+      <p>セレクタに一致する要素数を返します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>n = await page.count(".item")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">int</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.is_visible()</code> / <code>is_checked()</code> / <code>is_enabled()</code> / <code>is_disabled()</code> / <code>is_editable()</code> <span class="pw-ret">&rarr; bool</span></h3>
+      <p>要素の状態を判定します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>if await page.is_visible("#captcha"):
+    ...</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li>
+        <li><code class="arg">index</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 0)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">bool</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.exists(selector)</code> <span class="pw-ret">&rarr; bool</span></h3>
+      <p>要素の存在チェック（確定的・LLM 不要）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>if await page.exists(".paywall"):
+    ...</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">bool</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.wait_for_selector(selector, *, state="visible", timeout=30.0)</code> <span class="pw-ret">&rarr; bool</span></h3>
+      <p>要素の出現 / 消失を待ちます。タイムアウト時は <code>False</code>。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.wait_for_selector("video", timeout=10)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">selector</code> <span class="pw-type">str</span> &mdash; CSS セレクタ</li>
+        <li><code class="arg">state</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "visible")</span> &mdash; <code>attached</code> / <code>detached</code> / <code>visible</code> / <code>hidden</code></li>
+        <li><code class="arg">timeout</code> <span class="pw-type">float</span> <span class="pw-opt">(optional, 30.0)</span> &mdash; 秒</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">bool</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.wait_for(*, seconds=None, ms=None)</code> <span class="pw-ret">&rarr; None</span></h3>
+      <p>単純待機。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.wait_for(seconds=2)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">seconds</code> <span class="pw-type">float</span> <span class="pw-opt">(optional, None)</span></li>
+        <li><code class="arg">ms</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, None)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">None</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.state()</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>ライブ状態を返します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>s = await page.state()   # {url, title, lane_idx, visited_count}</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>{url, title, lane_idx, visited_count}</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.title()</code> / <code>page.outline()</code> <span class="pw-ret">&rarr; str</span></h3>
+      <p>ページタイトル / 操作可能要素の一覧（<code>[@N]</code> 付き）を返します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>print(await page.outline())</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">str</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.links(*, urls_only=False)</code> <span class="pw-ret">&rarr; list</span></h3>
+      <p>ページ内の全 <code>&lt;a href&gt;</code> を絶対 URL で返します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>urls = await page.links(urls_only=True)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">urls_only</code> <span class="pw-type">bool</span> <span class="pw-opt">(optional, False)</span> &mdash; True で URL 文字列のみ、False で text 付き dict</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.visited_urls()</code> <span class="pw-ret">&rarr; list[str]</span></h3>
+      <p>このセッションで踏んだ URL の一覧。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>seen = await page.visited_urls()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list[str]</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.screenshot(*, path=None)</code> <span class="pw-ret">&rarr; bytes</span></h3>
+      <p>ビューポートの PNG バイト列を返します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>png = await page.screenshot(path="shot.png")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">path</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, None)</span> &mdash; 指定するとファイルにも保存</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">bytes</span> &mdash; PNG データ</li></ul>
+    </div>
+
+    <h2 id="evaluate">Page — JS 実行・ロケータ生成</h2>
+    <h3><code>page.evaluate(expression, *, await_promise=False)</code> → 値</h3>
+    <p>任意 JS を実行し評価値を返す（<strong>JSON 化可能な値のみ</strong>）。取得・待機・入力系はこれが土台。</p>
+    <div class="ex-async"><pre><code>title = await page.evaluate("document.title")
+data  = await page.evaluate("fetch('/api').then(r=>r.json())", await_promise=True)</code></pre></div>
+    <div class="ex-sync"><pre><code>title = page.evaluate("document.title")
+data  = page.evaluate("fetch('/api').then(r=>r.json())", await_promise=True)</code></pre></div>
+    <div class="ex-php"><div class="callout info"><strong>PHP は順次対応中</strong>です（<code>evaluate</code> は Page サーフェスの一部として今後追加されます）。</div></div>
+    <table>
+      <thead><tr><th>ロケータ生成</th><th>意味</th></tr></thead>
+      <tbody>
+        <tr><td><code>page.locator(selector)</code> → Locator</td><td>CSS セレクタ</td></tr>
+        <tr><td><code>page.get_by_text(text)</code> → Locator</td><td>可視テキスト一致</td></tr>
+        <tr><td><code>page.get_by_role(role, *, name=None)</code> → Locator</td><td><code>[role=]</code></td></tr>
+        <tr><td><code>page.get_by_test_id(id) / get_by_placeholder(text) / get_by_title(text) / get_by_alt_text(text)</code> → Locator</td><td>属性セレクタ。詳細は <a href="locator.html">Locator リファレンス</a> を参照</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="assets">Page — 収集・Cookie・LLM・永続状態</h2>
+    <div class="pw">
+      <h3><code>page.capture(label="capture")</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>現在のページの HTML + スクショ + outline を保存します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.capture("after-login")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">label</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "capture")</span> &mdash; 保存時のラベル</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.assets(*, kind="image", absolute=True, refresh=True, details=False)</code> <span class="pw-ret">&rarr; list</span></h3>
+      <p>このセッションでキャプチャ済みの asset 一覧（<strong>要 parent_job_id</strong>）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>imgs = await page.assets(kind="image")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">kind</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "image")</span> &mdash; asset 種別</li>
+        <li><code class="arg">absolute</code> <span class="pw-type">bool</span> <span class="pw-opt">(optional, True)</span> &mdash; 絶対 URL で返す</li>
+        <li><code class="arg">refresh</code> <span class="pw-type">bool</span> <span class="pw-opt">(optional, True)</span> &mdash; 最新を取り直す</li>
+        <li><code class="arg">details</code> <span class="pw-type">bool</span> <span class="pw-opt">(optional, False)</span> &mdash; メタ情報付き</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.save_assets(dest_dir, *, kind="image", refresh=True)</code> <span class="pw-ret">&rarr; list[str]</span></h3>
+      <p>キャプチャ済み asset をディスクへ保存し、保存したパス列を返します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>paths = await page.save_assets("./out", kind="image")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">dest_dir</code> <span class="pw-type">str</span> &mdash; 保存先ディレクトリ</li>
+        <li><code class="arg">kind</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "image")</span></li>
+        <li><code class="arg">refresh</code> <span class="pw-type">bool</span> <span class="pw-opt">(optional, True)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list[str]</span> &mdash; 保存したファイルパス</li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.download_video(url=None, *, referer=None, timeout_s=1800)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>yt-dlp / httpx で動画を取得・保存します。<code>url</code> 省略時は検出済みストリームを使います。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.download_video(referer="https://supjav.com/")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">url</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, None)</span> &mdash; 省略で検出済みストリーム</li>
+        <li><code class="arg">referer</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, None)</span> &mdash; CDN 用 Referer</li>
+        <li><code class="arg">timeout_s</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 1800)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.cookies(*, host=None, all_cookies=False)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>現在の Cookie を取得します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>c = await page.cookies()</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">host</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, None)</span> &mdash; 対象ホスト</li>
+        <li><code class="arg">all_cookies</code> <span class="pw-type">bool</span> <span class="pw-opt">(optional, False)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.save_cookies_to_host(*, host=None, notes=None, all_cookies=False)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>現在の Cookie を Host レジストリへ保存します（次回以降のセッションに自動注入）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.save_cookies_to_host(notes="logged-in")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">host</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, None)</span></li>
+        <li><code class="arg">notes</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, None)</span></li>
+        <li><code class="arg">all_cookies</code> <span class="pw-type">bool</span> <span class="pw-opt">(optional, False)</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.network(*, since=0.0)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>メディア系のネットワークログを取得します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>log = await page.network()</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">since</code> <span class="pw-type">float</span> <span class="pw-opt">(optional, 0.0)</span> &mdash; これ以降のエントリ</li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.ask(question, *, engine="auto")</code> <span class="pw-ret">&rarr; bool</span></h3>
+      <p>LLM に yes/no を問います。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>if await page.ask("認証ダイアログが出ている?"):
+    ...</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">question</code> <span class="pw-type">str</span> &mdash; 質問文</li>
+        <li><code class="arg">engine</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "auto")</span></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">bool</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.agent(goal, *, max_steps=5, engine="auto")</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>vision / LLM エージェントにゴールを委譲します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.agent("認証画面をクリアして", max_steps=3)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">goal</code> <span class="pw-type">str</span> &mdash; 達成目標</li>
+        <li><code class="arg">max_steps</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 5)</span> &mdash; 1&ndash;30</li>
+        <li><code class="arg">engine</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "auto")</span> &mdash; <code>auto</code> / <code>qwen</code> / <code>cogagent</code></li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.get_state(key)</code> / <code>set_state(key, value)</code> <span class="pw-ret">&rarr; dict | None</span></h3>
+      <p>親 job に紐づく永続データの読み書き（<strong>要 parent_job_id</strong>）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.set_state("cursor", {"page": 3})
+cur = await page.get_state("cursor")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">key</code> <span class="pw-type">str</span> &mdash; キー</li>
+        <li><code class="arg">value</code> <span class="pw-type">any</span> &mdash; <code>set_state</code> のみ。保存する値</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict | None</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.solve_cloudflare(*, timeout_s=25.0)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>Cloudflare のチャレンジを待つ / 通します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.solve_cloudflare()</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args"><li><code class="arg">timeout_s</code> <span class="pw-type">float</span> <span class="pw-opt">(optional, 25.0)</span></li></ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.resize_window(width, height)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>Chrome のウィンドウサイズを変更します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.resize_window(1280, 720)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">width</code> <span class="pw-type">int</span> &mdash; 幅(px)</li>
+        <li><code class="arg">height</code> <span class="pw-type">int</span> &mdash; 高さ(px)</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <h2 id="agent-ext">Page — 拡張機能コマンド（Agent ext）</h2>
+    <p>
+      CDP / nodriver では直接届かない Chrome 機能を、全レーンに常駐する
+      <strong>Paprika Agent 拡張機能</strong>経由で呼ぶための API 群です（本物の
+      ページズーム、リクエストヘッダ書き換え、コンテンツ設定、プライバシー、
+      ダウンロード、プロキシ、ナビゲーション監視、ユーザースクリプト、拡張管理）。
+      下の型付きメソッドはすべて汎用 <code>page.ext()</code> の薄いラッパーです。
+      fetch 実行中のセッションでも呼べます（ブラウザ設定であってページ書き込みではないため）。
+    </p>
+    <div class="callout info">
+      <strong>戻り値の見かた</strong>
+      ほとんどのメソッドは <em>reply 全体</em>（<code>{status, result, elapsed_ms}</code>）を返し、
+      実際のペイロードは <code>reply["result"]</code> に入ります（例: <code>set_referer()</code> なら
+      <code>result["id"]</code>）。一覧取得系（<code>net_rules</code> / <code>navigation_events</code> /
+      <code>installed_extensions</code> / <code>download_status</code>）だけは <code>list</code> を直接返します。
+    </div>
+    <div class="ex-async"><pre><code># CDN が iframe URL を Referer に取って弾くプレーヤーを救う（HLS の 403 対策）
+await page.set_referer("https://supjav.com/")
+
+# リダイレクト連鎖で開く popup を素通しさせる
+await page.allow_popups()
+
+# 本物のページズーム（縮小もできる。CDP の setPageScaleFactor と違い 1.0 未満も有効）
+await page.zoom(0.5)
+
+# 広告ドメインを遮断
+await page.block_hosts(["ads.example.net", "track.example.com"])
+
+# 型付きラッパーの無い機能は汎用 ext() で（例: 画像読み込みをブロック）
+reply = await page.ext("setContentSetting", {"type": "images", "setting": "block"})
+print(reply["result"])</code></pre></div>
+    <div class="ex-sync"><pre><code>page.set_referer("https://supjav.com/")
+page.allow_popups()
+page.zoom(0.5)
+page.block_hosts(["ads.example.net"])
+reply = page.ext("setContentSetting", {"type": "images", "setting": "block"})</code></pre></div>
+    <div class="ex-php"><div class="callout info"><strong>PHP は順次対応中</strong>です（拡張コマンドは Page サーフェスの一部として今後追加されます）。</div></div>
+
+    <div class="pw">
+      <h3><code>page.ext(cmd, args=None, *, timeout=20.0)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>拡張機能の任意コマンドを実行する汎用パススルー。下の全ラッパーはこれの薄い別名で、新しい能力も「拡張にハンドラ＋ここにラッパー」だけで増やせます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>reply = await page.ext("setContentSetting", {"type": "images", "setting": "block"})
+print(reply["result"])</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">cmd</code> <span class="pw-type">str</span> &mdash; 拡張側ハンドラ名（例 <code>"netSetHeader"</code>）</li>
+        <li><code class="arg">args</code> <span class="pw-type">dict</span> <span class="pw-opt">(optional, None)</span> &mdash; ハンドラへ渡す引数</li>
+        <li><code class="arg">timeout</code> <span class="pw-type">float</span> <span class="pw-opt">(optional, 20.0)</span> &mdash; 応答待ちの秒数</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; reply 全体 <code>{status, result, elapsed_ms}</code>。ペイロードは <code>result</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.zoom(factor)</code> / <code>page.set_zoom(factor)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>本物のページズーム。リフローを伴い全画面クロスオリジン iframe プレーヤーにも効きます。CDP の <code>setPageScaleFactor</code> と違い 1.0 未満（縮小）も有効。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.zoom(0.5)   # 50% に縮小
+await page.zoom(1.0)   # 等倍に戻す</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">factor</code> <span class="pw-type">float</span> &mdash; 倍率。1.0 = 100%、範囲 0.25&ndash;5.0</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["factor"]</code> と <code>result["method"]</code>（<code>"chrome.tabs.setZoom"</code> なら本物のズーム成功）</li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.set_referer(value, *, url_filter="*")</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>マッチする URL に <code>Referer</code> リクエストヘッダを強制します。CDN/HLS が iframe の URL を Referer に取って 403 を返すプレーヤーの救済に使います。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.set_referer("https://supjav.com/")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">value</code> <span class="pw-type">str</span> &mdash; 設定する Referer の値</li>
+        <li><code class="arg">url_filter</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "*")</span> &mdash; 適用先 URL パターン</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["id"]</code> にルール ID</li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.set_request_header(header, value, *, url_filter="*", rule_id=2000)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>任意のリクエストヘッダを強制します（declarativeNetRequest の modifyHeaders）。同じ <code>rule_id</code> で呼ぶとルールを置き換えます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.set_request_header("X-Requested-With", "XMLHttpRequest")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">header</code> <span class="pw-type">str</span> &mdash; ヘッダ名</li>
+        <li><code class="arg">value</code> <span class="pw-type">str</span> &mdash; ヘッダ値</li>
+        <li><code class="arg">url_filter</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "*")</span> &mdash; 適用先 URL パターン</li>
+        <li><code class="arg">rule_id</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 2000)</span> &mdash; 同 ID で上書き</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["id"]</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.block_hosts(hosts)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>指定したドメインへの全リクエストを遮断します（広告・トラッカー除去）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.block_hosts(["ads.example.net", "track.example.com"])</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">hosts</code> <span class="pw-type">list[str]</span> &mdash; 遮断するドメインの列</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["added"]</code> に追加ルール件数</li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.net_rules()</code> <span class="pw-ret">&rarr; list[dict]</span></h3>
+      <p>現在有効な動的ネットワークルール（ブロック・ヘッダ書き換え）の一覧を返します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>rules = await page.net_rules()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list[dict]</span> &mdash; 動的 declarativeNetRequest ルール</li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.clear_net_rules()</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>すべての動的ネットワークルールを削除します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.clear_net_rules()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["removed"]</code> に削除件数</li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.set_content_setting(type, setting, *, pattern="*://*/*")</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>サイト別のコンテンツ設定を変更します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.set_content_setting("images", "block")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">type</code> <span class="pw-type">str</span> &mdash; <code>popups</code> / <code>images</code> / <code>javascript</code> / <code>automaticDownloads</code> 等</li>
+        <li><code class="arg">setting</code> <span class="pw-type">str</span> &mdash; <code>allow</code> / <code>block</code> / <code>session_only</code> / <code>ask</code></li>
+        <li><code class="arg">pattern</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "*://*/*")</span> &mdash; 適用先パターン</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.allow_popups(*, pattern="*://*/*")</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>popup を許可します（リダイレクト連鎖で別窓を開くプレーヤー対策）。<code>set_content_setting("popups", "allow")</code> の別名。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.allow_popups()</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">pattern</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "*://*/*")</span> &mdash; 適用先パターン</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.allow_auto_downloads(*, pattern="*://*/*")</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>複数の自動ダウンロードを確認ダイアログ無しで許可します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.allow_auto_downloads()</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">pattern</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "*://*/*")</span> &mdash; 適用先パターン</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.set_privacy(path, value)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p><code>chrome.privacy</code> の ChromeSetting をドット区切りパスで設定します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.set_privacy("network.webRTCIPHandlingPolicy", "disable_non_proxied_udp")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">path</code> <span class="pw-type">str</span> &mdash; 設定パス（例 <code>network.webRTCIPHandlingPolicy</code>）</li>
+        <li><code class="arg">value</code> <span class="pw-type">any</span> &mdash; 設定値</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.prevent_webrtc_leak()</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>WebRTC による実 IP 漏洩を防ぎます（プロキシ併用時に重要）。<code>set_privacy</code> のショートカット。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.prevent_webrtc_leak()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.navigation_events(*, since=0.0)</code> <span class="pw-ret">&rarr; list[dict]</span></h3>
+      <p>バッファされた遷移イベント（committed / completed / newtarget / error）を取り出します。<code>newtarget</code> は popup・新規タブの出自（ソースフレーム＋URL）を含みます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>events = await page.navigation_events()
+for e in events:
+    print(e["type"], e["url"])</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">since</code> <span class="pw-type">float</span> <span class="pw-opt">(optional, 0.0)</span> &mdash; この epoch(ms) 以降のイベントのみ</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list[dict]</span> &mdash; 各イベント <code>{type, url, tabId, frameId, sourceFrameId, ...}</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.download(url, *, filename=None, conflict="uniquify", headers=None)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>制御付きのダウンロードを開始します（chrome.downloads）。保存先・ファイル名・追加ヘッダを指定でき、セッションの Cookie を引き継ぎます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>dl = await page.download("https://cdn.example.com/v.mp4", filename="evidence.mp4")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">url</code> <span class="pw-type">str</span> &mdash; ダウンロード URL</li>
+        <li><code class="arg">filename</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, None)</span> &mdash; 保存ファイル名</li>
+        <li><code class="arg">conflict</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "uniquify")</span> &mdash; <code>uniquify</code> / <code>overwrite</code> / <code>prompt</code></li>
+        <li><code class="arg">headers</code> <span class="pw-type">list</span> <span class="pw-opt">(optional, None)</span> &mdash; <code>[{name, value}]</code> の追加リクエストヘッダ</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["download_id"]</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.download_status(*, download_id=None)</code> <span class="pw-ret">&rarr; list[dict]</span></h3>
+      <p>ダウンロードの状態を検索します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>items = await page.download_status(download_id=dl["result"]["download_id"])
+print(items[0]["state"], items[0]["bytesReceived"])</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">download_id</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, None)</span> &mdash; 省略で全件</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list[dict]</span> &mdash; <code>{state, bytesReceived, totalBytes, filename, ...}</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.cancel_download(download_id)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>進行中のダウンロードを中止します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.cancel_download(1)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">download_id</code> <span class="pw-type">int</span> &mdash; ダウンロード ID</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.set_proxy(host, port, *, scheme="http", bypass=None)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>このレーン（Chrome プロファイル）単位の固定プロキシを設定します。タブ単位ではなくプロファイル全体に効きます。認証付きプロキシは非対応。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.set_proxy("10.0.0.2", 1080, scheme="socks5")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">host</code> <span class="pw-type">str</span> &mdash; プロキシホスト</li>
+        <li><code class="arg">port</code> <span class="pw-type">int</span> &mdash; プロキシポート</li>
+        <li><code class="arg">scheme</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "http")</span> &mdash; <code>http</code> / <code>https</code> / <code>socks5</code></li>
+        <li><code class="arg">bypass</code> <span class="pw-type">list</span> <span class="pw-opt">(optional, None)</span> &mdash; 直結するドメイン列</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["mode"]</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.clear_proxy()</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>プロキシ設定を解除します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.clear_proxy()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.proxy_info()</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>現在のプロキシ設定を取得します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>info = await page.proxy_info()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["value"]</code> / <code>result["levelOfControl"]</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.register_user_script(id, code, *, matches=None, world="MAIN", run_at="document_idle")</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>MAIN ワールドへ常駐スクリプトを登録します（プレーヤー API をフックして実ソース URL を露出させる等）。同じ <code>id</code> で更新。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.register_user_script("hook", "window.__paprika = jwplayer;")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">id</code> <span class="pw-type">str</span> &mdash; スクリプト ID</li>
+        <li><code class="arg">code</code> <span class="pw-type">str</span> &mdash; JavaScript ソース</li>
+        <li><code class="arg">matches</code> <span class="pw-type">list</span> <span class="pw-opt">(optional, ["&lt;all_urls&gt;"])</span> &mdash; 適用先 match パターン</li>
+        <li><code class="arg">world</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "MAIN")</span> &mdash; <code>MAIN</code> / <code>USER_SCRIPT</code></li>
+        <li><code class="arg">run_at</code> <span class="pw-type">str</span> <span class="pw-opt">(optional, "document_idle")</span> &mdash; 実行タイミング</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span> &mdash; <code>result["id"]</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.unregister_user_script(id)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>登録済みのユーザースクリプトを解除します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.unregister_user_script("hook")</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">id</code> <span class="pw-type">str</span> &mdash; スクリプト ID</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.installed_extensions()</code> <span class="pw-ret">&rarr; list[dict]</span></h3>
+      <p>このレーンの Chrome にインストール済みの拡張一覧を返します（uBlock 等が有効か検証する用途）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>exts = await page.installed_extensions()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list[dict]</span> &mdash; <code>{id, name, enabled, version}</code></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.set_extension_enabled(ext_id, enabled)</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>他の拡張を有効/無効に切り替えます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await page.set_extension_enabled("cjpalhdlnbpafiamejdnhcphjbkeiagm", True)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">ext_id</code> <span class="pw-type">str</span> &mdash; 対象拡張の ID</li>
+        <li><code class="arg">enabled</code> <span class="pw-type">bool</span> &mdash; 有効化するなら True</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <h2 id="tabs">Page — タブ・ライフサイクル</h2>
+    <div class="pw">
+      <h3><code>page.new_page(url)</code> / <code>page.open(url)</code> <span class="pw-ret">&rarr; Page</span></h3>
+      <p>新規タブを開きます。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>tab = await page.new_page("https://example.com", switch=True)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">url</code> <span class="pw-type">str</span> &mdash; 開く URL</li>
+        <li><code class="arg">switch</code> <span class="pw-type">bool</span> <span class="pw-opt">(optional, False)</span> &mdash; True で新タブを既定に</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">Page</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.pages()</code> <span class="pw-ret">&rarr; list[Page]</span></h3>
+      <p>セッションの全タブを返します。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>tabs = await page.pages()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">list[Page]</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.switch()</code> <span class="pw-ret">&rarr; dict</span></h3>
+      <p>このタブを前面（既定）にします。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await tab.switch()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">dict</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.close()</code> <span class="pw-ret">&rarr; None</span></h3>
+      <p>タブを閉じます（最後の 1 枚を閉じるとセッション終了）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>await tab.close()</code></pre>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">None</span></li></ul>
+    </div>
+
+    <div class="pw">
+      <h3><code>page.keepalive(*, idle_ttl_s=120, absolute_ttl_s=86400)</code> <span class="pw-ret">&rarr; HandoffInfo</span></h3>
+      <p>スクリプト終了後もセッションを残し、noVNC で人手に引き継ぎます（別名 <code>detach</code>）。</p>
+      <div class="pw-label">Usage</div>
+      <pre><code>info = await page.keepalive(idle_ttl_s=600)</code></pre>
+      <div class="pw-label">Arguments</div>
+      <ul class="pw-args">
+        <li><code class="arg">idle_ttl_s</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 120)</span> &mdash; 無操作での生存秒数</li>
+        <li><code class="arg">absolute_ttl_s</code> <span class="pw-type">int</span> <span class="pw-opt">(optional, 86400)</span> &mdash; 絶対上限</li>
+      </ul>
+      <div class="pw-label">Returns</div>
+      <ul class="pw-args"><li><span class="pw-type">HandoffInfo</span></li></ul>
+    </div>
+
+  </main>
+</div>
+
+<script>
+(function(){
+  function set(m){
+    if(!['async','sync','php'].includes(m)) m='async';
+    document.documentElement.classList.remove('mode-async','mode-sync','mode-php');
+    document.documentElement.classList.add('mode-'+m);
+    document.querySelectorAll('.api-toggle button').forEach(function(b){
+      b.classList.toggle('active', b.dataset.mode === m);
+    });
+    try { localStorage.setItem('paprika.api.mode', m); } catch(_) {}
+  }
+  document.querySelectorAll('.api-toggle button').forEach(function(b){
+    b.addEventListener('click', function(){ set(b.dataset.mode); });
+  });
+  set(localStorage.getItem('paprika.api.mode') || 'async');
+})();
+</script>
+{% include footer.html %}
+</body>
+</html>

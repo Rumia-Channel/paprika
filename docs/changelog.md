@@ -21,7 +21,7 @@ active: changelog
 - **nginx 自動再構成**: 新しい Hub が起動すると LB に自動登録（reconciler、`docker-compose.reconciler.yml`）。
 - **共有レジストリ**: 設定・ホスト情報・スキル/会話規約/プリセット・拡張機能・Chrome プロファイルを MariaDB + MinIO で共有。どの Hub からも同じものが見える。
 - **クロスハブ・ディスパッチ**: 自 Hub が満杯でも、空き容量のあるピア Hub に**ジョブを転送**して 503 を減らす。
-- 詳細は [Hub の仕組み](architecture-hub.html) / [Hub スケーリング](scaling.html)。
+- 詳細は [Hub の仕組み](architecture.html#hub) / [Hub スケーリング](scaling.html)。
 
 ### セッションが Hub 再起動を生き残るように（P1/P2）
 
@@ -33,7 +33,7 @@ active: changelog
 
 - **`worker+hub: zero-downtime rolling update`** — Hub 側が「期待バージョン」を心拍で広告し、Worker が新バージョンへ段階的に切り替え。再起動中もジョブが落ちない。
 - 既存の **自己更新（exit 42）** と組み合わせ、`hub` の再起動だけでフリート全体が静かに新版へ移行。
-- 詳細は [Worker の仕組み](architecture-worker.html#self-update) / [Worker 自己回復](worker-resilience.html) / [ワーカー自動デプロイ](worker-autodeploy.html)。
+- 詳細は [Worker の仕組み](architecture.html#self-update) / [Worker 自己回復](worker-resilience.html) / [ワーカー自動デプロイ](worker-autodeploy.html)。
 
 ### Worker 信頼性
 
@@ -59,7 +59,7 @@ active: changelog
 ## 既知の挙動
 
 - **`503 fleet at capacity`** はワーカー満杯時の正常な背圧です。指数バックオフ再試行を（[FAQ](faq.html#retry-503)）。SDK は自動でリトライします。
-- **DRM 動画**（Widevine / FairPlay / PlayReady）は取得できません（仕様、[動画の仕組み](video.html)）。
+- **DRM 動画**（Widevine / FairPlay / PlayReady）は取得できません（仕様、[動画の仕組み](guides.html#video-mechanism)）。
 - **Windows ワーカー**（portable build）は Linux フリートと別経路で動作（noVNC ではなく CDP screencast）。
 
 ---

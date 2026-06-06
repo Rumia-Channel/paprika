@@ -56,7 +56,7 @@ async def main():
 asyncio.run(main())
 ```
 
-得られるもの: 1 本の動画ファイル（コンテナへ連結済み）。動画は **画像と同じアセット扱い**で `assets.json` の `kind: "video"` に並びます（[動画の仕組み](video.html)）。
+得られるもの: 1 本の動画ファイル（コンテナへ連結済み）。動画は **画像と同じアセット扱い**で `assets.json` の `kind: "video"` に並びます（[動画の仕組み](guides.html#video-mechanism)）。
 
 > DRM 配信は取得不可です。
 
@@ -160,7 +160,7 @@ curl -X POST http://localhost:8000/jobs \
 
 完成したスクリプトは **次回からそのまま `mode: rerun`** で実行できます（LLM 費用なし、決定的に動作）。
 
-> 仕組みは [Hub の仕組み: codegen-loop](architecture-hub.html#codegen-loop) を参照。
+> 仕組みは [Hub の仕組み: codegen-loop](architecture.html#codegen-loop) を参照。
 
 ## ⑦ 任意の言語から HTTP で叩く
 

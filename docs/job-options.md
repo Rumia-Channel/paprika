@@ -27,7 +27,7 @@ active: job-options
 
 | フィールド | 型 | 既定 | 説明 |
 |---|---|---|---|
-| `mode` | `"fetch" \| "codegen-loop" \| "rerun"` | `"fetch"` | 実行モード（[Hub の仕組み](architecture-hub.html#codegen-loop)） |
+| `mode` | `"fetch" \| "codegen-loop" \| "rerun"` | `"fetch"` | 実行モード（[Hub の仕組み](architecture.html#codegen-loop)） |
 | `goal` | `str \| None` | `null` | `codegen-loop` の目標（自然言語）。**`codegen-loop` では必須** |
 | `max_codegen_attempts` | `int` (1–10) | `3` | `codegen-loop` の生成→実行→再生成の試行回数 |
 | `attempt_timeout_s` | `int` (30–864000) | `180` | 1 試行のサンドボックス実行タイムアウト（秒）。最大 **10 日** |
@@ -56,7 +56,7 @@ active: job-options
 
 | フィールド | 型 | 既定 | 説明 |
 |---|---|---|---|
-| `download_video` | `bool` | `false` | iframe+ネスト iframe の通信トレースを ON + `yt-dlp` で動画取得。**`true` だと `capture_assets` も強制 `true`**（[動画の仕組み](video.html)） |
+| `download_video` | `bool` | `false` | iframe+ネスト iframe の通信トレースを ON + `yt-dlp` で動画取得。**`true` だと `capture_assets` も強制 `true`**（[動画の仕組み](guides.html#video-mechanism)） |
 | `capture_assets` | `bool` | `true` | 取得したアセットをサーバ側に保存する |
 | `min_asset_size_bytes` | `int` (≥0) | `0` | このサイズ未満のアセットを除外（`0` = 制限なし）。クライアントが `0` のままなら Hub の Settings 値で上書き |
 
@@ -66,7 +66,7 @@ active: job-options
 |---|---|---|---|
 | `headless` | `bool` | `false` | 画面を出さずに実行（Chrome `--headless`） |
 | `referer` | `str \| None` | `null` | リクエストの Referer |
-| `cookies_from` | `str \| None` | `null` | 指定ホストの Cookie を [Host レジストリ](host-recipe.html) から注入 |
+| `cookies_from` | `str \| None` | `null` | 指定ホストの Cookie を [Host レジストリ](auth.html#host-recipe) から注入 |
 
 ## プロファイル / アタッチ
 
@@ -74,7 +74,7 @@ active: job-options
 
 | フィールド | 型 | 既定 | 説明 |
 |---|---|---|---|
-| `use_profile` | `str \| None` | `null` | Hub に [アップロード済み](profile.html)のプロファイル名。省略時は既定プロファイルがあれば適用 |
+| `use_profile` | `str \| None` | `null` | Hub に [アップロード済み](auth.html#use-profile)のプロファイル名。省略時は既定プロファイルがあれば適用 |
 | `attach` | `str \| None` | `null` | 既に走っている Chrome に接続。形式: `[HOST:]PORT` |
 | `clone_chrome_profile` | `str \| None` | `null` | **ローカル限定**: 操作者の Chrome プロファイル名を tempdir にクローン（Hub と Chrome が同一ホストのときのみ） |
 | `attach_to_job` | `str \| None` | `null` | 前ジョブのブラウザ Lane を再利用（同じ Chrome / user-data-dir → Cookie / ログインを維持） |
@@ -89,7 +89,7 @@ active: job-options
 
 | フィールド | 型 | 既定 | 説明 |
 |---|---|---|---|
-| `fetch_strategy` | `"recipe" \| "normal"` | `"recipe"` | `recipe`: ホストにマッチするレシピを自動適用 / `normal`: スキップ（[Host レシピ](host-recipe.html)） |
+| `fetch_strategy` | `"recipe" \| "normal"` | `"recipe"` | `recipe`: ホストにマッチするレシピを自動適用 / `normal`: スキップ（[Host レシピ](auth.html#host-recipe)） |
 | `fetch_recipe` | `dict \| None` | `null` | **Hub 注入**。`HostRegistry.pick_recipe` で見つかったレシピを Hub が差し込む。**API 側で直接セットしない** |
 
 > AI 調査（管理画面の「AI で解析する」）は `fetch_strategy` の値ではなく、**`mode: "codegen-loop"`** で投入される別経路です。
@@ -185,6 +185,6 @@ async with paprika() as cli:
 
 - [HTTP API](http-api.html)
 - [API リファレンス](api.html)
-- [Hub の仕組み: 3 つのジョブモード](architecture-hub.html)
-- [動画の仕組み](video.html)
-- [Host レシピ](host-recipe.html) / [`use_profile`](profile.html)
+- [Hub の仕組み: 3 つのジョブモード](architecture.html#hub)
+- [動画の仕組み](guides.html#video-mechanism)
+- [Host レシピ](auth.html#host-recipe) / [`use_profile`](auth.html#use-profile)

@@ -139,21 +139,21 @@ Hub に push し、Paprika の Chrome 側で再利用する仕組み。
 Chrome 127+ の **v20 App-Bound Encryption** にも対応（CLI の Cookie 復号は
 レガシー v10 のみで非対応）。
 
-[詳細 → Bridge 拡張](bridge-extension.html)
+[詳細 → Bridge 拡張](auth.html#bridge)
 
 ### use_profile
 普段使いの Chrome の **User Data フォルダをまるごと持ち込む** 機能。
 Cookie / 保存パスワード / autofill / 拡張機能まで一式アップロードして、
 ログイン済みの状態でジョブを開始できる。
 
-[詳細 → use_profile](profile.html)
+[詳細 → use_profile](auth.html#use-profile)
 
 ### Host レシピ
 特定ホストに対する **自動化設定** を Hub に登録する仕組み。
 例: 「`example.com` に来たら自動でログインボタンを押す」「Cookie 同意ダイアログを
 自動で閉じる」など、サイト固有の決まり仕事を毎ジョブで再実行不要に。
 
-[詳細 → Host レシピ](host-recipe.html)
+[詳細 → Host レシピ](auth.html#host-recipe)
 
 ### paprika-agent 拡張
 Paprika 自体が同梱する Chrome 拡張。`userScripts` 権限で **任意の JS を全ページに

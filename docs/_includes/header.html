@@ -14,35 +14,32 @@
       </span>
     </span>
     <span class="dropdown">
-      <a class="dropdown-toggle{% if include.active == "guides" or include.active == "examples" or include.active == "video" or include.active == "usecases" or include.active == "faq" %} active{% endif %}" href="guides.html">学ぶ ▾</a>
+      <a class="dropdown-toggle{% if include.active == "guides" or include.active == "examples" or include.active == "usecases" or include.active == "faq" %} active{% endif %}" href="guides.html">学ぶ ▾</a>
       <span class="dropdown-menu">
         <a href="guides.html"{% if include.active == "guides" %} class="active"{% endif %}>ガイド</a>
         <a href="examples.html"{% if include.active == "examples" %} class="active"{% endif %}>サンプル</a>
         <a href="usecases.html"{% if include.active == "usecases" %} class="active"{% endif %}>ユースケース</a>
-        <a href="video.html"{% if include.active == "video" %} class="active"{% endif %}>動画</a>
         <a href="faq.html"{% if include.active == "faq" %} class="active"{% endif %}>FAQ</a>
       </span>
     </span>
     <span class="dropdown">
-      <a class="dropdown-toggle{% if include.active == "api" or include.active == "http-api" or include.active == "job-options" or include.active == "walk" or include.active == "locator" or include.active == "ws-events" or include.active == "errors" or include.active == "cli" or include.active == "bridge-extension" or include.active == "profile" or include.active == "host-recipe" or include.active == "admin" or include.active == "glossary" %} active{% endif %}" href="api.html">リファレンス ▾</a>
+      <a class="dropdown-toggle{% if include.active == "api" or include.active == "api-page" or include.active == "http-api" or include.active == "job-options" or include.active == "walk" or include.active == "locator" or include.active == "ws-events" or include.active == "cli" or include.active == "auth" or include.active == "admin" or include.active == "glossary" %} active{% endif %}" href="api.html">リファレンス ▾</a>
       <span class="dropdown-menu">
         <a href="api.html"{% if include.active == "api" %} class="active"{% endif %}>API</a>
+        <a href="api-page.html"{% if include.active == "api-page" %} class="active"{% endif %}>　└ Page クラス</a>
         <a href="http-api.html"{% if include.active == "http-api" %} class="active"{% endif %}>HTTP API</a>
         <a href="cli.html"{% if include.active == "cli" %} class="active"{% endif %}>CLI</a>
         <a href="job-options.html"{% if include.active == "job-options" %} class="active"{% endif %}>JobOptions</a>
         <a href="walk.html"{% if include.active == "walk" %} class="active"{% endif %}>walk（巡回）</a>
         <a href="locator.html"{% if include.active == "locator" %} class="active"{% endif %}>Locator（要素指定）</a>
         <a href="ws-events.html"{% if include.active == "ws-events" %} class="active"{% endif %}>WebSocket（ライブログ）</a>
-        <a href="errors.html"{% if include.active == "errors" %} class="active"{% endif %}>エラー一覧</a>
-        <a href="bridge-extension.html"{% if include.active == "bridge-extension" %} class="active"{% endif %}>Bridge 拡張</a>
-        <a href="profile.html"{% if include.active == "profile" %} class="active"{% endif %}>use_profile</a>
-        <a href="host-recipe.html"{% if include.active == "host-recipe" %} class="active"{% endif %}>Host レシピ</a>
+        <a href="auth.html"{% if include.active == "auth" %} class="active"{% endif %}>ログイン・プロファイル</a>
         <a href="admin.html"{% if include.active == "admin" %} class="active"{% endif %}>管理画面</a>
         <a href="glossary.html"{% if include.active == "glossary" %} class="active"{% endif %}>用語集</a>
       </span>
     </span>
     <a href="operations.html"{% if include.active == "operations" or include.active == "engine-setup" or include.active == "scaling" or include.active == "worker-resilience" or include.active == "worker-autodeploy" %} class="active"{% endif %}>運用</a>
-    <a href="architecture.html"{% if include.active == "architecture" or include.active == "architecture-hub" or include.active == "architecture-worker" or include.active == "vision-mouse" or include.active == "vnc-embed" %} class="active"{% endif %}>設計</a>
+    <a href="architecture.html"{% if include.active == "architecture" or include.active == "vision-mouse" or include.active == "vnc-embed" %} class="active"{% endif %}>設計</a>
   </span>
   <button class="theme-toggle" type="button" aria-label="ライト/ダークテーマ切替" onclick="window.__paprikaToggleTheme&&__paprikaToggleTheme()">
     <iconify-icon class="icon-light" icon="lucide:moon" style="font-size:1.05rem; vertical-align:-3px;"></iconify-icon>

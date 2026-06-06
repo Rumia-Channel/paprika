@@ -7,7 +7,7 @@ active: cli
 
 `paprika-client` パッケージは Python SDK のほかに、**Hub の管理を CLI でこなすためのサブコマンド群**を提供します。主にローカル Chrome の **プロファイル登録**（ログイン状態の持ち込み）に使います。
 
-> プロファイルの仕組みと使い方は [`use_profile` リファレンス](profile.html) を参照。
+> プロファイルの仕組みと使い方は [`use_profile` リファレンス](auth.html#use-profile) を参照。
 
 ## インストール
 
@@ -78,7 +78,7 @@ paprika-client upload-profile --name browse \
 
 Chrome 127+ は **App-Bound 暗号化（v20）** で Cookie を暗号化します。`upload-profile` は既定で **操作者側で復号**して plaintext を `value` に詰めるので、Linux ワーカー上の Chrome がそのまま読めます。
 
-別経路として **Bridge 拡張**（[Bridge 拡張](bridge-extension.html)）で `chrome.cookies.getAll()` 経由で Cookie だけ送る方法もあります（軽量・ログイン状態の更新が手軽）。
+別経路として **Bridge 拡張**（[Bridge 拡張](auth.html#bridge)）で `chrome.cookies.getAll()` 経由で Cookie だけ送る方法もあります（軽量・ログイン状態の更新が手軽）。
 
 ## `list-profiles` {#list-profiles}
 
@@ -145,7 +145,7 @@ paprika-client delete-profile --name work
 
 ## 関連
 
-- [`use_profile` リファレンス](profile.html) — プロファイルの仕組み・正規化・複数 Hub 間共有
-- [Bridge 拡張](bridge-extension.html) — 軽量に Cookie だけ送る別経路
-- [Host レシピ](host-recipe.html) — ログインを自動化（期限切れの自動再ログインも）
+- [`use_profile` リファレンス](auth.html#use-profile) — プロファイルの仕組み・正規化・複数 Hub 間共有
+- [Bridge 拡張](auth.html#bridge) — 軽量に Cookie だけ送る別経路
+- [Host レシピ](auth.html#host-recipe) — ログインを自動化（期限切れの自動再ログインも）
 - [JobOptions](job-options.html) — `use_profile` を指定するオプション

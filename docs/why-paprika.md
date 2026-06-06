@@ -31,11 +31,11 @@ active: why-paprika
 - **Playwright 風 API**（`locator` / `get_by_*` / `fill` / `press` / `wait_for` …）。書き味は Playwright とほぼ同じ。
 - **分散フリート**: 複数ホストの Chrome（**Lane**）を Hub が束ね、ジョブを **WebSocket でディスパッチ**。1 台でも、100 台でも同じ API。
 - **AI コード生成**（`codegen-loop`）: URL と自然言語の **`goal` だけ**渡せば、LLM がスクリプトを生成・実行・失敗時に再生成。成功したスクリプトは **そのまま `mode: rerun` で再利用**できる（次回からは LLM 不要・決定的）。
-- **収集に最適化**: スクロール・ネットワークトレース・**`yt-dlp` 連携**で動画も画像と同じ感覚で取得（[動画の仕組み](video.html)）。
+- **収集に最適化**: スクロール・ネットワークトレース・**`yt-dlp` 連携**で動画も画像と同じ感覚で取得（[動画の仕組み](guides.html#video-mechanism)）。
 - **二度取りしない**: **ブラウザが実際に読み込んだレスポンス**をそのまま回収（CDP `Network.responseReceived` を passive にサブスクライブ）。`<img src= loading="lazy">` を見て **URL から再取得しない**ので、(a) 帯域・サーバ負荷が半分、(b) **Cookie / Referer / 認証ヘッダーが必要な画像**もそのまま取れる、(c) **JS で動的に差し込まれた画像・lazy-load・CSS `background-image`・iframe 内**もまとめて拾えます。
 - **Chrome 拡張で JS 注入**: 同梱の `paprika-agent` 拡張（`userScripts` 権限）で **任意の JS を全ページに常駐注入**。CDP 単独では届かない領域（リクエストヘッダ書き換え・Content Settings・Proxy・downloads）まで操作できます。
 - **普段使いの Chrome 拡張をそのまま持ち込み**: `--load-extension` で **既存の拡張（uBlock Origin / Bitwarden / MetaMask 等）が動く**。広告抜きで収集、Bitwarden で自動ログイン、Web3 サインなど、**手作業の Chrome と同じ環境**でジョブが動かせます。
-- **既存の Chrome プロファイル流用**: 普段使いの Chrome の **User Data フォルダをそのままアップロード**（[`use_profile`](profile.html)）。Cookie / 保存パスワード / autofill / 拡張機能まで一式持ち込めるので、**ログイン済みの状態でいきなり収集を始められます**。
+- **既存の Chrome プロファイル流用**: 普段使いの Chrome の **User Data フォルダをそのままアップロード**（[`use_profile`](auth.html#use-profile)）。Cookie / 保存パスワード / autofill / 拡張機能まで一式持ち込めるので、**ログイン済みの状態でいきなり収集を始められます**。
 - **ライブ可観測性**: 各 Chrome に **noVNC ライブ画面**が紐づき、管理画面で何が起きているか目で確認できる。
 - **検出されにくい起動**: `nodriver` を採用し、`navigator.webdriver` などの典型的なシグナルを出さない。
 

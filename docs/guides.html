@@ -2,6 +2,8 @@
 title: ガイド
 description: "Paprika 実践ガイド。1 URL の画像一括取得・動画ダウンロード（yt-dlp 連携）・ログイン必須サイトの自動再ログイン・DOM 操作・サイト巡回 (walk)・LLM (codegen-loop / page.agent) の使い分けまでレシピで解説。"
 active: guides
+redirect_from:
+  - /video.html
 ---
 <!DOCTYPE html>
 <html lang="ja">
@@ -68,7 +70,7 @@ active: guides
       <span class="tldr-label">概要</span>
       <ul>
         <li>このページは <strong>「何ができて、どう書くか」</strong>のガイド。コードのコピペサンプルは <a href="examples.html">サンプル集</a>、関数の網羅仕様は <a href="api.html">API リファレンス</a>。</li>
-        <li>用語に迷ったら <a href="glossary.html">用語集</a>、エラーは <a href="errors.html">エラーリファレンス</a>、よくある質問は <a href="faq.html">FAQ</a>。</li>
+        <li>用語に迷ったら <a href="glossary.html">用語集</a>、エラーは <a href="http-api.html#errors">エラーリファレンス</a>、よくある質問は <a href="faq.html">FAQ</a>。</li>
         <li>ジョブの実行モード（<code>fetch</code> / <code>codegen-loop</code> / <code>rerun</code>）の選び方は <a href="faq.html#どのモードを使えばいい">FAQ: モード選択</a>。</li>
       </ul>
     </div>
@@ -163,9 +165,43 @@ await cli.download_job_assets(job.job_id, "out/videos", kind="video")</code></pr
     await page.save_assets("out/videos", kind="video")</code></pre>
     <p class="see-also">→ <a href="examples.html#video">詳細はこちら（サンプル集: 動画をダウンロード）</a></p>
 
+    <h3 id="video-mechanism">なぜ動画は「再生発火」が要るのか</h3>
+    <p>画像は 1 枚 = 1 ファイル（<code>&lt;img src loading="lazy"&gt;</code>）なので、ページを開けば URL が出そろい、そのまま取得できます。動画は <strong>配信方式</strong>によって取得の難しさが変わります。大きく 2 種類です。</p>
+
+    <h4>1. プログレッシブ配信（直リンクの mp4）</h4>
+    <p><code>&lt;video src="movie.mp4"&gt;</code> のように <strong>1 本のファイル</strong> をそのまま配信する方式。画像と同じで、URL さえ分かればそのままダウンロードできます。いちばん簡単なケースです。</p>
+
+    <h4>2. ストリーミング配信（HLS / DASH）</h4>
+    <p>多くの動画サイトはこちらです。動画を <strong>数秒ごとの小さなセグメント</strong>（<code>.ts</code> / <code>.m4s</code>）に分割し、その並び順を書いた <strong>マニフェスト</strong>（HLS は <code>.m3u8</code>、DASH は <code>.mpd</code>）で配信します。</p>
+    <ul>
+      <li>ブラウザはマニフェストを読み、セグメントを順に取得して繋ぎながら再生します（回線に応じて画質を切り替える＝ABR）。</li>
+      <li>つまり「動画ファイルへの直リンク」は存在せず、<strong>再生して初めてマニフェストとセグメントの URL が通信に現れます</strong>。</li>
+      <li>だから「ページを開いただけ」では URL が取れないことがあり、<strong>再生を発火させる</strong>必要があります。</li>
+    </ul>
+<pre><code>マニフェスト (.m3u8 / .mpd)
+ ├─ segment0.ts
+ ├─ segment1.ts   ← これらを順に取得して連結 = 1 本の動画
+ └─ ...
+</code></pre>
+
+    <h4>Paprika はどう取得するか</h4>
+    <ol>
+      <li><strong>通信トレース</strong> — <code>download_video: true</code> のとき、ページ（および埋め込み <code>iframe</code> / ネスト <code>iframe</code>）の通信を監視し、<code>.m3u8</code> / <code>.mpd</code> / <code>.mp4</code> を検出します。</li>
+      <li><strong>必要なら再生を発火</strong> — ストリーミングはマニフェストが出ないことがあるので、AI モード（<code>mode: codegen-loop</code>）に「動画を再生してから取得して」と指示すると、<code>page.agent()</code> がプレイヤーを操作して再生し、URL を出させます。</li>
+      <li><strong>yt-dlp で取得 + 連結</strong> — 見つかったマニフェストを <code>yt-dlp</code> に渡し、セグメントをまとめて 1 本の動画ファイルにして保存します。保存後は <strong>画像と同じ「アセット」</strong> として gallery や <code>assets.json</code> に並びます。</li>
+    </ol>
+    <pre><code>await page.agent("メイン動画を再生して")   # 必要なら再生を発火
+await page.download_video()               # 検出した m3u8 / mp4 を取得・連結して保存</code></pre>
+
+    <h4>取れないケース (DRM) — かつ取得を試みてはいけない</h4>
+    <p><strong>DRM（Widevine / FairPlay / PlayReady など）で暗号化された配信</strong>は、復号鍵がブラウザの保護領域（CDM）にあるため、Paprika では取得できません。Netflix・Amazon Prime Video・Disney+・U-NEXT・ABEMA プレミアム等の<strong>多くの有料配信サービス</strong>が該当します。</p>
+    <p><strong>Paprika は DRM の回避・解除を一切行いません。</strong>これは単なる技術的制約ではなく、<strong>法的・倫理的に許されない行為</strong>だからです（著作権法第30条第1項第2号 / 第120条の2、不正アクセス禁止法、DMCA §1201、EU 著作権指令 第6条）。DRM で守られたコンテンツが必要な場合は、<strong>配信元サービスが公式に提供する手段</strong>（公式アプリのダウンロード機能、API、再販ライセンスなど）を利用してください。</p>
+    <div class="callout warn"><strong>厳禁</strong>
+    DRM を回避する目的で Paprika を使うこと、回避を試みるスクリプトを生成・実行することは固く禁止します。違反はサポート対象外です。</div>
+
     <h2 id="login">ログイン必須サイト</h2>
     <p>一度ログインして Cookie を Host レジストリに保存すれば、以後は自動で再利用されます。
-    継続運用の選択肢は <a href="bridge-extension.html">Bridge 拡張</a>（手動 push）／<a href="profile.html"><code>use_profile</code></a>（フルプロファイル）／<a href="host-recipe.html">Host レシピ</a>（自動再ログイン）の 3 通りです。</p>
+    継続運用の選択肢は <a href="auth.html#bridge">Bridge 拡張</a>（手動 push）／<a href="auth.html#use-profile"><code>use_profile</code></a>（フルプロファイル）／<a href="auth.html#host-recipe">Host レシピ</a>（自動再ログイン）の 3 通りです。</p>
     <pre><code># 1) セッションでログイン（手動 noVNC でも page 操作でも）
 async with cli.session("https://market.example.com/login",
                        parent_job_id="login") as page:
