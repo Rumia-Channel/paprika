@@ -66,7 +66,7 @@ active: operations
     操作する側（SDK）の使い方は <a href="intro.html">Client インストール</a> へ。</p>
 
     <div class="tldr">
-      <span class="tldr-label">📋 TL;DR</span>
+      <span class="tldr-label">概要</span>
       <ul>
         <li>Paprika サーバーは <strong>Docker Compose 一発</strong>で立ち上がります（<code>docker compose up -d --build</code>）。redis + Hub + Worker が同時起動。</li>
         <li>規模が大きくなったら <strong>Hub 1 台 + Worker N 台</strong>に分割。Worker は WebSocket で Hub に繋ぐだけ。台数を増やすほど並列度が上がる。</li>

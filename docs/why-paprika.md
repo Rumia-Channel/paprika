@@ -6,7 +6,7 @@ active: why-paprika
 ---
 
 <div class="tldr">
-  <span class="tldr-label">📋 TL;DR</span>
+  <span class="tldr-label">概要</span>
   <ul>
     <li><strong>Playwright スタイル API + 分散フリート + AI</strong>を 1 つに統合したプラットフォーム。書き味はほぼ Playwright のまま、複数ホストの Chrome を Hub が束ねて並列ジョブを捌く。</li>
     <li><strong>収集に最適化</strong>: ブラウザが読み込んだバイト列を passive 回収（再 GET しない）、yt-dlp 連携で動画も統合取得、画像/動画/HTML を <code>meta.json</code> で返す。</li>

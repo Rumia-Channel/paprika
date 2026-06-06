@@ -45,7 +45,7 @@ active: scaling
     LogBatcher による Redis ops 50 分の 1 削減と、将来のマルチプロセス拡張パスを解説します。</p>
 
     <div class="tldr">
-      <span class="tldr-label">📋 TL;DR</span>
+      <span class="tldr-label">概要</span>
       <ul>
         <li>1 Hub では数十 Worker 規模まで。それ以上は <strong>複数 Hub を nginx ラウンドロビン</strong>で並べて水平スケール。</li>
         <li>ジョブ・コンフィグは <strong>MariaDB</strong>、アセットは <strong>MinIO</strong>、Worker 調整は <strong>Redis</strong> という 3 ストア構成で Hub をステートレス化。</li>
