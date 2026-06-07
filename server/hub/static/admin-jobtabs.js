@@ -81,7 +81,7 @@ function ljpPopulateSubmitForm(info) {
     if (el && v !== undefined && v !== null) el.value = String(v);
   };
   setChk('fetchScroll',         opts.scroll,          true);
-  setChk('fetchDownloadVideo',  opts.download_video,  false);
+  setChk('fetchDownloadVideo',  opts.download_video,  true);
   setChk('fetchHeadless',       opts.headless,        false);
   setChk('fetchCaptureAssets',  opts.capture_assets,  true);
   setChk('fetchKeepSession',    opts.keep_session,    false);

@@ -830,7 +830,7 @@ function presetApplyToForm(rec) {
   };
   if ((rec.ui_mode || 'fetch') === 'fetch') {
     setChk('fetchScroll',         fopt.scroll,          true);
-    setChk('fetchDownloadVideo',  fopt.download_video,  false);
+    setChk('fetchDownloadVideo',  fopt.download_video,  true);
     setChk('fetchHeadless',       fopt.headless,        false);
     setChk('fetchCaptureAssets',  fopt.capture_assets,  true);
     setChk('fetchKeepSession',    fopt.keep_session,    false);

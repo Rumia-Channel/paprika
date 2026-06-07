@@ -888,7 +888,7 @@ function resetFetchOptionsToDefaults() {
   const setChk = (id, v) => { const e = document.getElementById(id); if (e) e.checked = v; };
   const setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
   setChk('fetchScroll',         true);
-  setChk('fetchDownloadVideo',  false);
+  setChk('fetchDownloadVideo',  true);
   setChk('fetchHeadless',       false);
   setChk('fetchCaptureAssets',  true);
   setChk('fetchKeepSession',    false);
