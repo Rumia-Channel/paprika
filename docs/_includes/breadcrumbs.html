@@ -1,6 +1,6 @@
 {% comment %}
   Generate breadcrumbs from page.active. Maps each `active` key to a
-  category (はじめに / 学ぶ / リファレンス / 運用 / 設計) so the user always
+  category (はじめに / 学ぶ / リファレンス / サーバー・運用 / アーキテクチャ) so the user always
   sees where they are in the IA. Hidden on the home page.
 {% endcomment %}
 {% assign a = page.active %}
@@ -16,9 +16,9 @@
       {% when "api" or "api-page" or "http-api" or "cli" or "job-options" or "walk" or "locator" or "ws-events" or "auth" or "admin" or "glossary" %}
         <li><a href="{{ '/api.html' | relative_url }}">リファレンス</a></li>
       {% when "operations" or "engine-setup" or "scaling" or "worker-resilience" or "worker-autodeploy" %}
-        <li><a href="{{ '/operations.html' | relative_url }}">運用</a></li>
+        <li><a href="{{ '/operations.html' | relative_url }}">サーバー・運用</a></li>
       {% when "architecture" or "vision-mouse" or "vnc-embed" %}
-        <li><a href="{{ '/architecture.html' | relative_url }}">設計</a></li>
+        <li><a href="{{ '/architecture.html' | relative_url }}">アーキテクチャ</a></li>
       {% when "changelog" %}
         <li><a href="{{ '/changelog.html' | relative_url }}">変更履歴</a></li>
       {% when "search" %}
