@@ -10,15 +10,24 @@
      whole page render. vendor/lucide-icons.js preloads the full Lucide
      set via addCollection() so NO external request is ever made. Use
      <iconify-icon icon="lucide:name" inline></iconify-icon> in HTML.
-     To refresh the icon set see the header of vendor/lucide-icons.js. -->
+     To refresh the icon set see the header of vendor/lucide-icons.js.
+     iconify-icon.min.js stays render-blocking (24KB, registers the custom
+     element early). lucide-icons.js (533KB!) is DEFERRED so it no longer
+     blocks first paint — the <iconify-icon> elements upgrade a moment
+     later (icons fill in), and lucide-icons.js has a built-in retry net
+     (setInterval at its tail) so running after iconify is load-order-safe. -->
 <script src="/static/vendor/iconify-icon.min.js?v=@@PAPRIKA_VERSION@@"></script>
-<script src="/static/vendor/lucide-icons.js?v=@@PAPRIKA_VERSION@@"></script>
+<script src="/static/vendor/lucide-icons.js?v=@@PAPRIKA_VERSION@@" defer></script>
 <!-- i18next: client-side i18n, self-hosted. Translation resources are
      inlined into the HTML below as a JS object (no extra JSON fetches). -->
 <script src="/static/vendor/i18next.min.js?v=@@PAPRIKA_VERSION@@"></script>
 <!-- Chart.js (UMD bundle), self-hosted. AI-engines tab 14-day token +
-     cost history. <head>-time load is OK; no module depends on order. -->
-<script src="/static/vendor/chart.umd.min.js?v=@@PAPRIKA_VERSION@@"></script>
+     cost history. DEFERRED: only used when the AI-engines tab renders a
+     chart (admin-presets-engines.js _renderEngineCostChart(), itself
+     deferred), so it must NOT block first paint. Takes 205KB off the
+     render-blocking critical path; Chart is defined well before any tab
+     click that draws a chart. -->
+<script src="/static/vendor/chart.umd.min.js?v=@@PAPRIKA_VERSION@@" defer></script>
 <link rel="stylesheet" href="/static/admin.css?v=@@PAPRIKA_VERSION@@">
 <!-- Auth (LAN-trust → multi-user hardening): under auth_mode=enforce the hub
      returns 401 for unauthenticated API calls. Wrap fetch() to redirect to the
@@ -283,7 +292,7 @@
               <iconify-icon icon="lucide:video"></iconify-icon> 動画
             </div>
             <label class="fetch-toggle-big" data-i18n-title="fetch.downloadvideo.title" title="iframe / ネスト iframe の通信トレースを ON にし、yt-dlp で動画をダウンロードする。OFF の場合は動画 DL ロジックを全休眠。">
-              <input type="checkbox" id="fetchDownloadVideo">
+              <input type="checkbox" id="fetchDownloadVideo" checked>
               <span data-i18n="fetch.downloadvideo"><iconify-icon icon="lucide:download"></iconify-icon> 動画をダウンロード</span>
             </label>
           </div>

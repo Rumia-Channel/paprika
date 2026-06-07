@@ -66,6 +66,17 @@ async def _require_owned_job_info(job_id: str, request):
     return info
 
 
+# Short-TTL cache for the /jobs list (consumed in list_jobs below). The admin
+# polls /jobs every ~2s with a small, fixed set of param combos (the 4 status
+# sub-tabs x page size), so a ~1.5s memo of the (infos, total) result skips the
+# MariaDB query + per-row deserialisation on most polls -- the two costs that
+# dominate this endpoint under the asset-upload-heavy load (py-spy 2026-06-08).
+# Bounded + env-tunable; PAPRIKA_JOBS_LIST_CACHE_TTL_S=0 disables it.
+_JOBS_LIST_CACHE: dict = {}
+_JOBS_LIST_CACHE_TTL_S = float(os.environ.get("PAPRIKA_JOBS_LIST_CACHE_TTL_S") or 1.5)
+_JOBS_LIST_CACHE_MAX = 64
+
+
 @router.get("/jobs")
 async def list_jobs(
     request: Request,
@@ -129,14 +140,34 @@ async def list_jobs(
             [m.strip().lower() for m in mode.split(",") if m.strip()]
             if mode else None
         )
-        infos, filtered_total = await fast(
-            offset=off,
-            limit=lim,
-            status=status_list,
-            mode=mode_list,
-            url_substr=q,
-            owner_id=_scope_owner(request),
-        )
+        own = _scope_owner(request)
+        # ~1.5s memo keyed on the exact query params (see _JOBS_LIST_CACHE note
+        # above). Cache HIT skips the MariaDB query + row deser entirely.
+        # _proxy_info below still runs per request -- it model_copy's, never
+        # mutates the cached JobInfos -- so each response stays request-correct.
+        _ck = (off, lim, tuple(status_list or ()), tuple(mode_list or ()),
+               q or "", own or "")
+        _now = time.time()
+        _hit = _JOBS_LIST_CACHE.get(_ck)
+        if _hit is not None and (_now - _hit[0]) < _JOBS_LIST_CACHE_TTL_S:
+            infos, filtered_total = _hit[1]
+        else:
+            infos, filtered_total = await fast(
+                offset=off,
+                limit=lim,
+                status=status_list,
+                mode=mode_list,
+                url_substr=q,
+                owner_id=own,
+            )
+            if _JOBS_LIST_CACHE_TTL_S > 0:
+                if len(_JOBS_LIST_CACHE) >= _JOBS_LIST_CACHE_MAX:
+                    _oldest = min(
+                        _JOBS_LIST_CACHE,
+                        key=lambda k: _JOBS_LIST_CACHE[k][0],
+                    )
+                    _JOBS_LIST_CACHE.pop(_oldest, None)
+                _JOBS_LIST_CACHE[_ck] = (_now, (infos, filtered_total))
         page = [_proxy_info(i, request) for i in infos]
         return {
             "total": filtered_total,

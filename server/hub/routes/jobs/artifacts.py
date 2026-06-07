@@ -87,10 +87,17 @@ async def get_job_links(job_id: str) -> dict:
     page_path = job_dir / "page.html"
     if page_path.exists():
         try:
-            raw = page_path.read_text(encoding="utf-8", errors="replace")
+            raw = await asyncio.to_thread(
+                page_path.read_text, encoding="utf-8", errors="replace"
+            )
         except Exception as e:
             raise HTTPException(500, f"failed to read page.html: {e}")
-        links = _extract_links_from_html(raw, current_url)
+        # html.parser is pure CPU; the read + parse of a multi-MB page.html
+        # both ran on the event loop. Off-load to a worker thread (py-spy
+        # 2026-06-08).
+        links = await asyncio.to_thread(
+            _extract_links_from_html, raw, current_url
+        )
         return {
             "job_id": job_id,
             "current_url": current_url,
@@ -347,12 +354,17 @@ async def get_page_meta(job_id: str) -> dict:
     await objstore.ensure_local(page_path)
     if page_path.exists():
         try:
-            raw = page_path.read_text(encoding="utf-8", errors="replace")
+            raw = await asyncio.to_thread(
+                page_path.read_text, encoding="utf-8", errors="replace"
+            )
         except Exception as e:
             raise HTTPException(500, f"failed to read page.html: {e}")
         from server.hub.meta import extract_meta
 
-        meta = extract_meta(raw, base_url=info.url or "")
+        # read + html.parser parse OFF the event loop (py-spy 2026-06-08).
+        meta = await asyncio.to_thread(
+            extract_meta, raw, base_url=info.url or ""
+        )
         title = meta.get("title")
         description = meta.get("description")
         cascade_url = meta.get("thumbnail_url")

@@ -339,24 +339,30 @@
   .ssitem:not(.has-frame)::before {
     content: '';
     position: absolute; inset: 0;
-    background: linear-gradient(135deg, #1a1a22 25%, #222 25%, #222 50%, #1a1a22 50%, #1a1a22 75%, #222 75%);
-    background-size: 16px 16px;
+    /* Plain light-gray loading fill -- no diagonal stripes (busy / eye-tiring)
+       and no glow. Paprika colour lives only in the spinner. */
+    background: #ededed;
     z-index: 1;
   }
   .ssitem.loading::after {
     content: '';
     position: absolute;
     top: 50%; left: 50%;
-    width: 28px; height: 28px;
-    margin: -14px 0 0 -14px;
-    border: 3px solid rgba(255,255,255,.15);
-    border-top-color: #c0392b;
+    width: 30px; height: 30px;
+    margin: -15px 0 0 -15px;
+    /* paprika two-tone ring (orange -> red) with a warm halo -- brighter and
+       more on-brand than the old single-red spinner. */
+    border: 3px solid rgba(0,0,0,.13);
+    border-top-color: #e8743f;
+    border-right-color: #c0392b;
     border-radius: 50%;
     animation: paprikaSsLoad 0.8s linear infinite;
     z-index: 2;
     pointer-events: none;
   }
   @keyframes paprikaSsLoad { to { transform: rotate(360deg); } }
+  /* Gentle "breathing" of the loading weave/glow so the tile feels alive. */
+  @keyframes paprikaSsGlow { 0%, 100% { opacity: .86; } 50% { opacity: 1; } }
   /* Hide the noisy "↗ noVNC" hint while loading -- it'd otherwise
      poke through over the spinner during the first frame fetch. */
   .ssitem.loading .ssopen { display: none; }

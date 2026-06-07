@@ -300,7 +300,13 @@ class MariaDBJobStore:
                     await cur.execute(page_sql, tuple(params))
                 rows = await cur.fetchall()
 
-        infos = [_row_to_job_info(r) for r in rows]
+        # Deserialise rows -> JobInfo (json.loads + pydantic per row) in a worker
+        # thread, NOT on the event loop: /jobs is admin-polled every ~2s and this
+        # was the single biggest chunk of on-CPU loop time (py-spy 2026-06-08).
+        # _row_to_job_info is pure (no awaits / shared state) -> thread-safe.
+        infos = await asyncio.to_thread(
+            lambda: [_row_to_job_info(r) for r in rows]
+        )
         return infos, total
 
     async def count_by_status_and_mode(

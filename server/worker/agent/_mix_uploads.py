@@ -256,6 +256,42 @@ class _UploadsMixin:
         on_asset_saved callback track which names actually landed so the
         end-of-fetch reconcile pass can re-try only the ones that didn't.
         """
+        # Worker->MinIO-direct (off by default; PAPRIKA_WORKER_MINIO_DIRECT=1).
+        # Bytes go straight to MinIO, never through the hub event loop (~45% of
+        # hub load is these uploads). ALWAYS falls back to the legacy
+        # bytes-through-hub POST below on any failure OR for files over the size
+        # cap (default 100 MB -- big videos stream via the hub as before), so no
+        # asset is ever lost. Cap via PAPRIKA_WORKER_MINIO_DIRECT_MAX_MB.
+        if self._minio_direct_enabled():
+            try:
+                _sz = path.stat().st_size
+            except OSError:
+                _sz = 0
+            try:
+                _cap_mb = float(os.environ.get("PAPRIKA_WORKER_MINIO_DIRECT_MAX_MB") or 100)
+            except (TypeError, ValueError):
+                _cap_mb = 100.0
+            if 0 < _sz <= _cap_mb * 1024 * 1024:
+                try:
+                    if await self._upload_asset_direct(
+                        assign, path, name,
+                        source_url=source_url, mime=mime, page_url=page_url, size=_sz,
+                    ):
+                        try:
+                            await self._send(
+                                WorkerJobLog(job_id=assign.job_id, line=ASSET_CAPTURE_MARKER)
+                            )
+                        except Exception:
+                            pass
+                        return True
+                except Exception as e:
+                    await self._send(
+                        WorkerJobLog(
+                            job_id=assign.job_id,
+                            line=f"  .. MinIO-direct upload fell back to hub ({name}): {e}",
+                        )
+                    )
+                # fall through to the legacy bytes-through-hub POST
         url = assign.asset_upload_base
         try:
             with open(path, "rb") as f:
@@ -297,6 +333,62 @@ class _UploadsMixin:
                 )
             )
             return False
+
+    def _minio_direct_enabled(self) -> bool:
+        """Gate for the worker->MinIO-direct asset upload (off by default).
+        Flip ``PAPRIKA_WORKER_MINIO_DIRECT=1`` to enable; the path always falls
+        back to the legacy bytes-through-hub POST on any failure."""
+        return (os.environ.get("PAPRIKA_WORKER_MINIO_DIRECT") or "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    async def _upload_asset_direct(
+        self,
+        assign: HubAssignJob,
+        path: Path,
+        name: str,
+        *,
+        source_url: str | None = None,
+        mime: str | None = None,
+        page_url: str | None = None,
+        size: int | None = None,
+    ) -> bool:
+        """Upload one asset WORKER->MinIO-direct: ask the hub for a presigned PUT
+        URL (tiny, no bytes), PUT the bytes STRAIGHT to MinIO (the hub never sees
+        them; the signed URL is the only authorization -- no MinIO creds on the
+        worker), then POST /complete so the hub records the .meta sidecar +
+        confirms the object. Returns True on full success, False on any failure
+        so the caller falls back to the legacy POST (no asset is ever lost).
+
+        Buffers the file in memory for the PUT, so the caller gates on size."""
+        base = assign.asset_upload_base.rstrip("/")  # {hub}/jobs/{id}/assets
+        body: dict[str, Any] = {"filename": name}
+        if mime:
+            body["mime"] = mime
+        if source_url:
+            body["source_url"] = source_url
+        if page_url:
+            body["page_url"] = page_url
+        if self.worker_secret:
+            body["secret"] = self.worker_secret
+        # 1) presign
+        r = await self._http.post(base + "/presign", json=body, timeout=30.0)
+        r.raise_for_status()
+        put_url = (r.json() or {}).get("put_url")
+        if not put_url:
+            return False
+        # 2) PUT bytes STRAIGHT to MinIO (signed URL = auth; not via the hub)
+        with open(path, "rb") as f:
+            blob = f.read()
+        headers = {"Content-Type": mime} if mime else None
+        pr = await self._http.put(put_url, content=blob, headers=headers, timeout=300.0)
+        pr.raise_for_status()
+        # 3) complete -> hub writes the sidecar + HEAD-confirms the object
+        cbody = dict(body)
+        cbody["size"] = size if size is not None else len(blob)
+        cr = await self._http.post(base + "/complete", json=cbody, timeout=30.0)
+        cr.raise_for_status()
+        return True
 
     async def _upload_special(self, assign: HubAssignJob, path: Path, kind: str) -> None:
         # /jobs/{id}/files/{kind} replaces the asset_upload_base path.

@@ -997,18 +997,38 @@ class WorkerRegistry:
             results = await pipe.execute()
         except Exception:
             return out
+        # Decode the per-worker JSON blobs in ONE worker thread, off the event
+        # loop. With ~80 known rows this json.loads batch was ~20/2600 of the
+        # hub's on-CPU loop samples on EVERY ~2s /overview admin poll (py-spy
+        # 2026-06-08) -- a contributor to the intermittent multi-second poll
+        # stalls. The redis round-trip above stays async; only the CPU-bound
+        # decode moves off the loop. One hop for the whole batch (not N).
+        _raw_rows = [results[_i * 4] for _i in range(len(wids))]
+
+        def _decode_rows(rows: list) -> list:
+            decoded: list = []
+            for _r in rows:
+                if not _r:
+                    decoded.append(None)
+                    continue
+                try:
+                    decoded.append(
+                        json.loads(_r.decode() if isinstance(_r, bytes) else _r)
+                    )
+                except Exception:
+                    decoded.append(None)
+            return decoded
+
+        try:
+            _decoded_rows = await asyncio.to_thread(_decode_rows, _raw_rows)
+        except Exception:
+            _decoded_rows = [None] * len(wids)
         for _i, wid in enumerate(wids):
-            row = results[_i * 4]
             last_ts = results[_i * 4 + 1]
             owner = results[_i * 4 + 2]
             counts = results[_i * 4 + 3]
-            if not row:
-                continue
-            try:
-                data = json.loads(
-                    row.decode() if isinstance(row, bytes) else row
-                )
-            except Exception:
+            data = _decoded_rows[_i]
+            if data is None:
                 continue
             caps = data.get("capabilities") or {}
             # Live load from the heartbeat-maintained ``:counts`` hash so a

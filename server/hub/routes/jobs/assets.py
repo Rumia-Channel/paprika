@@ -371,6 +371,19 @@ async def job_assets_json(job_id: str) -> dict:
     """
     await _soft_resolve_job(job_id, require_subdir="assets")
     meta_dir = get_storage_dir() / job_id / "assets" / ".meta"
+    # Which .meta sidecars exist in MinIO (ONE list call). Lets a NON-owner hub
+    # surface source_url for assets uploaded worker->MinIO-direct (via /complete)
+    # or whose local sidecar was cache-evicted -- the per-asset read below pulls
+    # only those from the bucket. Empty when S3 off (= the old local-only path).
+    _minio_meta: set[str] = set()
+    if objstore.enabled():
+        try:
+            _minio_meta = {
+                (o.get("name") or "")
+                for o in await objstore.list_dir(job_id, "assets/.meta")
+            }
+        except Exception:
+            _minio_meta = set()
     items: list[dict] = []
     for a in await _gather_assets(job_id):
         name = a["name"]
@@ -384,14 +397,19 @@ async def job_assets_json(job_id: str) -> dict:
         elif ext in _AUDIO_EXTS:
             kind = "audio"
         # Pull sidecar metadata if it exists. The fetch path saves source
-        # URLs straight onto the asset row; session captures use the
-        # .meta/ sidecar minted by upload_asset. Read from the local copy
-        # only (best effort) -- absent for S3-only jobs, so source_url is
-        # simply null there; the asset itself still lists.
+        # URLs straight onto the asset row; session captures + worker->MinIO
+        # direct uploads use the .meta/ sidecar (minted by upload_asset /
+        # /complete). Local copy first; pull from MinIO when the sidecar is in
+        # the bucket but not local (MinIO-direct / evicted / a peer hub wrote it).
         source_url = None
         mime = None
         page_url = None
         meta_path = meta_dir / f"{name}.json"
+        if not meta_path.exists() and f"{name}.json" in _minio_meta:
+            try:
+                await objstore.ensure_local(meta_path)
+            except Exception:
+                pass
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))

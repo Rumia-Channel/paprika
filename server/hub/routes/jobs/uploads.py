@@ -251,7 +251,11 @@ async def upload_asset(
                 chunk = await file.read(1024 * 1024)  # 1 MiB
                 if not chunk:
                     break
-                out.write(chunk)
+                # Disk write OFF the event loop: a 1 GB video = ~1000 sync
+                # writes that otherwise block the loop between the async reads
+                # (py-spy 2026-06-08). One thread hop per 1 MiB chunk; the writes
+                # stay sequential (we await each before the next read).
+                await asyncio.to_thread(out.write, chunk)
                 written += len(chunk)
         part.replace(target)
     finally:
@@ -291,7 +295,112 @@ async def upload_asset(
     # PAPRIKA_S3_ENABLED). Local disk stays the source of truth.
     await objstore.mirror_file(target)
 
-    return {"saved": str(target.resolve()), "size": written, "name": name}
+    # str(target), not target.resolve(): the latter is a sync realpath (lstat
+    # syscalls) on the event loop per asset upload; target is already absolute
+    # under the storage root, so the response path is identical without the
+    # syscalls (py-spy 2026-06-08).
+    return {"saved": str(target), "size": written, "name": name}
+
+
+@router.post("/jobs/{job_id}/assets/presign")
+async def presign_asset_upload(job_id: str, body: dict) -> dict:
+    """Issue a presigned PUT URL so the worker uploads the asset BYTES straight
+    to MinIO (the hub never sees them; these uploads are ~45% of hub load). The
+    worker then calls ``POST /jobs/{id}/assets/complete`` with the metadata.
+
+    ADDITIVE / dormant: the legacy ``POST /jobs/{id}/assets`` (bytes-through-hub)
+    is unchanged, so nothing uses this until a worker opts in. Phase 1 of the
+    worker->MinIO-direct cutover (see /complete).
+
+    Body: ``{filename, mime?, source_url?, page_url?, expires_in?, secret?}``.
+    Auth mirrors ``upload_asset`` (worker_secret only when configured)."""
+    if config.worker_secret and body.get("secret") != config.worker_secret:
+        raise HTTPException(401, "bad secret")
+    if not objstore.enabled():
+        raise HTTPException(503, "object store not enabled")
+    await _soft_resolve_job(job_id, require_subdir="assets")
+    raw_name = (body.get("filename") or body.get("asset_name") or "").strip()
+    if not raw_name:
+        raise HTTPException(400, "filename required")
+    import re
+
+    name = re.sub(r'[<>:"/\\|?*]', "_", raw_name)[:180]
+    key = objstore.asset_key(job_id, name)
+    try:
+        expires = int(body.get("expires_in") or 7200)
+    except (TypeError, ValueError):
+        expires = 7200
+    expires = max(60, min(expires, 6 * 3600))  # clamp 1 min .. 6 h
+    url = await objstore.presign_put(key, expires)
+    if not url:
+        raise HTTPException(503, "could not presign upload")
+    return {
+        "put_url": url,
+        "method": "PUT",
+        "key": key,
+        "name": name,
+        "expires_in": expires,
+    }
+
+
+@router.post("/jobs/{job_id}/assets/complete")
+async def complete_asset_upload(job_id: str, body: dict) -> dict:
+    """Record metadata for an asset the worker uploaded DIRECTLY to MinIO via a
+    presigned PUT (see /presign) -- the second half of the worker->MinIO-direct
+    path. The hub writes the ``.meta`` sidecar (source_url / page_url / mime /
+    size) the gallery + delian read, after CONFIRMING the object is in the
+    bucket. NO bytes flow through the hub. The asset itself already shows in the
+    gallery because ``_gather_assets`` unions the MinIO listing.
+
+    Body: ``{filename, size?, mime?, source_url?, page_url?, secret?}``.
+    Auth mirrors ``upload_asset``. Returns 409 if the object isn't in the store
+    yet (PUT not finished / failed) so the worker can retry just this step."""
+    if config.worker_secret and body.get("secret") != config.worker_secret:
+        raise HTTPException(401, "bad secret")
+    if not objstore.enabled():
+        raise HTTPException(503, "object store not enabled")
+    await _soft_resolve_job(job_id, require_subdir="assets")
+    import re
+
+    raw_name = (body.get("filename") or body.get("asset_name") or "").strip()
+    if not raw_name:
+        raise HTTPException(400, "filename required")
+    name = re.sub(r'[<>:"/\\|?*]', "_", raw_name)[:180]
+    key = objstore.asset_key(job_id, name)
+    # Confirm the worker's direct PUT actually landed before recording anything.
+    if not await objstore.head_object(key):
+        raise HTTPException(409, "object not in store yet (PUT not completed?)")
+    source_url = (body.get("source_url") or "").strip() or None
+    page_url = (body.get("page_url") or "").strip() or None
+    mime = (body.get("mime") or "").strip() or None
+    try:
+        size = int(body.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    # Sidecar metadata -- written + mirrored EXACTLY like upload_asset so the
+    # gallery / get_page_meta / delian source_url cascade read it unchanged.
+    # Best-effort: a sidecar failure must not fail the (already-stored) asset.
+    if source_url or mime or page_url:
+        try:
+            meta_dir = get_storage_dir() / job_id / "assets" / ".meta"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            (meta_dir / f"{name}.json").write_text(
+                json.dumps(
+                    {
+                        "name": name,
+                        "source_url": source_url,
+                        "page_url": page_url,
+                        "mime": mime,
+                        "size": size,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            await objstore.mirror_file(meta_dir / f"{name}.json")
+        except Exception:
+            pass
+    return {"ok": True, "name": name, "key": key, "size": size}
 
 
 @router.post("/jobs/{job_id}/assets/from_url")
@@ -419,5 +528,6 @@ async def upload_special(
             total += len(chunk)
     # Mirror to shared object storage (dormant unless PAPRIKA_S3_ENABLED).
     await objstore.mirror_file(target)
-    return {"saved": str(target.resolve()), "size": total}
+    # str(target) not .resolve(): avoid the per-upload realpath on the loop.
+    return {"saved": str(target), "size": total}
 

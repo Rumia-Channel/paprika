@@ -165,11 +165,16 @@ async def mirror_file(local_path: Path | str) -> None:
     if not enabled():
         return
     path = Path(local_path)
-    key = _key_for(path)
-    if key is None:
-        return
 
     def _put() -> None:
+        # _key_for resolves the path (Path.resolve() = realpath = sync lstat
+        # syscalls); run it in THIS worker thread, not on the event loop. Per-
+        # asset uploads from the fleet made this realpath a recurring chunk of
+        # the hub's on-CPU loop time (py-spy 2026-06-08), feeding the
+        # intermittent multi-second admin-poll stalls.
+        key = _key_for(path)
+        if key is None:
+            return
         client = _get_client()
         if client is None:
             return
@@ -316,6 +321,45 @@ async def put_object(key: str, local_path: Path | str) -> bool:
         return await asyncio.to_thread(_put)
     except Exception:
         return False
+
+
+def asset_key(job_id: str, filename: str) -> str:
+    """Object key for a job asset, matching ``_key_for``'s scheme so a
+    presigned PUT writes to the SAME key ``get_asset`` / ``mirror_file`` read:
+    ``{prefix}/{job_id}/assets/{filename}``."""
+    rel = f"{job_id}/assets/{filename}"
+    p = _prefix()
+    return f"{p}/{rel}" if p else rel
+
+
+async def presign_put(key: str, expires_in: int = 7200) -> str | None:
+    """Presigned PUT URL for an explicit key: the worker uploads the asset
+    BYTES straight to MinIO with a plain HTTP PUT (the hub never sees them;
+    asset uploads are ~45% of hub load). The URL embeds a SigV4 signature
+    scoped to THIS key + PUT + expiry; MinIO verifies it OFFLINE against the
+    shared secret -- no hub->MinIO call, no credentials handed to the worker.
+    ``generate_presigned_url`` is a local crypto op (no network). None when
+    disabled / no client. Never raises."""
+    if not enabled():
+        return None
+
+    def _sign() -> str | None:
+        client = _get_client()
+        if client is None:
+            return None
+        try:
+            return client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": _bucket(), "Key": key},
+                ExpiresIn=int(expires_in),
+            )
+        except Exception:
+            return None
+
+    try:
+        return await asyncio.to_thread(_sign)
+    except Exception:
+        return None
 
 
 async def get_object(key: str, local_path: Path | str) -> bool:
