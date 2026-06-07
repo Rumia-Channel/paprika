@@ -116,6 +116,27 @@ def _insert_accept(ip: str) -> None:
         log.warning("egress-guard: insert ACCEPT %s failed: %s", ip, e)
 
 
+def _allow_dns() -> None:
+    """Insert a blanket DNS (port 53) ACCEPT at the top of OUTPUT, udp + tcp.
+
+    Why broad, not the script's specific-resolver allows: the container resolves
+    via docker's embedded resolver 127.0.0.11, which FORWARDS to the LXC host's
+    upstream resolver — in prod that's a private IP (10.10.50.1, inside 10/8) and
+    the forwarded query traverses the container's OUTPUT chain, so it hits the
+    DROP 10/8 rule → name resolution fails → every hostname (public sites
+    included) becomes unreachable (canary #2, 2026-06-08). Allowing port 53 to
+    any destination fixes resolution while leaving the HTTP-to-private SSRF block
+    fully intact (DNS can't fetch internal HTTP services; DNS-tunnel exfil is a
+    low, accepted residual risk). IPv4 only — Chrome's DNS goes through 127.0.0.11."""
+    for proto in ("udp", "tcp"):
+        try:
+            subprocess.run(["iptables", "-I", "OUTPUT", "1", "-p", proto,
+                            "--dport", "53", "-j", "ACCEPT"],
+                           capture_output=True, text=True, timeout=10)
+        except Exception as e:
+            log.warning("egress-guard: allow DNS/%s failed: %s", proto, e)
+
+
 def apply(hub_ws_url: str) -> None:
     """Apply the worker egress firewall. No-op unless ``PAPRIKA_EGRESS_GUARD=1``.
 
@@ -144,6 +165,9 @@ def apply(hub_ws_url: str) -> None:
     extra = sorted(ip for ip in fetched if ip and ip not in bootstrap)
     for ip in extra:
         _insert_accept(ip)
+    # 4) Allow DNS broadly (the embedded-resolver→private-upstream forward would
+    #    otherwise hit DROP 10/8 and break all name resolution; see _allow_dns).
+    _allow_dns()
     if extra:
         log.info("egress-guard: firewall applied (bootstrap=%s + fetched=%s)",
                  sorted(bootstrap), extra)
