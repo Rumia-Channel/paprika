@@ -123,6 +123,15 @@ def _resource_args() -> list[str]:
         "--pids-limit",
         "100",
         "--read-only",
+        # Phase 3 (D) runner hardening: the runner executes untrusted
+        # LLM-generated Python, so strip every Linux capability and forbid
+        # privilege escalation (setuid/setcap). The runner only needs to run
+        # Python + httpx to the hub -- no caps required -- so this is a no-op
+        # for legitimate scripts but closes container-escape / priv-esc paths.
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
         "--tmpfs",
         "/tmp:size=64m,exec",
         "-e",
