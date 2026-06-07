@@ -287,6 +287,61 @@ async def forget_hub(hub_id: str) -> dict:
     return {"forgotten": True, "hub_id": hub_id}
 
 
+@router.get("/fleet/egress-allow", include_in_schema=False)
+async def fleet_egress_allow() -> PlainTextResponse:
+    """Worker egress-firewall allowlist (Phase 3 E, Approach B).
+
+    The private infra IPs a worker may legitimately dial. **Self-maintaining**:
+    every hub's LAN IP is derived from the live hub registry (Redis heartbeats),
+    so adding / moving / removing a hub auto-updates the allowlist with zero
+    per-worker config — the worker just re-fetches this on (re)start. Plus any
+    operator extras via ``PAPRIKA_EGRESS_EXTRA_ALLOW`` (comma/space-separated
+    IPs or CIDRs — e.g. MinIO / Redis if a worker reaches them directly).
+
+    Returns ``text/plain``, one IP/CIDR per line, so the worker's firewall can
+    iterate it without a JSON parser. The worker ALSO bootstrap-allows its own
+    ``HUB_URL`` host (the nginx front it dials), so that need not appear here.
+    """
+    import ipaddress
+    import os
+    import re
+    from urllib.parse import urlparse
+
+    ips: set[str] = set()
+    # 1) Every known hub's LAN IP, from the registry.
+    if state.hubs is not None:
+        try:
+            for h in await state.hubs.list_all():
+                cand = str(h.get("ip") or "").strip()
+                if not cand:
+                    pb = str(h.get("public_base") or "")
+                    cand = (urlparse(pb).hostname or "") if pb else ""
+                if not cand:
+                    m = re.match(r"^hub-(\d{1,3})$", str(h.get("hub_id") or ""))
+                    if m:
+                        subnet = os.environ.get("PAPRIKA_HUB_SUBNET", "10.10.50")
+                        cand = f"{subnet}.{m.group(1)}"
+                if cand:
+                    try:
+                        ipaddress.ip_address(cand)  # IP literals only here
+                        ips.add(cand)
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+    # 2) Operator-configured extras (MinIO / Redis / etc.) — IPs or CIDRs.
+    for tok in (os.environ.get("PAPRIKA_EGRESS_EXTRA_ALLOW", "") or "").replace(",", " ").split():
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            ipaddress.ip_network(tok, strict=False)  # accept IP or CIDR
+            ips.add(tok)
+        except ValueError:
+            pass
+    return PlainTextResponse("\n".join(sorted(ips)) + ("\n" if ips else ""))
+
+
 @router.post("/admin/self-restart")
 async def admin_self_restart() -> dict:
     """Self-restart this hub by exiting with code 42; the docker
