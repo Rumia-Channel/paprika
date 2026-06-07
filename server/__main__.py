@@ -230,6 +230,18 @@ def _run_worker(args) -> int:
     from server.worker.agent import WorkerAgent, default_worker_id
 
     worker_id = args.worker_id or default_worker_id()
+
+    # Phase 3 E (Approach B): apply the self-maintaining egress firewall BEFORE
+    # any Chrome lane spawns, so private-IP egress (redirects / fetch() /
+    # metadata) is blocked from the first navigation. No-op unless
+    # PAPRIKA_EGRESS_GUARD=1; fetches the allowlist from the hub
+    # (/fleet/egress-allow) + the worker's own HUB_URL host.
+    try:
+        from server.worker import egress_guard
+        egress_guard.apply(args.hub_url)
+    except Exception as e:
+        log.warning("egress-guard: init failed (continuing without firewall): %s", e)
+
     labels: dict[str, str] = {}
     if args.labels:
         for pair in args.labels.split(","):
