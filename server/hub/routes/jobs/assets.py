@@ -277,6 +277,85 @@ async def _backfill_source_urls_from_result(job_id: str, items: list[dict]) -> N
                 it["mime"] = mm
 
 
+async def _backfill_source_urls_from_network(job_id: str, items: list[dict]) -> None:
+    """Recover ``source_url`` (+ ``page_url`` / ``mime``) from the session
+    network dump (``{job}/network.jsonl``) for items still missing it.
+
+    Session-mode passive capture (``browser_ops.install_session_asset_capture``)
+    records every media response's URL there with ``saved=true`` -- including
+    assets loaded by embedded widgets / iframes (e.g. a FundraiseUp donation
+    widget's emoji icons served from static.fundraiseup.com) that never appear
+    in the fetcher's ``JobResult.assets`` NOR its ``[[paprika:netcap]]`` log
+    markers. Matches by URL basename (+ ``_N`` dedup-suffix peel) confirmed by
+    size, same as the netcap backfill. Never raises."""
+    if not items or all(it.get("source_url") for it in items):
+        return
+    net_path = get_storage_dir() / job_id / "network.jsonl"
+    try:
+        await objstore.ensure_local(net_path)
+    except Exception:
+        pass
+    if not net_path.exists():
+        return
+    by_basename: dict[str, list[dict]] = {}
+    try:
+        with open(net_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ent = json.loads(line)
+                except Exception:
+                    continue
+                if not ent.get("saved"):
+                    continue
+                url = ent.get("url")
+                sz = ent.get("size")
+                if not url or sz is None:
+                    continue
+                try:
+                    bn = Path(urlparse(url).path).name
+                except Exception:
+                    continue
+                if not bn:
+                    continue
+                bn = _FNAME_SANITIZE_RE.sub("_", bn)[:180]
+                by_basename.setdefault(bn, []).append({
+                    "url": url,
+                    "size": int(sz),
+                    "mime": ent.get("mime") or None,
+                    "page_url": ent.get("document_url") or None,
+                })
+    except Exception:
+        return
+    if not by_basename:
+        return
+    for it in items:
+        if it.get("source_url"):
+            continue
+        name = it.get("name") or ""
+        if not name:
+            continue
+        size = int(it.get("size") or 0)
+        cands = by_basename.get(name)
+        if not cands:
+            stem = Path(name).stem
+            suffix = Path(name).suffix
+            m = _UNIQ_SUFFIX_RE.match(stem)
+            if m:
+                cands = by_basename.get(m.group(1) + suffix)
+        if not cands:
+            continue
+        sized = [c for c in cands if c["size"] == size]
+        pick = sized[0] if sized else cands[0]
+        it["source_url"] = pick["url"]
+        if not it.get("page_url") and pick.get("page_url"):
+            it["page_url"] = pick["page_url"]
+        if not it.get("mime") and pick.get("mime"):
+            it["mime"] = pick["mime"]
+
+
 @router.get("/jobs/{job_id}/assets.json")
 async def job_assets_json(job_id: str) -> dict:
     """JSON view of captured assets -- powers the inline live panel's
@@ -337,9 +416,13 @@ async def job_assets_json(job_id: str) -> dict:
     # Recovery pass 1 (durable, primary): fill source_url from the job result's
     # assets[].url for items whose .meta sidecar was missing/evicted.
     await _backfill_source_urls_from_result(job_id, items)
-    # Recovery pass 2 (fallback): parse the fetcher's network-event markers out
-    # of log.txt for anything the result didn't cover. No-op for items that
-    # already have a source_url.
+    # Recovery pass 2: session network dump (network.jsonl) -- recovers assets
+    # captured by the session passive listener (widget/iframe resources, e.g.
+    # FundraiseUp emoji) that aren't in the fetcher result OR netcap markers.
+    await _backfill_source_urls_from_network(job_id, items)
+    # Recovery pass 3 (fallback): parse the fetcher's network-event markers out
+    # of log.txt for anything the prior passes didn't cover. No-op for items
+    # that already have a source_url.
     await _backfill_source_urls_from_log(job_id, items)
     return {"job_id": job_id, "count": len(items), "items": items}
 
