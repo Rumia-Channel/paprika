@@ -493,9 +493,18 @@ async function ljpRefreshStatus() {
     if (!LJP._submitFormPopulated) {
       try {
         const urlEl = document.getElementById('urlInput');
-        const draftLooksEmpty = !urlEl || !(urlEl.value || '').trim();
-        if (draftLooksEmpty) {
+        const cur = urlEl ? (urlEl.value || '').trim() : '';
+        // Mirror THIS job's options into the "ジョブの実行" form. Overwrite
+        // when the field is empty OR still holds the URL we populated from
+        // the PREVIOUSLY-viewed job (a leftover, not a hand-typed draft).
+        // The old check skipped whenever the URL was non-empty, so after
+        // viewing one job the leftover URL kept the form frozen on the
+        // previous job's settings -- the "実行 tab doesn't reflect this
+        // job" bug. A genuine draft (a URL the operator typed that differs
+        // from the last populated one) is still preserved.
+        if (!cur || cur === (LJP._submitFormUrl || '')) {
           ljpPopulateSubmitForm(info);
+          LJP._submitFormUrl = (info.url || '').trim();
         }
         LJP._submitFormPopulated = true;
       } catch (e) { /* don't break the rest of the poll */ }
