@@ -224,7 +224,7 @@ video.shot { display: block; height: auto; background: #000; }
   border-left: 3px solid var(--accent); border-radius: 8px;
   font-size: .96rem; line-height: 1.7; }
 .tldr-label { display: block; font-weight: 600; color: var(--fg-muted);
-  font-size: .72rem; letter-spacing: .14em; text-transform: uppercase;
+  font-size: .78rem; letter-spacing: .08em; text-transform: uppercase;
   margin-bottom: 10px; }
 .tldr p { margin: 0; }
 .tldr p + p { margin-top: 8px; }
@@ -234,7 +234,7 @@ video.shot { display: block; height: auto; background: #000; }
 /* =================================================================== */
 /* Breadcrumbs — sits between header and content, shows page hierarchy  */
 /* =================================================================== */
-.breadcrumbs { font-size: .82rem; color: var(--fg-muted);
+.breadcrumbs { font-size: .86rem; color: var(--fg-muted);
   padding: 12px 40px 0; max-width: 1240px; margin: 0 auto; }
 .breadcrumbs ol { list-style: none; padding: 0; margin: 0;
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
@@ -256,8 +256,8 @@ video.shot { display: block; height: auto; background: #000; }
   transition: border-color .15s, box-shadow .15s; }
 .learning-path:hover { border-color: var(--accent);
   box-shadow: 0 4px 14px rgba(0,0,0,.05); }
-.learning-path h3 { margin: 0 0 4px; font-size: 1.02rem; font-weight: 700;
-  color: var(--fg); }
+.learning-path h3 { margin: 0 0 6px; font-size: 1.1rem; font-weight: 700;
+  color: var(--fg); line-height: 1.4; }
 .learning-path .who { font-size: .82rem; color: var(--fg-muted);
   margin: 0 0 12px; padding-bottom: 10px;
   border-bottom: 1px solid var(--border-soft); }

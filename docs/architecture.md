@@ -13,38 +13,43 @@ Paprika は「**分散したワーカー上の Chrome を、API / SDK / AI か�
 <img class="shot" src="img/admin-submit.png" alt="管理画面の Submit タブ — Client の入口の 1 つ" loading="lazy">
 <p class="shot-cap">クライアント面（管理画面の <strong>実行</strong> タブ）。ここから投入されたジョブが、下の図の Hub → Worker → Lane を経て返ってきます。</p>
 
-<svg viewBox="0 0 860 380" role="img" aria-label="Paprika 全体構成図" style="display:block;max-width:100%;height:auto;margin:18px auto;font-family:ui-monospace,Consolas,monospace;">
+<svg viewBox="0 0 920 440" role="img" aria-label="Paprika 全体構成図" style="display:block;max-width:100%;height:auto;margin:18px auto;font-family:ui-monospace,Consolas,monospace;">
   <defs>
     <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#59636e"/></marker>
   </defs>
-  <rect x="320" y="14" width="220" height="44" rx="9" fill="#fff" stroke="#d1d9e0"/>
-  <text x="430" y="41" text-anchor="middle" font-size="14">Client / SDK / curl</text>
-  <line x1="430" y1="58" x2="430" y2="90" stroke="#59636e" stroke-width="1.6" marker-end="url(#ah)"/>
-  <text x="442" y="78" font-size="11" fill="#59636e">POST /jobs ・ GET /jobs/{id} ・ /sessions/*</text>
-  <rect x="320" y="90" width="220" height="54" rx="9" fill="#fff" stroke="#d1d9e0"/>
-  <text x="430" y="113" text-anchor="middle" font-size="14" font-weight="700">Router（nginx）</text>
-  <text x="430" y="131" text-anchor="middle" font-size="11" fill="#59636e">複数 Hub のときだけ前段に立つ</text>
-  <line x1="430" y1="144" x2="430" y2="176" stroke="#59636e" stroke-width="1.6" marker-end="url(#ah)"/>
-  <rect x="320" y="176" width="220" height="80" rx="10" fill="#fff" stroke="#c0392b" stroke-width="1.8"/>
-  <text x="430" y="200" text-anchor="middle" font-size="15" font-weight="700" fill="#c0392b">Hub</text>
-  <text x="430" y="220" text-anchor="middle" font-size="11" fill="#59636e">ジョブ受付・ディスパッチ</text>
-  <text x="430" y="236" text-anchor="middle" font-size="11" fill="#59636e">セッション登録（Chrome は持たない）</text>
-  <rect x="600" y="166" width="244" height="124" rx="10" fill="#fff" stroke="#d1d9e0"/>
-  <text x="722" y="186" text-anchor="middle" font-size="13" font-weight="700">Worker（別ホスト × 多数）</text>
-  <rect x="616" y="200" width="212" height="76" rx="8" fill="#f6f8fa" stroke="#d1d9e0"/>
-  <text x="722" y="220" text-anchor="middle" font-size="12" font-weight="700">Lane（並列 N 本）</text>
-  <text x="722" y="238" text-anchor="middle" font-size="11" fill="#59636e">Xvfb + Chrome (CDP)</text>
-  <text x="722" y="254" text-anchor="middle" font-size="11" fill="#59636e">x11vnc + noVNC</text>
-  <text x="722" y="270" text-anchor="middle" font-size="10" fill="#8a96a3">= 画面を持つ本物の Chrome</text>
-  <line x1="540" y1="212" x2="598" y2="212" stroke="#59636e" stroke-width="1.5" marker-end="url(#ah)"/>
-  <line x1="598" y1="226" x2="540" y2="226" stroke="#59636e" stroke-width="1.5" marker-end="url(#ah)"/>
-  <text x="569" y="206" text-anchor="middle" font-size="10" fill="#59636e">WebSocket</text>
-  <text x="569" y="240" text-anchor="middle" font-size="10" fill="#59636e">assign / 結果</text>
-  <line x1="430" y1="256" x2="430" y2="298" stroke="#59636e" stroke-width="1.6" marker-end="url(#ah)"/>
-  <text x="442" y="282" font-size="11" fill="#59636e">保存</text>
-  <rect x="300" y="298" width="260" height="48" rx="9" fill="#f6f8fa" stroke="#d1d9e0"/>
-  <text x="430" y="320" text-anchor="middle" font-size="13">ストア</text>
-  <text x="430" y="337" text-anchor="middle" font-size="11" fill="#59636e">DB ・ オブジェクトストレージ ・ Redis</text>
+  <!-- Client -->
+  <rect x="340" y="14" width="240" height="48" rx="9" fill="#fff" stroke="#d1d9e0"/>
+  <text x="460" y="44" text-anchor="middle" font-size="17">Client / SDK / curl</text>
+  <line x1="460" y1="62" x2="460" y2="100" stroke="#59636e" stroke-width="1.6" marker-end="url(#ah)"/>
+  <text x="472" y="86" font-size="13" fill="#59636e">POST /jobs ・ GET /jobs/{id} ・ /sessions/*</text>
+  <!-- Router -->
+  <rect x="340" y="100" width="240" height="60" rx="9" fill="#fff" stroke="#d1d9e0"/>
+  <text x="460" y="125" text-anchor="middle" font-size="17" font-weight="700">Router（nginx）</text>
+  <text x="460" y="146" text-anchor="middle" font-size="13" fill="#59636e">複数 Hub のときだけ前段に立つ</text>
+  <line x1="460" y1="160" x2="460" y2="198" stroke="#59636e" stroke-width="1.6" marker-end="url(#ah)"/>
+  <!-- Hub -->
+  <rect x="340" y="198" width="240" height="96" rx="10" fill="#fff" stroke="#c0392b" stroke-width="2"/>
+  <text x="460" y="225" text-anchor="middle" font-size="20" font-weight="700" fill="#c0392b">Hub</text>
+  <text x="460" y="251" text-anchor="middle" font-size="13" fill="#59636e">ジョブ受付・ディスパッチ</text>
+  <text x="460" y="271" text-anchor="middle" font-size="13" fill="#59636e">セッション登録（Chrome は持たない）</text>
+  <!-- Worker block -->
+  <rect x="635" y="184" width="270" height="146" rx="10" fill="#fff" stroke="#d1d9e0"/>
+  <text x="770" y="208" text-anchor="middle" font-size="15" font-weight="700">Worker（別ホスト × 多数）</text>
+  <rect x="652" y="222" width="236" height="92" rx="8" fill="#f6f8fa" stroke="#d1d9e0"/>
+  <text x="770" y="246" text-anchor="middle" font-size="14" font-weight="700">Lane（並列 N 本）</text>
+  <text x="770" y="266" text-anchor="middle" font-size="13" fill="#59636e">Xvfb + Chrome (CDP)</text>
+  <text x="770" y="286" text-anchor="middle" font-size="13" fill="#59636e">x11vnc + noVNC</text>
+  <text x="770" y="305" text-anchor="middle" font-size="12" fill="#8a96a3">= 画面を持つ本物の Chrome</text>
+  <line x1="580" y1="236" x2="633" y2="236" stroke="#59636e" stroke-width="1.5" marker-end="url(#ah)"/>
+  <line x1="633" y1="254" x2="580" y2="254" stroke="#59636e" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="606" y="228" text-anchor="middle" font-size="12" fill="#59636e">WebSocket</text>
+  <text x="606" y="270" text-anchor="middle" font-size="12" fill="#59636e">assign / 結果</text>
+  <!-- Store -->
+  <line x1="460" y1="294" x2="460" y2="346" stroke="#59636e" stroke-width="1.6" marker-end="url(#ah)"/>
+  <text x="472" y="324" font-size="13" fill="#59636e">保存</text>
+  <rect x="320" y="346" width="280" height="58" rx="9" fill="#f6f8fa" stroke="#d1d9e0"/>
+  <text x="460" y="370" text-anchor="middle" font-size="15">ストア</text>
+  <text x="460" y="392" text-anchor="middle" font-size="13" fill="#59636e">DB ・ オブジェクトストレージ ・ Redis</text>
 </svg>
 
 ## 5 つの構成要素
