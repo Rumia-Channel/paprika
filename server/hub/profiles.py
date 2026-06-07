@@ -59,6 +59,14 @@ class ProfileMeta:
     source_machine: str | None = None  # informational only
     chrome_profile_name: str | None = None  # "Default" / "Profile 1" etc.
     note: str | None = None  # free-text operator note
+    # Phase 2b tenancy. ``owner_id`` is the tenant that uploaded the profile
+    # ("default" = the shared tenant: pre-tenancy rows + anything uploaded
+    # while auth is off/optional). ``shared`` = visible to / usable by every
+    # tenant (the pre-tenancy ambient behaviour). Existing rows backfill to
+    # owner=default / shared=True, so isolation only bites under enforce for a
+    # non-admin user who uploaded a private profile.
+    owner_id: str = "default"
+    shared: bool = True
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -83,6 +91,10 @@ class ProfileMeta:
             source_machine=d.get("source_machine"),
             chrome_profile_name=d.get("chrome_profile_name"),
             note=d.get("note"),
+            # Default to the shared tenant when the field is absent (legacy
+            # .meta.json / MariaDB rows written before Phase 2b).
+            owner_id=str(d.get("owner_id") or "default"),
+            shared=bool(d.get("shared", True)),
         )
 
 
@@ -230,6 +242,8 @@ class ProfileRegistry:
         source_machine: str | None = None,
         chrome_profile_name: str | None = None,
         note: str | None = None,
+        owner_id: str | None = None,
+        shared: bool | None = None,
     ) -> ProfileMeta:
         """Persist a profile. Either ``tarball_bytes`` (in-memory) or
         ``tarball_src`` (path to a temp file the caller streamed to)
@@ -240,9 +254,21 @@ class ProfileRegistry:
         ``uploaded_at`` mirrors ``updated_at`` only on first save; on
         re-upload ``uploaded_at`` stays as it was so operators can
         see "first registered N days ago".
+
+        Phase 2b: ``owner_id`` / ``shared`` are stamped on FIRST save only;
+        a re-upload PRESERVES the original ownership (like ``uploaded_at``),
+        so re-uploading never silently flips a shared/operator profile to
+        private or hands a tenant's profile to whoever re-uploads the name.
+        ``None`` = "use the existing value, else the default".
         """
         if not is_valid_name(name):
             raise ValueError(f"invalid profile name: {name!r}")
+        # Capture whether a REAL prior upload existed BEFORE we write the new
+        # tarball. ``get_meta`` synthesises a default-owner meta from a bare
+        # tarball, so once we've written the tarball below it can no longer
+        # tell "first upload" from "re-upload" — and ownership stickiness must
+        # key off a genuine prior .meta.json, not the synthesised stand-in.
+        had_meta = self._meta_path(name).exists()
         tar_path = self._tarball_path(name)
         # Atomic move so a half-written tarball is never observable.
         tmp_path = tar_path.with_suffix(tar_path.suffix + ".tmp")
@@ -256,6 +282,16 @@ class ProfileRegistry:
 
         # Merge metadata: preserve original uploaded_at across re-upload.
         prev = self.get_meta(name)
+        # Ownership is sticky across a REAL re-upload (see docstring): keep the
+        # existing owner/shared; otherwise (first upload, or a hand-scp'd
+        # tarball with no meta yet) stamp the caller-supplied values, defaulting
+        # to the shared tenant.
+        if had_meta and prev is not None:
+            merged_owner = prev.owner_id
+            merged_shared = prev.shared
+        else:
+            merged_owner = owner_id if owner_id is not None else "default"
+            merged_shared = shared if shared is not None else True
         meta = ProfileMeta(
             name=name,
             size_bytes=tar_path.stat().st_size,
@@ -264,6 +300,8 @@ class ProfileRegistry:
             source_machine=source_machine or (prev.source_machine if prev else None),
             chrome_profile_name=chrome_profile_name or (prev.chrome_profile_name if prev else None),
             note=note if note is not None else (prev.note if prev else None),
+            owner_id=merged_owner,
+            shared=merged_shared,
         )
         self._meta_path(name).write_text(
             json.dumps(meta.to_json(), indent=2, ensure_ascii=False),

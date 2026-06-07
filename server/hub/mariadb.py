@@ -114,6 +114,8 @@ _TABLES: list[tuple[str, str]] = [
             login_refresh_ttl_s INT          DEFAULT 900,
             last_login_at       DATETIME(3),
             fetch_recipes       JSON,
+            owner_id            VARCHAR(64)  NOT NULL DEFAULT 'default',
+            shared              TINYINT(1)   NOT NULL DEFAULT 1,
             created_at          DATETIME(3),
             updated_at          DATETIME(3),
             last_used_at        DATETIME(3),
@@ -255,6 +257,8 @@ _TABLES: list[tuple[str, str]] = [
             source_machine       VARCHAR(190),
             note                 TEXT,
             is_default           TINYINT(1)    DEFAULT 0,
+            owner_id             VARCHAR(64)   NOT NULL DEFAULT 'default',
+            shared               TINYINT(1)    NOT NULL DEFAULT 1,
             uploaded_at          DATETIME(3),
             updated_at           DATETIME(3)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -460,6 +464,15 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     # Phase 2 tenancy: owner that submitted the job. Existing rows backfill to
     # the shared 'default' tenant via the column DEFAULT.
     ("jobs", "owner_id", "VARCHAR(64) NOT NULL DEFAULT 'default'"),
+    # Phase 2b tenancy for profiles + hosts (Chrome login state — the top leak
+    # surface). owner_id = uploading/pushing tenant; shared = visible to every
+    # tenant (the pre-tenancy ambient default). Legacy rows backfill to
+    # owner=default / shared=1 via the column DEFAULTs, so isolation only bites
+    # under enforce for a non-admin user's private profile/host.
+    ("profiles", "owner_id", "VARCHAR(64) NOT NULL DEFAULT 'default'"),
+    ("profiles", "shared", "TINYINT(1) NOT NULL DEFAULT 1"),
+    ("hosts", "owner_id", "VARCHAR(64) NOT NULL DEFAULT 'default'"),
+    ("hosts", "shared", "TINYINT(1) NOT NULL DEFAULT 1"),
 ]
 
 
@@ -1209,7 +1222,7 @@ async def restore_hosts(pool: Any, host_registry: Any) -> int:
                 "SELECT host, cookies, notes, recrawl_patterns, "
                 "popup_policy, login_url, login_goal, login_check, "
                 "login_refresh_ttl_s, last_login_at, fetch_recipes, "
-                "created_at, updated_at, last_used_at "
+                "created_at, updated_at, last_used_at, owner_id, shared "
                 "FROM hosts"
             )
             rows = await cur.fetchall()
@@ -1249,6 +1262,10 @@ async def restore_hosts(pool: Any, host_registry: Any) -> int:
                 login_refresh_ttl_s=row[8],
                 last_login_at=str(row[9]) if row[9] else None,
                 fetch_recipes=json.loads(row[10]) if row[10] else [],
+                # Phase 2b: MariaDB is SoT — mirror owner/shared onto the file
+                # registry so a restart / peer hub keeps tenant attribution.
+                owner_id=row[14] or "default",
+                shared=bool(row[15]) if row[15] is not None else True,
             )
             restored += 1
         except Exception as e:
@@ -1885,6 +1902,8 @@ async def upsert_host_row(pool: Any, rec: Any) -> None:
         d.get("login_refresh_ttl_s", 900),
         _parse_dt(d.get("last_login_at")),
         _json_dumps(recipe_dicts),
+        str(d.get("owner_id") or "default"),
+        1 if d.get("shared", True) else 0,
         _parse_dt(d.get("created_at")),
         _parse_dt(d.get("updated_at")),
         _parse_dt(d.get("last_used_at")),
@@ -1896,9 +1915,9 @@ async def upsert_host_row(pool: Any, rec: Any) -> None:
                    (host, cookies, notes, recrawl_patterns,
                     popup_policy, login_url, login_goal,
                     login_check, login_refresh_ttl_s,
-                    last_login_at, fetch_recipes,
+                    last_login_at, fetch_recipes, owner_id, shared,
                     created_at, updated_at, last_used_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON DUPLICATE KEY UPDATE
                      cookies=VALUES(cookies), notes=VALUES(notes),
                      recrawl_patterns=VALUES(recrawl_patterns),
@@ -1908,6 +1927,7 @@ async def upsert_host_row(pool: Any, rec: Any) -> None:
                      login_refresh_ttl_s=VALUES(login_refresh_ttl_s),
                      last_login_at=VALUES(last_login_at),
                      fetch_recipes=VALUES(fetch_recipes),
+                     owner_id=VALUES(owner_id), shared=VALUES(shared),
                      updated_at=VALUES(updated_at),
                      last_used_at=VALUES(last_used_at)""",
                 params,
@@ -2109,6 +2129,7 @@ _PROFILES_DDL = (
     "name VARCHAR(64) PRIMARY KEY, size_bytes BIGINT DEFAULT 0, etag VARCHAR(128), "
     "s3_key VARCHAR(255), chrome_profile_name VARCHAR(128), "
     "source_machine VARCHAR(190), note TEXT, is_default TINYINT(1) DEFAULT 0, "
+    "owner_id VARCHAR(64) NOT NULL DEFAULT 'default', shared TINYINT(1) NOT NULL DEFAULT 1, "
     "uploaded_at DATETIME(3), updated_at DATETIME(3)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
 )
@@ -2124,20 +2145,25 @@ def _profile_row_to_dict(r: Any) -> dict:
         "source_machine": r[5],
         "note": r[6],
         "is_default": bool(r[7]),
-        "uploaded_at": _dt_iso(r[8]),
-        "updated_at": _dt_iso(r[9]),
+        "owner_id": r[8] or "default",
+        "shared": bool(r[9]),
+        "uploaded_at": _dt_iso(r[10]),
+        "updated_at": _dt_iso(r[11]),
     }
 
 
 _PROFILE_COLS = (
     "name, size_bytes, etag, s3_key, chrome_profile_name, "
-    "source_machine, note, is_default, uploaded_at, updated_at"
+    "source_machine, note, is_default, owner_id, shared, uploaded_at, updated_at"
 )
 
 
 async def upsert_profile_row(pool: Any, meta: Any, etag: str = "", s3_key: str = "") -> None:
     """INSERT-or-UPDATE one profile's metadata. Does NOT touch ``is_default``
-    (managed by set_default_profile), so a re-upload never changes the default."""
+    (managed by set_default_profile), so a re-upload never changes the default.
+    Phase 2b ``owner_id``/``shared`` are written on INSERT and refreshed on
+    update from the (sticky-on-re-upload) ProfileMeta, so they propagate to
+    every hub via the shared MariaDB profiles table."""
     d = meta.to_json() if hasattr(meta, "to_json") else dict(meta)
     params = (
         d.get("name", ""),
@@ -2147,6 +2173,8 @@ async def upsert_profile_row(pool: Any, meta: Any, etag: str = "", s3_key: str =
         d.get("chrome_profile_name"),
         d.get("source_machine"),
         d.get("note"),
+        str(d.get("owner_id") or "default"),
+        1 if d.get("shared", True) else 0,
         _parse_dt(d.get("uploaded_at")),
         _parse_dt(d.get("updated_at")),
     )
@@ -2156,13 +2184,14 @@ async def upsert_profile_row(pool: Any, meta: Any, etag: str = "", s3_key: str =
             await cur.execute(
                 """INSERT INTO profiles
                    (name, size_bytes, etag, s3_key, chrome_profile_name,
-                    source_machine, note, uploaded_at, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    source_machine, note, owner_id, shared, uploaded_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON DUPLICATE KEY UPDATE
                      size_bytes=VALUES(size_bytes), etag=VALUES(etag),
                      s3_key=VALUES(s3_key),
                      chrome_profile_name=VALUES(chrome_profile_name),
                      source_machine=VALUES(source_machine), note=VALUES(note),
+                     owner_id=VALUES(owner_id), shared=VALUES(shared),
                      updated_at=VALUES(updated_at)""",
                 params,
             )

@@ -29,6 +29,12 @@ class SessionInfo:
     lane_idx: int | None = None
     novnc_url: str | None = None
     initial_url: str | None = None
+    # Phase 2b tenancy: the tenant that opened this session via POST /sessions
+    # ("default" = shared tenant / auth off/optional). Auto-sessions created by
+    # a job dispatch (fetch / redrive) are NOT stamped — they stay "default"
+    # and the read-scope judges them by their parent job's owner (``job_id``)
+    # instead, so the dispatch path is left untouched.
+    owner_id: str = "default"
     created_at: datetime = field(default_factory=datetime.utcnow)
     last_active_at: datetime = field(default_factory=datetime.utcnow)
     # Idle and absolute TTLs (seconds). Enforced by the reaper task.
@@ -73,6 +79,7 @@ class SessionInfo:
             "lane_idx": self.lane_idx,
             "novnc_url": self.novnc_url,
             "initial_url": self.initial_url,
+            "owner_id": self.owner_id,
             "created_at": self.created_at.isoformat() + "Z",
             "last_active_at": self.last_active_at.isoformat() + "Z",
             "idle_ttl_s": self.idle_ttl_s,
@@ -109,6 +116,7 @@ def session_from_json(d: dict) -> SessionInfo:
         lane_idx=d.get("lane_idx"),
         novnc_url=d.get("novnc_url"),
         initial_url=d.get("initial_url"),
+        owner_id=str(d.get("owner_id") or "default"),
         created_at=_dt(d.get("created_at")),
         last_active_at=_dt(d.get("last_active_at")),
         idle_ttl_s=int(d.get("idle_ttl_s") or 300),

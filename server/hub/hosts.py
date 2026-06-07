@@ -148,6 +148,15 @@ class HostRecord:
     # against each recipe's ``pattern`` (longest literal prefix wins,
     # ``*`` is wildcard). Returns the best match or None.
     fetch_recipes: list = field(default_factory=list)
+    # ---- Phase 2b tenancy -------------------------------------------------
+    # Hosts are keyed by hostname (one record per host). ``owner_id`` is the
+    # tenant that pushed the cookies ("default" = shared tenant / auth
+    # off/optional); ``shared`` = the cookies may ride onto ANY tenant's job
+    # (the pre-tenancy ambient behaviour). Pre-tenancy records backfill to
+    # owner=default / shared=True, so the worker-dispatch cookie gate
+    # (auth.owner_can_use) is a no-op until enforce + a non-admin owner.
+    owner_id: str = "default"
+    shared: bool = True
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -221,6 +230,8 @@ class HostRecord:
                 for r in (d.get("fetch_recipes") or [])
                 if r
             ],
+            owner_id=str(d.get("owner_id") or "default"),
+            shared=bool(d.get("shared", True)),
         )
 
 
@@ -473,6 +484,8 @@ class HostRegistry(JsonRecordRegistry[HostRecord]):
         login_refresh_ttl_s: int | None = None,
         last_login_at: str | None = None,
         fetch_recipes: list | None = None,
+        owner_id: str | None = None,
+        shared: bool | None = None,
     ) -> HostRecord:
         h = _normalise_host(host)
         if not h:
@@ -533,6 +546,18 @@ class HostRegistry(JsonRecordRegistry[HostRecord]):
             existing.last_login_at if existing else None,
         )
 
+        # Phase 2b: ownership is sticky — explicit None preserves the existing
+        # owner/shared (cookie-only re-saves & auto-saves never change it), so
+        # only an explicit ``/hosts/{host}`` push by a new tenant reassigns it.
+        if owner_id is None:
+            merged_owner = existing.owner_id if existing else "default"
+        else:
+            merged_owner = owner_id or "default"
+        if shared is None:
+            merged_shared = existing.shared if existing else True
+        else:
+            merged_shared = bool(shared)
+
         rec = HostRecord(
             host=h,
             cookies=list(cookies or []),
@@ -548,6 +573,8 @@ class HostRegistry(JsonRecordRegistry[HostRecord]):
             login_refresh_ttl_s=merged_ttl,
             last_login_at=merged_last_login,
             fetch_recipes=merged_fetch_recipes,
+            owner_id=merged_owner,
+            shared=merged_shared,
         )
         self._write(rec)
         return rec
@@ -607,6 +634,8 @@ class HostRegistry(JsonRecordRegistry[HostRecord]):
                 login_refresh_ttl_s=existing.login_refresh_ttl_s,
                 last_login_at=existing.last_login_at,
                 fetch_recipes=list(existing.fetch_recipes) + [parsed],
+                owner_id=existing.owner_id,
+                shared=existing.shared,
             )
         self._write(rec)
         return rec

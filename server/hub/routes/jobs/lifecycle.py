@@ -743,6 +743,29 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
     # what knowledge was applied.
     _hk_consultation = _consult_host_knowledge(req.url, req.options)
 
+    # Phase 2b: a scoped (enforce, non-admin) caller may only launch a job with
+    # a Chrome profile they own or that is shared. Fail fast with 403 BEFORE
+    # creating the job row or grabbing a worker — the API-layer guard against
+    # borrowing another tenant's login state via ``options.use_profile``.
+    # off / optional / admin are unaffected (should_scope=False). Covers every
+    # mode (the codegen-loop / rerun branches below run after this).
+    _use_prof = (req.options.use_profile or "").strip() if req.options else ""
+    if _use_prof:
+        from server.hub.auth import owner_of as _owner_of, should_scope as _should_scope
+        _p = getattr(getattr(request, "state", None), "principal", None)
+        if _should_scope(_p):
+            from server.hub.routes.profiles import _shared_meta
+            _pm = await _shared_meta(_use_prof)
+            if _pm is not None and not (
+                bool(_pm.get("shared", True))
+                or str(_pm.get("owner_id") or "default") == _owner_of(request)
+            ):
+                raise HTTPException(
+                    403,
+                    f"use_profile: profile '{_use_prof}' is not available to "
+                    "this account",
+                )
+
     job_id = uuid.uuid4().hex[:12]
     from server.hub.auth import owner_of
     info = JobInfo(
@@ -1000,14 +1023,29 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
                 rec = state.hosts.get(auto_host)
                 if rec:
                     auto_popup_policy = rec.popup_policy or "kill"
-                    if rec.cookies and req.options.mode == "fetch":
+                    # Phase 2b: hosts are keyed by hostname (one record per
+                    # host). Under enforce, a record pushed by another tenant
+                    # is invisible to this job — don't inject its cookies AND
+                    # don't let this job's post-fetch dump clobber it (the
+                    # save_cookies_host below keys off ``auto_host``). Nulling
+                    # auto_host makes the job behave as if no record existed.
+                    # No-op under off / optional / admin (owner_can_use=True).
+                    from server.hub.auth import owner_can_use
+                    _host_usable = owner_can_use(
+                        getattr(rec, "owner_id", "default"),
+                        job_owner=info.owner_id,
+                        shared=getattr(rec, "shared", True),
+                    )
+                    if not _host_usable:
+                        auto_host = None
+                    elif rec.cookies and req.options.mode == "fetch":
                         auto_cookies = cookies_for_cdp(rec.cookies)
                     # Pick the best-matching pre-baked recipe (Phase 1)
                     # and stamp it onto JobOptions so the worker can
                     # run it right after navigation. Only for Fetch
                     # mode -- vision-agent / codegen-loop have their
                     # own LLM-driven flow and don't need the recipe.
-                    if (
+                    if _host_usable and (
                         req.options.mode == "fetch"
                         and not req.options.fetch_recipe
                         and getattr(req.options, "fetch_strategy", "recipe") != "normal"
@@ -1202,10 +1240,25 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
                 # "no default" rather than failing the dispatch.
                 _profile_name = None
             else:
-                _profile_url = f"{base}/profiles/{_profile_name}"
-                # Etag lets the worker skip the download when its cache already
-                # has this exact version (typical after the initial sync).
-                _profile_etag = _pmeta.get("etag") or None
+                # Phase 2b: tenant isolation on the dispatch path. Inject the
+                # profile only when the job's owner may use it (shared, or
+                # same tenant). The explicit-profile case is already 403'd up
+                # front; this is the belt-and-suspenders for the AMBIENT
+                # default-profile fallback — a private default never rides onto
+                # another tenant's job. No-op under off/optional (owner_can_use
+                # returns True), so ambient behaviour is unchanged.
+                from server.hub.auth import owner_can_use
+                if owner_can_use(
+                    _pmeta.get("owner_id"),
+                    job_owner=info.owner_id,
+                    shared=bool(_pmeta.get("shared", True)),
+                ):
+                    _profile_url = f"{base}/profiles/{_profile_name}"
+                    # Etag lets the worker skip the download when its cache
+                    # already has this exact version (typical after sync).
+                    _profile_etag = _pmeta.get("etag") or None
+                else:
+                    _profile_name = None  # run with the lane's stock profile
 
         # Asset URL blacklist (V): pull operator-managed list from Settings
         # and stamp onto every assignment so an admin UI edit takes effect

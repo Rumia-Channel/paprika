@@ -30,6 +30,63 @@ log = logging.getLogger(__name__)
 
 from server.hub.routes.sessions._base import *  # noqa: F401,F403
 
+
+async def _session_visible_one(info, request) -> bool:
+    """Phase 2b read-scope for a single session. A scoped caller (enforce,
+    non-admin user) may see a session when they OWN it, or when its parent
+    job (``job_id``) is theirs — auto-sessions from a job dispatch carry no
+    owner and are judged by the job. off / optional / admin → always True
+    (non-breaking)."""
+    from server.hub.auth import owner_of, should_scope
+    p = getattr(getattr(request, "state", None), "principal", None)
+    if not should_scope(p):
+        return True
+    owner = owner_of(request)
+    if str(getattr(info, "owner_id", "default") or "default") == owner:
+        return True
+    jid = getattr(info, "job_id", None)
+    if jid and state.store is not None:
+        try:
+            ji = await state.store.get_job_info(jid)
+        except Exception:
+            ji = None
+        if ji is not None and getattr(ji, "owner_id", "default") == owner:
+            return True
+    return False
+
+
+async def _scope_session_items(items: list[dict], request) -> list[dict]:
+    """Phase 2b read-scope for the /sessions list. Same rule as
+    :func:`_session_visible_one` but batched: resolve the parent-job owner once
+    per distinct job_id (the admin UI is never scoped, so this only runs for a
+    non-admin user's own poll). off / optional / admin return ``items`` as-is."""
+    from server.hub.auth import owner_of, should_scope
+    p = getattr(getattr(request, "state", None), "principal", None)
+    if not should_scope(p):
+        return items
+    owner = owner_of(request)
+    # Only sessions NOT already owner-matched need a parent-job lookup.
+    pending = {
+        it.get("job_id")
+        for it in items
+        if it.get("job_id") and str(it.get("owner_id") or "default") != owner
+    }
+    owned_jobs: set[str] = set()
+    if pending and state.store is not None:
+        for jid in pending:
+            try:
+                ji = await state.store.get_job_info(jid)
+            except Exception:
+                ji = None
+            if ji is not None and getattr(ji, "owner_id", "default") == owner:
+                owned_jobs.add(jid)
+    return [
+        it for it in items
+        if str(it.get("owner_id") or "default") == owner
+        or (it.get("job_id") in owned_jobs)
+    ]
+
+
 @router.post("/internal/sessions/{session_id}/action", include_in_schema=False)
 async def internal_session_action(session_id: str, body: dict, request: Request):
     """Hub→Hub forwarding sink (phase 3). A sibling hub that received a
@@ -59,7 +116,7 @@ async def internal_session_action(session_id: str, body: dict, request: Request)
 
 
 @router.post("/sessions")
-async def create_session(body: dict) -> dict:
+async def create_session(body: dict, request: Request = None) -> dict:
     """Open a new session against a free Lane on some Worker.
 
     Body (all optional)::
@@ -103,6 +160,11 @@ async def create_session(body: dict) -> dict:
 
     sid = new_session_id()
     parent_jid = body.get("parent_job_id") or body.get("job_id") or None
+    # Phase 2b: stamp the tenant that opened this session (off/optional →
+    # "default"). ``request`` is None for the in-process auto-relogin caller
+    # (_ensure_host_login), which owner_of() maps to "default" — an internal
+    # session, correctly the shared tenant.
+    from server.hub.auth import owner_of
     info = SessionInfo(
         session_id=sid,
         worker_id=worker.worker_id,
@@ -113,6 +175,7 @@ async def create_session(body: dict) -> dict:
         # session it opens with the parent job_id so the admin UI can
         # group "Live: job XXXX" pages with the right session noVNCs.
         job_id=parent_jid,
+        owner_id=owner_of(request),
     )
     state.sessions.add(info)
     # When this session is owned by a parent job, point page.capture()
@@ -161,10 +224,20 @@ async def create_session(body: dict) -> dict:
             if host:
                 rec = state.hosts.get(host)
                 if rec:
-                    if rec.cookies:
+                    auto_popup_policy = rec.popup_policy or "kill"
+                    # Phase 2b: inject the host's cookies only when this
+                    # session's owner may use them (shared / same tenant).
+                    # auto_host (used for the post-close save-back) stays unset
+                    # otherwise, so a scoped session can't clobber another
+                    # tenant's host record. No-op under off/optional.
+                    from server.hub.auth import owner_can_use
+                    if rec.cookies and owner_can_use(
+                        getattr(rec, "owner_id", "default"),
+                        job_owner=info.owner_id,
+                        shared=getattr(rec, "shared", True),
+                    ):
                         auto_cookies = cookies_for_cdp(rec.cookies)
                         auto_host = host
-                    auto_popup_policy = rec.popup_policy or "kill"
         except Exception:
             auto_cookies = None
             auto_host = None
@@ -223,6 +296,24 @@ async def create_session(body: dict) -> dict:
                 )
             # Stale default -- silently skip.
             profile_name = None
+        else:
+            # Phase 2b tenancy: this session's owner may only use a profile
+            # that is shared or theirs. An explicit borrow is rejected (403);
+            # a non-visible default is silently skipped. No-op off/optional.
+            from server.hub.auth import owner_can_use
+            if not owner_can_use(
+                _smeta.get("owner_id"),
+                job_owner=info.owner_id,
+                shared=bool(_smeta.get("shared", True)),
+            ):
+                if _explicit_profile:
+                    state.sessions.remove(sid)
+                    raise HTTPException(
+                        403,
+                        f"use_profile: profile '{profile_name}' is not "
+                        "available to this account",
+                    )
+                profile_name = None  # non-visible default → stock profile
     if profile_name:
         # Use the worker-dialled base URL when available so a worker
         # behind NAT / on a different subnet still gets a reachable
@@ -523,6 +614,10 @@ async def list_sessions(request: Request) -> dict:
                     if sid and sid not in seen:
                         seen.add(sid)
                         items.append(it)
+    # Phase 2b: scope the merged fleet-wide list to the caller's tenant. Done
+    # once on the aggregating hub (peers return their slice unscoped over the
+    # worker-secret internal hop); no-op for off/optional/admin.
+    items = await _scope_session_items(items, request)
     return {"count": len(items), "sessions": items}
 
 
@@ -535,6 +630,11 @@ async def get_session(session_id: str, request: Request) -> dict:
     if fwd is not None:
         return fwd
     info = _get_session_or_404(session_id)
+    # Phase 2b: a scoped caller gets 404 for a session that isn't theirs (own
+    # owner or parent job). Unguessable 128-bit ids already gate the action
+    # endpoints; this hides existence on the read. No-op off/optional/admin.
+    if not await _session_visible_one(info, request):
+        raise HTTPException(404, f"session '{session_id}' not found")
     d = _proxy_session_dict(info.to_json())
     d["novnc_url_autoconnect"] = _novnc_autoconnect(d.get("novnc_url"))
     return d

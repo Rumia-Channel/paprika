@@ -140,6 +140,26 @@ def _require_profiles() -> ProfileRegistry:
     return state.profiles
 
 
+def _profile_visible_to(meta: dict | None, request) -> bool:
+    """Phase 2b read-scope: whether the caller may see / download this profile.
+
+    Non-breaking — only a SCOPED caller (enforce + non-admin user) is
+    restricted, to profiles they own or that are ``shared``. Workers
+    (``kind=worker``) and admin / system are never scoped, so a worker fetching
+    an assigned profile's tarball from ``GET /profiles/{name}`` always passes
+    (the dispatch already decided ownership). ``meta is None`` returns True so
+    the normal 404 path handles a genuinely absent profile."""
+    from server.hub.auth import owner_of, should_scope
+    p = getattr(getattr(request, "state", None), "principal", None)
+    if not should_scope(p):
+        return True
+    if meta is None:
+        return True
+    if bool(meta.get("shared", True)):
+        return True
+    return str(meta.get("owner_id") or "default") == owner_of(request)
+
+
 def _profile_url_for_worker(worker, name: str) -> str | None:
     """Build the GET URL a worker should use to fetch the tarball.
 
@@ -170,7 +190,11 @@ async def _broadcast_profile_sync(name: str) -> None:
     meta = await _shared_meta(name)
     if meta is None or not meta.get("etag"):
         return
-    is_default = (await _shared_default()) == name
+    # Phase 2b: only a SHARED profile may be installed as the ambient default
+    # on every idle lane (noVNC viewers would otherwise see a private tenant's
+    # logged-in Chrome). A private default can still back its owner's explicit
+    # use_profile jobs; it just isn't broadcast as ambient.
+    is_default = (await _shared_default()) == name and bool(meta.get("shared", True))
     for w in list(state.registry.connections.values()):
         url = _profile_url_for_worker(w, name)
         if not url:
@@ -237,7 +261,8 @@ async def _sync_all_profiles_to_worker(worker) -> None:
                     url=url,
                     etag=etag,
                     size_bytes=int(p.get("size_bytes") or 0),
-                    is_default=(name == default_name),
+                    # Phase 2b: only a SHARED profile is installed ambiently.
+                    is_default=(name == default_name and bool(p.get("shared", True))),
                 )
             )
         except Exception:
@@ -562,7 +587,7 @@ async def _shared_list() -> list[dict]:
 
 
 @router.get("/profiles")
-async def list_profiles() -> dict:
+async def list_profiles(request: Request) -> dict:
     """List every uploaded Chrome profile (metadata only).
 
     The tarballs themselves are at ``GET /profiles/{name}`` but those
@@ -573,12 +598,20 @@ async def list_profiles() -> dict:
 
         {
           "default": "mydefault" | null,    // auto-applied profile name
-          "profiles": [{name, size_bytes, ..., is_default}, ...]
+          "profiles": [{name, size_bytes, ..., is_default, owner_id, shared}, ...]
         }
+
+    Phase 2b: a scoped caller (enforce + non-admin user) sees only the
+    profiles they own plus the shared ones; off/optional/admin see all.
     """
+    profiles = await _shared_list()
+    from server.hub.auth import should_scope
+    p = getattr(getattr(request, "state", None), "principal", None)
+    if should_scope(p):
+        profiles = [d for d in profiles if _profile_visible_to(d, request)]
     return {
         "default": await _shared_default(),
-        "profiles": await _shared_list(),
+        "profiles": profiles,
     }
 
 
@@ -670,16 +703,27 @@ async def clear_default_profile() -> dict:
 
 
 @router.get("/profiles/{name}")
-async def download_profile(name: str):
+async def download_profile(name: str, request: Request):
     """Stream the tarball for ``{name}``. Used by workers when they
     receive a HubAssignJob whose ``profile_url`` points here.
 
     Returns ``application/gzip``. Content-Disposition is set so a
     curl ``--remote-name`` works for ad-hoc debugging too.
+
+    Phase 2b: a scoped caller (enforce + non-admin user) gets a 404 for a
+    profile they don't own and isn't shared — so a tenant can't pull another
+    tenant's login state by guessing the name. Workers / admin / system are
+    never scoped (the worker fetching an assigned tarball always passes).
     """
     if not _profile_name_valid(name):
         raise HTTPException(400, "invalid profile name")
     reg = _require_profiles()
+    # Read-scope BEFORE serving so a hidden profile 404s the same whether or
+    # not it happens to be cached on this hub.
+    from server.hub.auth import should_scope
+    _p = getattr(getattr(request, "state", None), "principal", None)
+    if should_scope(_p) and not _profile_visible_to(await _shared_meta(name), request):
+        raise HTTPException(404, f"profile '{name}' not found")
     p = reg.get_tarball_path(name)
     if p is None:
         # Another hub uploaded it: pull the tarball from MinIO into the local
@@ -707,12 +751,17 @@ async def download_profile(name: str):
 
 
 @router.get("/profiles/{name}/info")
-async def get_profile_info(name: str) -> dict:
-    """Metadata for ``{name}`` without downloading the tarball."""
+async def get_profile_info(name: str, request: Request) -> dict:
+    """Metadata for ``{name}`` without downloading the tarball.
+
+    Phase 2b: scoped callers get 404 for a profile they can't see (same rule
+    as the list / download)."""
     if not _profile_name_valid(name):
         raise HTTPException(400, "invalid profile name")
     meta = await _shared_meta(name)
     if meta is None:
+        raise HTTPException(404, f"profile '{name}' not found")
+    if not _profile_visible_to(meta, request):
         raise HTTPException(404, f"profile '{name}' not found")
     return meta
 
@@ -748,6 +797,22 @@ async def upload_profile(
     reg = _require_profiles()
     lock = state.profiles_lock
     assert lock is not None
+
+    # Phase 2b tenancy. Stamp the uploading tenant; a scoped (enforce,
+    # non-admin) user's NEW profile is private (shared=False), everything else
+    # (off / optional / admin) stays the shared 'default' tenant = ambient
+    # behaviour. Ownership is sticky on re-upload (ProfileRegistry.save), but
+    # block a scoped user from clobbering a name they can't even see so they
+    # can't overwrite / poison another tenant's profile bytes.
+    from server.hub.auth import owner_of, should_scope
+    _p = getattr(getattr(request, "state", None), "principal", None)
+    _scoped = should_scope(_p)
+    if _scoped:
+        _existing = await _shared_meta(name)
+        if _existing is not None and not _profile_visible_to(_existing, request):
+            raise HTTPException(404, f"profile '{name}' not found")
+    _owner_id = owner_of(request)
+    _shared = not _scoped  # scoped user → private; off/optional/admin → shared
 
     source_machine = request.headers.get("x-paprika-source-machine")
     chrome_profile = request.headers.get("x-paprika-chrome-profile")
@@ -839,6 +904,8 @@ async def upload_profile(
                 source_machine=source_machine,
                 chrome_profile_name=chrome_profile,
                 note=note,
+                owner_id=_owner_id,
+                shared=_shared,
             )
             # Phase C-2: push the tarball to MinIO + metadata to MariaDB so any
             # hub can serve this profile for a job (bytes are large -> MinIO,

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from server.hub._state import config, get_storage_dir, state
@@ -527,7 +527,7 @@ async def get_judge_comparisons(limit: int = 50) -> dict:
 
 
 @router.put("/hosts/{host}")
-async def put_host(host: str, body: dict) -> dict:
+async def put_host(host: str, body: dict, request: Request = None) -> dict:
     """Create or update the record for ``host``. Body::
 
         {
@@ -575,6 +575,21 @@ async def put_host(host: str, body: dict) -> dict:
                 "'fetch_recipes' must be a list of recipe dicts "
                 "(each shaped {pattern, actions, description, ...})",
             )
+    # Phase 2b: stamp the pushing tenant on the host record. A scoped (enforce,
+    # non-admin) user's push is private (shared=False) and may NOT clobber a
+    # host owned by another tenant (404, same as the read-scope); off / optional
+    # / admin stay the shared 'default' tenant = ambient behaviour. Hosts are
+    # keyed by hostname, so this is one record per host.
+    from server.hub.auth import owner_of, should_scope
+    _p = getattr(getattr(request, "state", None), "principal", None)
+    _scoped = should_scope(_p)
+    if _scoped:
+        _ex = reg.get(_normalise_host(host))
+        if _ex is not None and not (
+            getattr(_ex, "shared", True)
+            or getattr(_ex, "owner_id", "default") == owner_of(request)
+        ):
+            raise HTTPException(404, f"host '{host}' not found")
     try:
         rec = reg.upsert(
             host=host,
@@ -583,6 +598,8 @@ async def put_host(host: str, body: dict) -> dict:
             recrawl_patterns=recrawl_patterns,
             popup_policy=popup_policy,
             fetch_recipes=fetch_recipes,
+            owner_id=owner_of(request),
+            shared=not _scoped,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

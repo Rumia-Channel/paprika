@@ -143,6 +143,32 @@ def should_scope(principal: "Principal | None") -> bool:
     )
 
 
+def owner_can_use(
+    resource_owner: "str | None",
+    *,
+    job_owner: str,
+    shared: bool = True,
+) -> bool:
+    """Whether a worker dispatch for a job/session owned by ``job_owner`` may
+    carry a resource (a host's cookies, a Chrome profile) owned by
+    ``resource_owner``. This is THE tenant-isolation gate on the
+    worker-dispatch path (Phase 2b — the Cookie/profile leak surface).
+
+    Non-breaking: only ``enforce`` restricts. Under off/optional every job is
+    owned by :data:`DEFAULT_OWNER` and every resource backfills to
+    owner=default / shared=1, so this returns ``True`` exactly as before.
+    Under ``enforce`` a resource rides along only when it is ``shared`` or owned
+    by the same tenant as the job — so user B's login state never leaks onto
+    user A's job. Unlike :func:`should_scope` this is keyed on DATA (the job's
+    stamped owner), not the request principal, so it works identically on the
+    background redrive loop where there is no request."""
+    if current_mode() != AuthMode.ENFORCE:
+        return True
+    if shared:
+        return True
+    return (resource_owner or DEFAULT_OWNER) == (job_owner or DEFAULT_OWNER)
+
+
 # ---------------------------------------------------------------------------
 # Crypto helpers
 # ---------------------------------------------------------------------------
@@ -676,7 +702,7 @@ def _parse_dt_for_sql(iso: str):
 
 __all__ = [
     "AuthMode", "current_mode", "Principal", "SYSTEM", "ANONYMOUS",
-    "DEFAULT_OWNER", "owner_of", "should_scope",
+    "DEFAULT_OWNER", "owner_of", "should_scope", "owner_can_use",
     "AuthStore", "hash_password", "verify_password",
     "generate_api_key", "hash_api_key_secret", "parse_api_key",
     "SESSION_COOKIE", "sign_session", "verify_session", "get_session_secret",
