@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import time
 from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
@@ -54,7 +55,11 @@ def _hub_http_and_host(hub_ws_url: str) -> tuple[str, str]:
 
 
 def _fetch_allow(hub_http: str) -> set[str]:
-    """Fetch the hub's egress allowlist (one IP/CIDR per line). Empty on failure."""
+    """Fetch the hub's egress allowlist (one IP/CIDR per line). Empty on failure.
+
+    Retries with a short delay. By the time this runs, :func:`apply` has already
+    installed the bootstrap firewall that allows our hub, so attempt 1 normally
+    succeeds — the retries just ride out a transient hiccup."""
     out: set[str] = set()
     if not hub_http:
         return out
@@ -62,7 +67,7 @@ def _fetch_allow(hub_http: str) -> set[str]:
         import httpx
     except Exception:
         return out
-    for attempt in (1, 2):
+    for attempt in range(1, 5):
         try:
             r = httpx.get(f"{hub_http}/fleet/egress-allow", timeout=6.0)
             if r.status_code == 200:
@@ -75,11 +80,54 @@ def _fetch_allow(hub_http: str) -> set[str]:
                         r.status_code, attempt)
         except Exception as e:
             log.warning("egress-guard: allowlist fetch attempt %d failed: %s", attempt, e)
+        if attempt < 4:
+            try:
+                time.sleep(2)
+            except Exception:
+                pass
     return out
 
 
+def _run_script(allow: "set[str]") -> int:
+    """Run the baked egress-firewall.sh (flush + rebuild) with ALLOW_IPS=allow."""
+    env = dict(os.environ)
+    env["PAPRIKA_WORKER_EGRESS_FIREWALL"] = "1"  # tell the script to enforce
+    env["PAPRIKA_FIREWALL_ALLOW_IPS"] = ",".join(sorted(allow))
+    try:
+        p = subprocess.run([_SCRIPT], env=env, capture_output=True, text=True, timeout=30)
+        if p.returncode != 0:
+            log.warning("egress-guard: script rc=%s stderr=%s",
+                        p.returncode, (p.stderr or "")[:300])
+        return p.returncode
+    except Exception as e:
+        log.warning("egress-guard: script run failed: %s", e)
+        return 1
+
+
+def _insert_accept(ip: str) -> None:
+    """Insert an ACCEPT for ``ip`` at the TOP of OUTPUT (above the DROP block),
+    WITHOUT a flush — so the fetched hub IPs are added on top of the already-active
+    bootstrap firewall with no open window. IPv6 literals go to ip6tables."""
+    cmd = "ip6tables" if ":" in ip else "iptables"
+    try:
+        subprocess.run([cmd, "-I", "OUTPUT", "1", "-d", ip, "-j", "ACCEPT"],
+                       capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        log.warning("egress-guard: insert ACCEPT %s failed: %s", ip, e)
+
+
 def apply(hub_ws_url: str) -> None:
-    """Apply the worker egress firewall. No-op unless ``PAPRIKA_EGRESS_GUARD=1``."""
+    """Apply the worker egress firewall. No-op unless ``PAPRIKA_EGRESS_GUARD=1``.
+
+    Bootstrap-first (fixes the canary-#1 startup race, 2026-06-08): install a minimal
+    firewall allowing only our own hub FIRST. That protects the worker immediately AND
+    guarantees the hub is reachable for the allowlist fetch regardless of stale rules
+    or network-readiness timing (the original fetch-first ordering timed out at startup
+    → fell back to hub-only). THEN fetch /fleet/egress-allow through that known-good
+    state and ADD the extra infra IPs (other hubs, MinIO, …) on top via insert — no
+    second flush, no open window. If the fetch fails, the bootstrap (own-hub-only)
+    firewall stands: functionally sufficient since all worker infra traffic goes via
+    the nginx front anyway."""
     if not _enabled():
         return
     if not os.path.exists(_SCRIPT):
@@ -87,24 +135,18 @@ def apply(hub_ws_url: str) -> None:
                     "(rebuild the worker image to ship the script)", _SCRIPT)
         return
     hub_http, hub_host = _hub_http_and_host(hub_ws_url)
-    allow: set[str] = set()
-    if hub_host:
-        allow.add(hub_host)  # always reach our own hub/nginx front
+    # 1) Bootstrap: protect now + guarantee the hub is reachable for the fetch.
+    bootstrap = {hub_host} if hub_host else set()
+    _run_script(bootstrap)
+    # 2) Fetch the full allowlist THROUGH the bootstrap firewall (hub allowed).
     fetched = _fetch_allow(hub_http)
-    if fetched:
-        allow |= fetched
+    # 3) Add extra infra IPs on top (insert, no flush). Bootstrap stands if none.
+    extra = sorted(ip for ip in fetched if ip and ip not in bootstrap)
+    for ip in extra:
+        _insert_accept(ip)
+    if extra:
+        log.info("egress-guard: firewall applied (bootstrap=%s + fetched=%s)",
+                 sorted(bootstrap), extra)
     else:
-        log.warning("egress-guard: hub allowlist fetch failed; applying "
-                    "fail-closed bootstrap (allow=%s only)", sorted(allow))
-    env = dict(os.environ)
-    env["PAPRIKA_WORKER_EGRESS_FIREWALL"] = "1"  # tell the script to enforce
-    env["PAPRIKA_FIREWALL_ALLOW_IPS"] = ",".join(sorted(allow))
-    try:
-        p = subprocess.run([_SCRIPT], env=env, capture_output=True, text=True, timeout=30)
-        if p.returncode == 0:
-            log.info("egress-guard: firewall applied (allow=%s)", sorted(allow))
-        else:
-            log.warning("egress-guard: script rc=%s stderr=%s",
-                        p.returncode, (p.stderr or "")[:300])
-    except Exception as e:
-        log.warning("egress-guard: apply failed: %s", e)
+        log.warning("egress-guard: firewall applied BOOTSTRAP-ONLY (allow=%s); "
+                    "allowlist fetch returned nothing extra", sorted(bootstrap))
