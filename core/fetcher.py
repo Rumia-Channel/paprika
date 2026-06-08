@@ -2484,7 +2484,34 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                     f"with {in_flight} request(s) still in flight."
                 )
 
-        result.html = await tab.get_content()
+        # tab.get_content() runs DOM.getDocument(depth=-1, pierce=True), making
+        # Chrome CBOR-serialize the ENTIRE deeply-nested DOM tree. On
+        # pathologically deep DOMs (e.g. www.bodogblog.com) Chrome's CBOR encoder
+        # overflows its stack ("CBOR: stack limit exceeded" / -32000) and this
+        # await -- the one finishing step that used to be UNWRAPPED -- crashed
+        # the whole fetch, discarding every asset already captured above
+        # (assets_saved=0 -> Fail). Make HTML capture best-effort like the other
+        # finishing steps: on failure fall back to reading outerHTML as a STRING
+        # via Runtime.evaluate (no node-tree serialization -> immune to the
+        # depth/stack limit), and never let an HTML-capture error fail an
+        # otherwise-successful fetch.
+        try:
+            result.html = await tab.get_content()
+        except Exception as _gc_exc:
+            log(
+                f"  ... get_content() failed "
+                f"({type(_gc_exc).__name__}: {str(_gc_exc)[:140]}); "
+                f"falling back to outerHTML via evaluate"
+            )
+            try:
+                _oh = await tab.evaluate("document.documentElement.outerHTML")
+                result.html = _oh if isinstance(_oh, str) else (result.html or "")
+            except Exception as _oh_exc:
+                log(
+                    f"  ... outerHTML fallback also failed "
+                    f"({type(_oh_exc).__name__}); continuing without page.html"
+                )
+                result.html = result.html or ""
 
         # Pick the representative (cover/hero) image while the DOM is
         # still live -- this is the only point where true
