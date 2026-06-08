@@ -373,6 +373,21 @@ def cookies_for_cdp(cookies: list[dict]) -> list[dict]:
                 clean["expires"] = float(clean["expires"])
             except (TypeError, ValueError):
                 clean.pop("expires", None)
+        # Keep installed cookies alive client-side for >= 3 days: bump each
+        # cookie's expiry to max(original, now+3d). Short-lived ones
+        # (cf_clearance / PHPSESSID) and session cookies (no ``expires``)
+        # would otherwise be dropped by Chrome during/after the fetch, and
+        # the post-fetch dump-back would then persist their stale/expired
+        # state back into the host registry. max() never SHORTENS a
+        # longer-lived cookie. Server-side expiry is unaffected -- this only
+        # stops Chrome from discarding the cookie early and keeps the
+        # registry copy fresh across fetches.
+        import time as _t
+        try:
+            _cur_exp = float(clean.get("expires") or 0)
+        except (TypeError, ValueError):
+            _cur_exp = 0.0
+        clean["expires"] = max(_cur_exp, _t.time() + 3 * 86400)
         # CDP requires either url OR domain. If only domain is given and
         # it lacks the leading dot some browsers expect, leave it as-is
         # -- CDP is lenient.
