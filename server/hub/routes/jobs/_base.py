@@ -432,7 +432,7 @@ async def _soft_resolve_job(
     accept the bare job dir.
 
     Centralises the pattern that grew across /assets, /assets.json,
-    /ui/assets, /jobs/{id}/links, /jobs/{id}/network, and the
+    /jobs/{id}/links, /jobs/{id}/network, and the
     session-end POST endpoints. Six call sites at the time of
     extraction; deferring this DRY made the asset-gallery debugging
     saga ~one commit longer than it needed to be."""

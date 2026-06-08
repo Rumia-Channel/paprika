@@ -58,9 +58,9 @@ async def take_job_screenshot(
     job's lane and save it as a JPEG asset.
 
     Returns ``{ok, name, size, mime, href}``. The saved asset shows
-    up in ``/jobs/{id}/assets.json`` alongside everything else, so
-    ``/ui/assets/{id}`` (the HTML asset gallery) + the per-job result
-    page pick it up automatically.
+    up in ``/jobs/{id}/assets.json`` alongside everything else, so the
+    admin Live panel's inline gallery + the per-job result page pick it
+    up automatically.
 
     Used by the Submit-form Live panel's "Screenshot" button so an
     operator can manually snapshot the running browser without
@@ -219,8 +219,8 @@ async def upload_asset(
     # parent_job_ids whose assets dir create_session pre-made, so raw
     # cli.session(parent_job_id=...) callers (e.g. an external crawler
     # publishing page.screenshot(label=) frames) can populate a gallery
-    # the admin UI shows at /ui/assets/<id> without first POSTing a
-    # /jobs entry. The 404 still fires for genuinely-unknown ids.
+    # the admin UI shows inline (via /jobs/{id}/assets.json) without
+    # first POSTing a /jobs entry. The 404 still fires for unknown ids.
     await _soft_resolve_job(job_id, require_subdir="assets")
 
     name = asset_name or file.filename or "unnamed"

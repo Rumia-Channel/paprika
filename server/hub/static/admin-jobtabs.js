@@ -1351,8 +1351,8 @@ function ljpAttach(jobId) {
   LJP.jobId = jobId;
   ljpSyncHash(jobId);
   document.getElementById('ljpJobId').textContent = jobId;
-  document.getElementById('ljpOpenLog').href = '/ui/log/' + encodeURIComponent(jobId);
-  document.getElementById('ljpOpenGallery').href = '/ui/assets/' + encodeURIComponent(jobId);
+  document.getElementById('ljpOpenLog').href = '/jobs/' + encodeURIComponent(jobId) + '/log.txt';
+  document.getElementById('ljpOpenGallery').href = '/jobs/' + encodeURIComponent(jobId) + '/assets.json';
   document.getElementById('ljpOpenResult').href = '/jobs/' + encodeURIComponent(jobId) + '/result';
   document.getElementById('ljpOpenPageHtml').href = '/jobs/' + encodeURIComponent(jobId) + '/page.html';
   document.getElementById('liveJobPanel').style.display = '';

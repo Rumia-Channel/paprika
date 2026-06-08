@@ -180,7 +180,7 @@ async def create_session(body: dict, request: Request = None) -> dict:
     state.sessions.add(info)
     # When this session is owned by a parent job, point page.capture()
     # uploads at that job's existing /assets endpoint so its inline
-    # gallery (and /ui/assets/{id}) actually shows the captures.
+    # gallery actually shows the captures.
     # Without this, session captures stay in the worker's tempdir and
     # the parent job's gallery looks empty for codegen-loop runs.
     session_upload_base: str | None = None

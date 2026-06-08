@@ -1168,10 +1168,9 @@ app.include_router(_novnc_router)
 # ----------------------------------------------------------------------------
 
 # Inline SVG for the paprika logo. Served from /icon.svg so every
-# HTML surface (admin dashboard, /screenshots, /jobs/*/log,
-# per-job galleries) can reference one URL instead of duplicating
-# markup. Also used as the favicon via <link rel="icon"
-# type="image/svg+xml" href="/icon.svg"> in each <head>.
+# HTML surface (admin dashboard, /screenshots viewer) can reference one
+# URL instead of duplicating markup. Also used as the favicon via
+# <link rel="icon" type="image/svg+xml" href="/icon.svg"> in each <head>.
 # ---- System probes + logo -- moved to routes/system.py (#2B-E) -----------
 from server.hub.routes.system import router as _system_router
 
@@ -1188,17 +1187,11 @@ app.include_router(_auth_router)
 # ---- /screenshots HTML viewer -- moved to routes/system.py (#2B-G3-partial)
 
 
-# ----------------------------------------------------------------------------
-# /ui/log/{id} — live tail-f viewer (HTML page). /jobs/{id}/log is a
-# legacy alias of the same handler.
-#
-# The page connects to the existing /jobs/{id}/events WebSocket and renders
-# log lines in a dark terminal-style pane that auto-scrolls. Unlike the raw
-# log.txt download (which only ever shows what's already on disk), this
-# updates in real time while the job is running.
-# ----------------------------------------------------------------------------
-
-# ---- /ui/log live-log HTML viewer -- moved to routes/jobs.py (#2B-G3-partial)
+# Live log: the standalone /ui/log HTML viewer + its /jobs/{id}/log alias
+# were removed. Job-output now unifies on /jobs/{id}/log.txt (raw file) +
+# the WS /jobs/{id}/events stream the in-admin Live panel consumes. The
+# /ui/assets HTML gallery was likewise dropped in favour of
+# /jobs/{id}/assets.json.
 
 
 # /info + /health moved to routes/system.py alongside /icon.svg (#2B-E)
@@ -1240,9 +1233,6 @@ import re as _re_tag
 _ROUTE_TAG_RULES: list[tuple[_re_tag.Pattern[str], str]] = [
     # More-specific routes first.
     (_re_tag.compile(r"^/sessions/[^/]+/novnc(/|$)"), "noVNC"),
-    (_re_tag.compile(r"^/ui/assets(/|$)"), "Screenshots"),
-    (_re_tag.compile(r"^/ui/attempts(/|$)"), "Screenshots"),  # legacy alias
-    (_re_tag.compile(r"^/ui/log(/|$)"), "Jobs"),
     (_re_tag.compile(r"^/jobs/[^/]+/screenshots?(/|$)"), "Screenshots"),
     (_re_tag.compile(r"^/jobs/[^/]+/gallery"), "Screenshots"),
     (_re_tag.compile(r"^/jobs/[^/]+/assets"), "Screenshots"),

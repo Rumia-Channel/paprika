@@ -679,8 +679,8 @@ async function refresh() {
               <div class="menu">
                 <button onclick="watchLive('${jid}')" title="Attach the Submit-tab Live panel to this job (Log / noVNC / Code / Gallery)"><span class="ico" style="color:#c0392b;">●</span> watch live (Log+noVNC+Code+Gallery)</button>
                 ${novncItem}
-                <a href="/ui/log/${jid}" target="_blank">${ico('signal')} live log (tail -f)</a>
-                <a href="/ui/assets/${jid}" target="_blank">${ico('image')} screenshots</a>
+                <a href="/jobs/${jid}/log.txt" target="_blank">${ico('signal')} log.txt</a>
+                <a href="/jobs/${jid}/assets.json" target="_blank">${ico('image')} assets.json</a>
                 ${codegenItems}
                 <a href="/jobs/${jid}/log.txt" target="_blank">${ico('list')} raw log file</a>
                 <a href="/jobs/${jid}/result" target="_blank">${ico('code')} result JSON</a>
