@@ -185,6 +185,18 @@ class EngineRecord:
     #   qwen / local: 0 / 0 (自前 GPU、電気代別)
     cost_input_per_1m_jpy: float = 0.0
     cost_output_per_1m_jpy: float = 0.0
+    # GPU thermal throttle (local-GPU engines only). When
+    # ``gpu_temp_stop_c`` > 0 this engine STOPS accepting new LLM/agent
+    # requests once its GPU reaches ``gpu_temp_stop_c`` (受付停止温度) and
+    # RESUMES once it cools to ``gpu_temp_resume_c`` (開始温度) -- hysteresis
+    # so it doesn't flap. The temperature is read from ``gpu_temp_url``, or
+    # derived from the engine ``endpoint`` host on the exporter port (9402)
+    # when blank (one scripts/gpu_temp_exporter.py per GPU box). Cloud
+    # engines leave ``gpu_temp_stop_c`` = 0 and are never throttled. See
+    # server/hub/thermal.py for the gate + failover logic.
+    gpu_temp_stop_c: float = 0.0           # 受付停止温度 (0 = throttle off)
+    gpu_temp_resume_c: float = 0.0         # 開始温度 (re-accept below this)
+    gpu_temp_url: str = ""                 # temp exporter URL ("" = derive)
     notes: str = ""                        # operator memo
     builtin: bool = False                  # True = seeded, UI shows as read-only
     created_at: str = ""
@@ -236,6 +248,9 @@ class EngineRecord:
             daily_request_budget=int(d.get("daily_request_budget") or 0),
             cost_input_per_1m_jpy=float(d.get("cost_input_per_1m_jpy") or 0.0),
             cost_output_per_1m_jpy=float(d.get("cost_output_per_1m_jpy") or 0.0),
+            gpu_temp_stop_c=float(d.get("gpu_temp_stop_c") or 0.0),
+            gpu_temp_resume_c=float(d.get("gpu_temp_resume_c") or 0.0),
+            gpu_temp_url=str(d.get("gpu_temp_url") or ""),
             notes=str(d.get("notes") or ""),
             builtin=bool(d.get("builtin") or False),
             created_at=str(d.get("created_at") or ""),

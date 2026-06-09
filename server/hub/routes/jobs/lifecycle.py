@@ -426,7 +426,12 @@ async def get_job(job_id: str, request: Request) -> JobInfo:
 @router.get("/jobs/{job_id}/result", response_model=JobResult)
 async def get_job_result(job_id: str, request: Request) -> JobResult:
     info = await _require_owned_job_info(job_id, request)
-    if info.status not in (JobStatus.completed, JobStatus.failed, JobStatus.cancelled):
+    if info.status not in (
+        JobStatus.completed,
+        JobStatus.failed,
+        JobStatus.cancelled,
+        JobStatus.review,
+    ):
         raise HTTPException(409, f"job not finished (status={info.status})")
     result = await state.store.get_job_result(job_id)
     if result is None:

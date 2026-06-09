@@ -1194,6 +1194,12 @@ asyncio.run(main())"
         <span data-i18n="jobs.tab.running">実行中</span>
         <span class="count" id="jobsCntRunning">0</span>
       </button>
+      <button type="button" class="ai-subtab" data-jobs-status="review" role="tab" aria-selected="false"
+        title="ページは表示されたが、ログイン/年齢確認/同意などの全面オーバーレイでコンテンツが取得できていない可能性があるジョブ">
+        <iconify-icon icon="lucide:alert-triangle" style="color:#b8860b;"></iconify-icon>
+        <span data-i18n="jobs.tab.review">課題</span>
+        <span class="count" id="jobsCntReview">0</span>
+      </button>
     </div>
     <table id="jobsTable"><thead>
       <tr><th data-col="id" data-i18n="jobs.th.id">id</th><th data-col="mode" data-i18n="jobs.th.mode">mode</th><th data-col="status" data-i18n="jobs.th.status">status</th><th data-col="url">URL</th><th data-col="worker" data-i18n="jobs.th.worker">worker/lane</th><th data-col="started" data-i18n="jobs.th.started">started</th><th data-col="ended" data-i18n="jobs.th.ended">ended</th><th data-col="duration" data-i18n="jobs.th.duration">duration</th><th data-col="actions" data-i18n="jobs.th.actions">actions</th></tr>
@@ -2548,6 +2554,29 @@ table.aitbl code { font-size:0.95em; }
       <div>
         <button id="setSaveAssetBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> Asset capture を保存</button>
         <span id="setAssetErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
+      </div>
+    </div>
+
+    <!-- B2b. Egress proxy pool (hub-side, persisted; broadcast to workers) -->
+    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;"><iconify-icon icon="lucide:globe"></iconify-icon> Egress プロキシ
+      <small style="font-weight:normal; color:#888;">— Hub 永続・全 worker へ配信。IP ブロック回避</small>
+    </h3>
+    <div style="display:grid; grid-template-columns: 280px 1fr; gap:8px 12px; align-items:start; padding:8px 4px;">
+      <label for="setProxyPool" style="align-self:start; padding-top:6px;">プロキシプール:</label>
+      <div>
+        <textarea id="setProxyPool" rows="5"
+          placeholder="例:&#10;http://10.20.0.5:3128&#10;socks5://10.20.0.6:1080&#10;1 行 1 プロキシ (スキーム付き URL)"
+          style="width:100%; max-width:680px; padding:5px 8px; font-family:monospace; font-size:12px;"></textarea>
+        <div style="color:#888; font-size:.85em; margin-top:4px; max-width:680px;">
+          1 行 1 プロキシ (スキーム付き URL)。各 worker が<strong>ランダムに 1 つ</strong>選び、対象サイトへの egress (ブラウザ + yt-dlp) をそこ経由にする。<strong>空 = 直結</strong>。<br>
+          反映は各 worker の<strong>次の Chrome 起動時</strong> (実行中ブラウザは起動時の proxy を維持)。worker↔hub の制御通信は直結のまま。
+        </div>
+      </div>
+
+      <div></div>
+      <div>
+        <button id="setSaveProxyBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> Egress プロキシを保存</button>
+        <span id="setProxyErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
       </div>
     </div>
 

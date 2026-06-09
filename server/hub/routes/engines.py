@@ -75,6 +75,27 @@ async def _mdb_delete(slug: str) -> None:
         log.warning("mariadb delete engine %s failed: %s", slug, e)
 
 
+async def _share_engine(er: EngineRegistry, rec: EngineRecord) -> None:
+    """Broadcast an engine upsert to peer hubs (live cross-hub propagation,
+    like skills/hosts). MariaDB write-through is handled by _mdb_upsert; this
+    only publishes the surgical invalidate so peers refresh their file cache
+    without a restart. Best-effort."""
+    try:
+        from server.hub._invalidate import share_upsert
+        await share_upsert("engines", er, rec)
+    except Exception:
+        log.debug("engine share-upsert failed: %s", getattr(rec, "slug", "?"), exc_info=True)
+
+
+async def _share_engine_del(key: str) -> None:
+    """Broadcast an engine deletion to peer hubs. Best-effort."""
+    try:
+        from server.hub._invalidate import share_delete
+        await share_delete("engines", key)
+    except Exception:
+        log.debug("engine share-delete failed: %s", key, exc_info=True)
+
+
 # ----------------------------------------------------------------------------
 # Helpers (module-private; were inline in app.py before #2B-B)
 # ----------------------------------------------------------------------------
@@ -172,6 +193,12 @@ def _engine_to_dict(rec: EngineRecord, usage_map: dict | None = None) -> dict:
         # 過去 14 日の日次トークン + 円換算履歴。Chart 表示用。
         # 形式: [{"date": "2026-06-01", "prompt": N, "completion": M, "requests": K, "cost_jpy": ¥}]
         "cost_history": _cost_history_for(rec, usage_map),
+        # GPU thermal throttle (local-GPU engines; gpu_temp_stop_c=0 = off).
+        # 開始温度 (resume) / 受付停止温度 (stop). Live state is attached as
+        # ``thermal`` by the GET handlers (temp_c / accepting).
+        "gpu_temp_stop_c": rec.gpu_temp_stop_c,
+        "gpu_temp_resume_c": rec.gpu_temp_resume_c,
+        "gpu_temp_url": rec.gpu_temp_url,
         "notes": rec.notes,
         "builtin": rec.builtin,
         "created_at": rec.created_at,
@@ -355,7 +382,15 @@ async def list_engines() -> dict:
     whether that env is currently set on the hub."""
     er = _require_engines()
     usage_map = await _load_engine_usage_map()
-    items = [_engine_to_dict(r, usage_map) for r in er.list_all()]
+    from server.hub import thermal
+    items = []
+    for r in er.list_all():
+        d = _engine_to_dict(r, usage_map)
+        try:
+            d["thermal"] = await thermal.engine_thermal_snapshot(r)
+        except Exception:
+            d["thermal"] = None
+        items.append(d)
     return {"count": len(items), "engines": items}
 
 
@@ -366,7 +401,13 @@ async def get_engine(slug: str) -> dict:
     if rec is None:
         raise HTTPException(404, f"engine '{slug}' not found")
     usage_map = await _load_engine_usage_map()
-    return _engine_to_dict(rec, usage_map)
+    d = _engine_to_dict(rec, usage_map)
+    try:
+        from server.hub import thermal
+        d["thermal"] = await thermal.engine_thermal_snapshot(rec)
+    except Exception:
+        d["thermal"] = None
+    return d
 
 
 @router.put("/engines/{slug}")
@@ -442,6 +483,7 @@ async def upsert_engine(slug: str, body: dict) -> dict:
 
     saved = er.upsert(rec)
     await _mdb_upsert(saved)
+    await _share_engine(er, saved)
     return _engine_to_dict(saved)
 
 
@@ -456,6 +498,7 @@ async def delete_engine(slug: str) -> dict:
         raise HTTPException(404, f"engine '{slug}' not found")
     canonical = _engine_normalise_slug(slug)
     await _mdb_delete(canonical)
+    await _share_engine_del(canonical)
     return {"deleted": True, "slug": canonical}
 
 
@@ -476,8 +519,10 @@ async def promote_engine(slug: str) -> dict:
             demoted = er.set_promoted(other.slug, False)
             if demoted is not None:
                 await _mdb_upsert(demoted)
+                await _share_engine(er, demoted)
     saved = er.set_promoted(rec.slug, True)
     await _mdb_upsert(saved)
+    await _share_engine(er, saved)
     return _engine_to_dict(saved)
 
 
@@ -489,6 +534,7 @@ async def demote_engine(slug: str) -> dict:
         raise HTTPException(404, f"engine '{slug}' not found")
     saved = er.set_promoted(rec.slug, False)
     await _mdb_upsert(saved)
+    await _share_engine(er, saved)
     return _engine_to_dict(saved)
 
 
@@ -514,13 +560,25 @@ async def resolve_engine(slug: str, body: Optional[dict] = None) -> dict:
     rec = er.get(slug)
     if rec is None:
         raise HTTPException(404, f"engine '{slug}' not found")
+    from server.hub import thermal
+    if not await thermal.engine_thermal_ok(rec):
+        raise HTTPException(
+            503,
+            f"engine '{slug}' thermally throttled "
+            f"(GPU >= {float(rec.gpu_temp_stop_c or 0):.0f}C 受付停止温度)",
+        )
     return _resolve_engine_payload(rec)
 
 
-@router.post("/engines/worker-agent/resolve")
+@router.post("/engines/worker-agent-resolve")
 async def resolve_worker_agent_engine(body: Optional[dict] = None) -> dict:
     """Worker-internal: resolve the engine the operator selected as the
     page.agent backend (Settings ``worker_agent_engine_slug``).
+
+    NOTE the single-segment path (``worker-agent-resolve``, not
+    ``worker-agent/resolve``) — a ``.../resolve`` suffix would be captured
+    by ``/engines/{slug}/resolve`` (slug="worker-agent") since that route
+    is registered first.
 
     Returns the resolved engine payload (endpoint/model/protocol/api_key/
     slug). **404 when no engine is selected** -> the worker treats that as
@@ -546,6 +604,13 @@ async def resolve_worker_agent_engine(body: Optional[dict] = None) -> dict:
         raise HTTPException(
             404, f"page.agent engine '{slug}' not found (was it deleted?)"
         )
+    from server.hub import thermal
+    if not await thermal.engine_thermal_ok(rec):
+        raise HTTPException(
+            503,
+            f"page.agent engine '{slug}' thermally throttled "
+            f"(GPU >= {float(rec.gpu_temp_stop_c or 0):.0f}C 受付停止温度)",
+        )
     return _resolve_engine_payload(rec)
 
 
@@ -565,9 +630,17 @@ async def resolve_engine_auto(kind: str, body: Optional[dict] = None) -> dict:
             400, "kind must be one of: chat, vision-chat, reasoning",
         )
     er = _require_engines()
-    rec = er.pick_for_kind(kind)
-    if rec is None:
+    # Thermal failover: prefer a promoted, thermally-accepting engine of this
+    # kind; 503 when every one is throttled (operator: Agent/LLM may error
+    # when all local GPUs are throttling).
+    cands = [r for r in er.list_all() if r.kind == kind]
+    cands.sort(key=lambda r: (not r.promoted, r.slug))
+    if not cands:
         raise HTTPException(404, f"no engine of kind '{kind}' registered")
+    from server.hub import thermal
+    rec = await thermal.first_accepting(cands)
+    if rec is None:
+        raise HTTPException(503, f"all '{kind}' engines are thermally throttled")
     return _resolve_engine_payload(rec)
 
 

@@ -255,6 +255,9 @@ async function refresh() {
         _setCnt('jobsCntError',   _bs.failed ?? 0);
         // "実行中" folds queued + running to match the sub-tab filter.
         _setCnt('jobsCntRunning', (_bs.running ?? 0) + (_bs.queued ?? 0));
+        // 課題(review): completed-but-content-blocked (full-screen auth/modal
+        // wall). A distinct terminal status, so it's NOT folded into 成功.
+        _setCnt('jobsCntReview',  _bs.review ?? 0);
       }
     }
     const wcount = workers.count || 0;
@@ -667,7 +670,7 @@ async function refresh() {
         <tr data-job-id="${jid}">
           <td data-col="id"><code>${esc(j.job_id.substring(0,10))}</code></td>
           <td data-col="mode"><span class="badge">${modeLabel}</span></td>
-          <td data-col="status"><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
+          <td data-col="status"><span class="badge ${esc(j.status)}"${j.status === 'review' ? ` title="${esc((j.progress && j.progress.last_log) || '課題: ログイン/年齢確認/同意などの全面オーバーレイでコンテンツが取得できていない可能性')}"` : ''}>${esc(_JOB_STATUS_LABEL[j.status] || j.status)}</span></td>
           <td data-col="url" class="url" title="${esc(j.url)}"><a href="${esc(j.url)}" target="_blank">${esc(j.url)}</a></td>
           <td data-col="worker">${j.worker_id ? `<code>${esc(j.worker_id)}</code>${canAttach ? ` <small>#${laneIdx}</small>` : ''}` : '<span class="empty">—</span>'}</td>
           <td data-col="started">${startedCell}</td>
@@ -751,6 +754,9 @@ let _jobsEverLoaded = false;
 // like the tab wasn't loading).
 const JOBS_STATUS_FILTER_KEY = 'paprika.jobs.statusFilter';
 let _jobsStatusFilter = 'all';
+// Status badge labels. Most statuses show their raw value; ``review`` shows
+// the friendlier 課題 (its CSS class stays `review`, see .badge.review).
+const _JOB_STATUS_LABEL = { review: '課題' };
 const JOBS_PAGE_SIZE_KEY = 'paprika.jobs.pageSize';
 const JOBS_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200];
 

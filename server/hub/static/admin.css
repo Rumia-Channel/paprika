@@ -126,6 +126,10 @@
   .badge.running   { background: #fff2cc; color: #7a5a14; }
   .badge.queued    { background: #e6e6e6; color: #555; }
   .badge.cancelled { background: #e0e0e0; color: #777; }
+  /* 課題 (review): completed but content blocked by a full-screen auth/modal
+     wall. Orange to read as "needs attention", distinct from running's yellow
+     and failed's red. */
+  .badge.review    { background: #ffe0b2; color: #9c4a00; box-shadow: inset 2px 0 0 #d2691e; }
   /* worker status */
   .badge.active   { background: #d4f5d8; color: #185c2c; }
   .badge.drain    { background: #ffe2b8; color: #7a4a14; }

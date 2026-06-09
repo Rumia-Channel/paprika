@@ -47,6 +47,14 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # knob is a CSV subset of {video_dl, auth_gate}; empty = both.
     "auto_escalate_enabled": (False, "bool"),
     "auto_escalate_categories": ("video_dl,auth_gate", "str"),
+    # 課題(review) auto-classification: when a `fetch` job COMPLETES but its
+    # content was blocked by a full-screen login / age / consent / paywall
+    # overlay (detected structurally by the worker's live-DOM occlusion probe),
+    # re-bucket the job into the distinct "課題" terminal status instead of
+    # letting it hide among the clean successes. The result is kept. ON by
+    # default with a conservative threshold (see server/hub/_review.py). Env
+    # kill-switch: PAPRIKA_REVIEW_DISABLE=1.
+    "review_flag_enabled": (True, "bool"),
     # Which engine the worker's page.agent (vision-agent /act loop) uses as
     # its backend AI. Set by the Engines tab "page.agent でこの engine を使う"
     # checkbox. Empty = NO engine selected = page.agent is DISABLED. Shared
@@ -79,6 +87,16 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     #   /tracker.gif
     #   .cloudfront.net/ads/
     "asset_url_blacklist": ("", "str"),
+    # Egress proxy pool. Newline / comma / whitespace separated list of
+    # proxy URLs (full scheme), e.g.
+    #   http://10.20.0.5:3128
+    #   socks5://10.20.0.6:1080
+    # Broadcast to every worker (HubProxyPoolSync); each worker random-picks
+    # ONE entry for its target-site egress (browser + yt-dlp) so sites see
+    # that proxy's IP instead of the fleet's. Empty = direct (default).
+    # Per-worker env PAPRIKA_WORKER_PROXY* is the fallback before the hub
+    # has pushed a pool. See core.fetcher._worker_egress_proxy.
+    "proxy_pool": ("", "str"),
     # ---- Fetch defaults --------------------------------------------------
     # Mirrors of FetchOptions / JobOptions knobs. The hub overlays these
     # onto JobOptions on dispatch for any field the client didn't set

@@ -443,13 +443,15 @@ class PaprikaClient:
         timeout: float = 600.0,
     ) -> dict:
         """Poll GET /jobs/{id} until it reaches a terminal state
-        (``completed`` / ``failed`` / ``cancelled``) and return the final
-        ``JobInfo``. Raises ``TimeoutError`` if it doesn't finish in time."""
+        (``completed`` / ``failed`` / ``cancelled`` / ``review``) and return
+        the final ``JobInfo``. ``review`` = completed but the content was
+        blocked by a full-screen login / age / modal wall (the result is still
+        present). Raises ``TimeoutError`` if it doesn't finish in time."""
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
         while True:
             info = await self.get_job(job_id)
-            if info.get("status") in ("completed", "failed", "cancelled"):
+            if info.get("status") in ("completed", "failed", "cancelled", "review"):
                 return info
             if loop.time() > deadline:
                 raise TimeoutError(

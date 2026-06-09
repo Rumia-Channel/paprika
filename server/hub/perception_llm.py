@@ -43,8 +43,10 @@ from server.hub.codegen import (
     LLMTarget,
     adapt_chat_body,
     check_engine_quota,
+    check_engine_thermal,
     record_engine_usage,
     EngineQuotaExceeded,
+    EngineThermalThrottled,
 )
 
 
@@ -391,8 +393,12 @@ async def generate_perception(
     t0 = time.time()
     try:
         check_engine_quota(tgt)
+        await check_engine_thermal(tgt)
     except EngineQuotaExceeded as e:
         _log.info("[perception] quota gate refused: %s", e)
+        return None
+    except EngineThermalThrottled as e:
+        _log.info("[perception] thermal gate refused: %s", e)
         return None
 
     try:
@@ -582,11 +588,16 @@ async def save_perception_for_job(
         return None
 
     try:
+        # Prefer a registered vision engine (the Qwen3-VL boxes) with thermal
+        # failover; None falls back to the env-default endpoint inside
+        # generate_perception.
+        _vt = await find_vision_capable_target()
         result = await generate_perception(
             url=url,
             screenshot_path=screenshot_path,
             dom_outline=dom_outline,
             step_index=0,  # 0 = end-of-job snapshot
+            target=_vt,
         )
     except Exception as e:
         _log.info(
@@ -692,40 +703,42 @@ async def generate_perception_for_attempt(
     return result
 
 
-def find_vision_capable_target() -> LLMTarget | None:
-    """Pick the first vision-capable engine from the registry.
+async def find_vision_capable_target() -> LLMTarget | None:
+    """Resolve a vision-capable engine target for perception, preferring one
+    that is thermally ACCEPTING.
 
-    Tries common slugs in priority order. Returns None if no engine
-    with a vision-capable model name is registered.  Caller can fall
-    back to text-only perception by passing target=None to
-    ``generate_perception_*``.
+    Enumerates every registered engine whose model name looks vision-capable
+    (so the new ``qwen3-vl-4b`` boxes are found, not just hard-coded slugs),
+    promoted first, then fails over to the first thermally-accepting one --
+    so the two Qwen3-VL boxes share load by temperature and this returns None
+    when they are ALL throttled. Caller may fall back to text-only perception
+    (env default) on None.
     """
     try:
         from server.hub._state import state as _st
         from server.hub.codegen import resolve_engine_target
+        from server.hub import thermal
     except Exception:
         return None
     if _st.engines is None:
         return None
-
-    # Priority: explicitly-named v2 engines, then common vendor names.
-    candidates = (
-        "perception",        # explicit v2 slot, if operator registered it
-        "qwen3-vl-8b",
-        "qwen-vl",
-        "qwen2.5-vl",
-        "qwen",
-        "chatgpt51",         # GPT-5.1 (vision-capable)
-        "claude-vision",
-    )
-    for slug in candidates:
-        try:
-            t = resolve_engine_target(slug, _st.engines)
-        except Exception:
-            continue
-        if t and _model_is_vision_capable(t.model):
-            return t
-    return None
+    try:
+        recs = _st.engines.list_all()
+    except Exception:
+        return None
+    vis = [r for r in recs if _model_is_vision_capable(getattr(r, "model", "") or "")]
+    if not vis:
+        return None
+    # Promoted first, then by slug -- a stable order so all hubs fail over
+    # to the same engine.
+    vis.sort(key=lambda r: (not getattr(r, "promoted", False), getattr(r, "slug", "")))
+    chosen = await thermal.first_accepting(vis)
+    if chosen is None:
+        return None  # every vision engine is thermally throttled
+    try:
+        return resolve_engine_target(getattr(chosen, "slug", "") or "", _st.engines)
+    except Exception:
+        return None
 
 
 def _parse_json_lenient(text: str) -> dict | None:

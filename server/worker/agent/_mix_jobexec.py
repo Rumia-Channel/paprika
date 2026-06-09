@@ -588,6 +588,11 @@ class _JobExecMixin:
                         YtdlpResult(**r) for r in getattr(result, "ytdlp_results", []) or []
                     ],
                     visited_urls=list(getattr(result, "visited_urls", []) or []),
+                    # Raw occlusion report from the live-DOM overlay probe
+                    # (core/fetcher.probe_occlusion). The worker only MEASURES
+                    # -- the hub classifies this into the 課題(review) bucket
+                    # (server/hub/_review.py).
+                    occlusion=dict(getattr(result, "occlusion", {}) or {}),
                 )
                 # Deferred video download: capture is done and the
                 # image assets are uploaded, but a (big) video was
@@ -1250,6 +1255,37 @@ class _JobExecMixin:
                 f"[worker {self.worker_id}] resolve_engine({slug}) "
                 f"failed: {type(e).__name__}: {e}; falling back to "
                 f"AGENT_LLM_URL",
+            )
+            return None
+
+    async def resolve_worker_agent_engine(self):
+        """Resolve the operator-selected page.agent backend engine
+        (hub Settings ``worker_agent_engine_slug``, set via the Engines-tab
+        "use this engine for page.agent" checkbox).
+
+        Returns:
+          * ``dict``  -- the selected engine's resolved config.
+          * ``False`` -- a CLEAN 404 = NO engine selected => page.agent is
+                         DISABLED (the caller refuses the agent loop).
+          * ``None``  -- a transient error (network / 5xx) => the caller
+                         keeps the legacy AGENT_URL path so a hub hiccup
+                         doesn't take page.agent down.
+        """
+        url = f"{self.hub_http_url.rstrip('/')}/engines/worker-agent-resolve"
+        body: dict = {}
+        if self.worker_secret:
+            body["secret"] = self.worker_secret
+        try:
+            r = await self._http.post(url, json=body, timeout=10.0)
+            if r.status_code == 404:
+                return False  # no engine selected -> page.agent disabled
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else None
+        except Exception as e:
+            _logger.info(
+                f"[worker {self.worker_id}] resolve_worker_agent_engine "
+                f"failed: {type(e).__name__}: {e}; keeping legacy AGENT_URL",
             )
             return None
 

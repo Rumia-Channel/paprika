@@ -34,6 +34,7 @@ from server.protocol import (
     HubExpectedVersion,
     HubProfileDelete,
     HubProfileSync,
+    HubProxyPoolSync,
     HubRegistered,
     HubPreviewSubscribe,
     HubScreenshotRequest,
@@ -98,6 +99,22 @@ from .workerid import WORKER_ID_FILE, _WorkerIdReassigned, hub_http_base
 
 
 class _ProfileExtMixin:
+    def _handle_proxy_pool_sync(self, msg: HubProxyPoolSync) -> None:
+        """Adopt the hub's egress proxy pool (Settings.proxy_pool).
+
+        Stores the list + forces a re-pick of this worker's exit proxy.
+        Effective on the next Chrome / yt-dlp process start -- a running
+        browser keeps its launch-time proxy. ``pool == []`` = egress
+        direct. See core.fetcher.set_egress_pool.
+        """
+        from core.fetcher import set_egress_pool
+        pool = list(msg.pool or [])
+        set_egress_pool(pool)
+        _logger.info(
+            f"[worker {self.worker_id}] egress proxy pool updated: "
+            f"{len(pool)} proxy(ies)"
+        )
+
     async def _handle_profile_sync(self, msg: HubProfileSync) -> None:
         """Prefetch (or update) the cached extraction for one profile.
 

@@ -292,13 +292,19 @@ async def plan_goal(
         # whole codegen-loop, only its own contribution.
         from server.hub.codegen import (
             check_engine_quota,
+            check_engine_thermal,
             record_engine_usage,
             EngineQuotaExceeded,
+            EngineThermalThrottled,
         )
         try:
             check_engine_quota(tgt)
+            await check_engine_thermal(tgt)
         except EngineQuotaExceeded as e:
             log.info(f"[planner] quota gate refused: {e}")
+            return None
+        except EngineThermalThrottled as e:
+            log.info(f"[planner] thermal gate refused: {e}")
             return None
         async with httpx.AsyncClient(timeout=tgt.timeout) as client:
             r = await client.post(tgt.url, json=body, headers=tgt.headers)

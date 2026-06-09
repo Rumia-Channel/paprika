@@ -271,6 +271,13 @@ class EngineQuotaExceeded(Exception):
     cap. Callers convert to HTTP 429 / job-fail at their own boundary."""
 
 
+class EngineThermalThrottled(Exception):
+    """Raised by check_engine_thermal when the engine's local GPU is over
+    its 受付停止温度 (gpu_temp_stop_c). Callers convert to a 503 / skip at
+    their boundary (operator: when every local GPU throttles, Agent/LLM
+    calls may error)."""
+
+
 def check_engine_quota(target: "LLMTarget") -> None:
     """Raise :class:`EngineQuotaExceeded` if the engine's daily
     token / request budget is already exhausted. Safe to call when
@@ -292,6 +299,41 @@ def check_engine_quota(target: "LLMTarget") -> None:
     if result.warning:
         import sys as _sys
         print(f"[engine-quota] {result.warning}", file=_sys.stderr)
+
+
+async def check_engine_thermal(target: "LLMTarget") -> None:
+    """Raise :class:`EngineThermalThrottled` when the target engine's local
+    GPU is currently throttling (temp >= its 受付停止温度, hysteretic).
+
+    No-op for cloud engines / engines without a thermal window, and when the
+    registry isn't available. The engine is resolved from the target's slug,
+    falling back to a model-name match so env-default targets (which carry no
+    slug but DO hit a local GPU -- e.g. codegen's qwen3.5) are still gated.
+    The thermal layer's own failures never block a call (only an actual
+    over-temp does)."""
+    try:
+        from server.hub._state import state
+        reg = getattr(state, "engines", None)
+        if reg is None:
+            return
+        slug = getattr(target, "engine_slug", "") or _slug_for_model(
+            getattr(target, "model", "") or ""
+        )
+        if not slug:
+            return
+        rec = reg.get(slug)
+        if rec is None:
+            return
+        from server.hub import thermal
+        if not await thermal.engine_thermal_ok(rec):
+            stop = float(getattr(rec, "gpu_temp_stop_c", 0) or 0)
+            raise EngineThermalThrottled(
+                f"engine '{slug}' thermally throttled (GPU >= {stop:.0f}C 受付停止温度)"
+            )
+    except EngineThermalThrottled:
+        raise
+    except Exception:
+        return
 
 
 def _slug_for_model(model: str) -> str:
@@ -1375,6 +1417,10 @@ async def generate_script(
     # registry's caller to surface as a 429-shape failure. No-op for
     # env-default targets (engine_slug empty).
     check_engine_quota(tgt)
+    # Pre-call thermal gate. Raises EngineThermalThrottled when the coder's
+    # local GPU is over its 受付停止温度 -- propagates so the codegen-loop
+    # attempt fails fast instead of piling more load on a hot GPU.
+    await check_engine_thermal(tgt)
     async with httpx.AsyncClient(timeout=tgt.timeout) as client:
         # Tool-call loop: at most TOOL_CALL_MAX_ITERATIONS round trips
         # if the model keeps asking for searches; falls through to the

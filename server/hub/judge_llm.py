@@ -358,13 +358,19 @@ async def judge_attempt(
         # fallback still lets the attempt finish.
         from server.hub.codegen import (
             check_engine_quota,
+            check_engine_thermal,
             record_engine_usage,
             EngineQuotaExceeded,
+            EngineThermalThrottled,
         )
         try:
             check_engine_quota(tgt)
+            await check_engine_thermal(tgt)
         except EngineQuotaExceeded as e:
             log.info(f"[judge] quota gate refused: {e}")
+            return None
+        except EngineThermalThrottled as e:
+            log.info(f"[judge] thermal gate refused: {e}")
             return None
         async with httpx.AsyncClient(timeout=tgt.timeout) as client:
             r = await client.post(tgt.url, json=body, headers=tgt.headers)
@@ -634,13 +640,19 @@ async def judge_via_reasoning(
     try:
         from server.hub.codegen import (
             check_engine_quota,
+            check_engine_thermal,
             record_engine_usage,
             EngineQuotaExceeded,
+            EngineThermalThrottled,
         )
         try:
             check_engine_quota(target)
+            await check_engine_thermal(target)
         except EngineQuotaExceeded as e:
             log.info(f"[judge:reasoning] quota gate refused: {e}")
+            return None
+        except EngineThermalThrottled as e:
+            log.info(f"[judge:reasoning] thermal gate refused: {e}")
             return None
         async with httpx.AsyncClient(timeout=target.timeout) as client:
             r = await client.post(target.url, json=body, headers=target.headers)

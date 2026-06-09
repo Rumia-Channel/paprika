@@ -290,6 +290,24 @@ class Lane:
             "--window-size=1920,1080",
             "--start-maximized",
         ]
+        # Worker egress proxy (target-site plane). When PAPRIKA_WORKER_PROXY
+        # is set, this lane's Chrome routes all its outbound traffic through
+        # that proxy so sites see the proxy box's IP (e.g. a per-拠点 box) --
+        # the worker-side half of IP-block avoidance. Loopback/LAN bypass so
+        # noVNC/devtools/hub stay direct; WebRTC locked to proxied UDP only so
+        # it can't leak the real egress IP. Unset = no-op (prod unchanged).
+        # Shared with the fetch/yt-dlp paths so every egress surface on this
+        # worker uses the SAME exit IP (one pick per process; see
+        # core.fetcher._worker_egress_proxy for the consistency rationale).
+        from core.fetcher import _worker_egress_proxy, _worker_proxy_bypass
+        _egress_proxy = _worker_egress_proxy()
+        if _egress_proxy:
+            chrome_args += [
+                f"--proxy-server={_egress_proxy}",
+                f"--proxy-bypass-list={_worker_proxy_bypass()}",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            ]
+            _log(self.lane_idx, f"  --proxy-server={_egress_proxy} (egress proxy)")
         # Opt-in physical block of new-tab creation at the WebContents
         # layer. kBlockNewWebContents (Chromium internal flag) makes
         # WebContentsImpl::AddNewContents refuse every new tab/window

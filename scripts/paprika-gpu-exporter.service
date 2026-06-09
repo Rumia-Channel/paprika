@@ -1,0 +1,16 @@
+[Unit]
+Description=paprika GPU temp exporter (:9402) -- feeds the hub escalation thermal gate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/paprika-gpu-exporter/gpu_temp_exporter.py
+Restart=always
+RestartSec=3
+# Optional overrides:
+# Environment=PAPRIKA_GPU_EXPORTER_PORT=9402
+# Environment=PAPRIKA_GPU_EXPORTER_CACHE_S=2.0
+
+[Install]
+WantedBy=multi-user.target

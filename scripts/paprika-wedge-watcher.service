@@ -1,0 +1,21 @@
+[Unit]
+Description=paprika wedge-watcher (restart workers stuck on an old version)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# DRY-RUN by default: logs what it WOULD restart, but does NOT restart anything.
+# To go LIVE: remove this Environment line (or set =0), then
+#   systemctl daemon-reload && systemctl restart paprika-wedge-watcher
+Environment=PAPRIKA_WEDGE_DRYRUN=1
+# Conservative knobs (see scripts/wedge-watcher.py header). Override here, e.g.
+#   Environment=PAPRIKA_WEDGE_STALE_S=2400
+ExecStart=/usr/bin/python3 /opt/paprika/scripts/wedge-watcher.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -18,6 +18,7 @@ import base64
 import inspect
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -28,6 +29,91 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
+
+
+# ---------------------------------------------------------------------------
+# Worker egress proxy (target-site plane only)
+# ---------------------------------------------------------------------------
+# A worker can route its TARGET-site fetch traffic out through a remote box
+# (e.g. a per-拠点 proxy) so sites see that box's residential IP instead of
+# the fleet's shared egress IP -- the worker-side half of IP-block avoidance.
+#
+# Deliberately env-scoped to the fetch/target plane (Chrome + yt-dlp), NOT a
+# process-wide HTTP_PROXY: worker<->hub control traffic (make_async_client)
+# must stay direct, or a down proxy would cut the worker off from the hub.
+_EGRESS_PROXY_RESOLVED = False
+_EGRESS_PROXY_CACHE = ""
+# Pool pushed by the hub (Settings.proxy_pool, via HubProxyPoolSync). ``None``
+# = the hub hasn't spoken yet -> fall back to the env vars below. A non-None
+# value is AUTHORITATIVE: ``[]`` means the operator cleared the pool, so the
+# worker egresses directly (no env fallback).
+_EGRESS_POOL_OVERRIDE = None
+
+
+def set_egress_pool(pool) -> None:
+    """Install the hub-broadcast egress proxy pool (Settings.proxy_pool).
+
+    Called by the worker on HubProxyPoolSync (live edit) and once on
+    connect (catch-up). Forces a re-pick on the next access so a Settings
+    edit is adopted -- but a *running* Chrome keeps its launch-time proxy
+    (proxy is a launch flag), so a fresh pick only takes effect for
+    Chrome / yt-dlp processes that START after this. Takes precedence over
+    the ``PAPRIKA_WORKER_PROXY*`` env vars.
+    """
+    global _EGRESS_POOL_OVERRIDE, _EGRESS_PROXY_RESOLVED, _EGRESS_PROXY_CACHE
+    _EGRESS_POOL_OVERRIDE = [str(p).strip() for p in (pool or []) if str(p).strip()]
+    _EGRESS_PROXY_RESOLVED = False
+    _EGRESS_PROXY_CACHE = ""
+
+
+def _worker_egress_proxy() -> str:
+    """Proxy URL for target-site egress, or ``""`` for direct.
+
+    Pool source, in precedence order:
+      * hub-broadcast pool (``set_egress_pool`` from Settings.proxy_pool) --
+        authoritative once received; ``[]`` = egress direct.
+      * ``PAPRIKA_WORKER_PROXY_POOL`` env -- list (comma / whitespace /
+        newline separated). Fallback before the hub has pushed a pool.
+      * ``PAPRIKA_WORKER_PROXY`` env -- a single proxy URL.
+
+    Each entry is a full URL with scheme, e.g. ``http://10.20.0.5:3128``
+    or ``socks5://10.20.0.5:1080``. Empty everywhere = no proxy (default;
+    fully no-op so prod behaviour is unchanged until opted in).
+
+    One pick is **cached for the worker process** (re-picked only when the
+    hub pushes a new pool). Why one exit per worker, not per call: a single
+    job touches several egress surfaces -- the browser fetch and the yt-dlp
+    download of the same page. Token / IP-bound HLS manifests reject a
+    segment request from a different IP than the page fetch, so all of a
+    job's surfaces MUST share one exit IP. Rotation therefore happens
+    ACROSS workers (each picks its own random exit).
+    """
+    global _EGRESS_PROXY_RESOLVED, _EGRESS_PROXY_CACHE
+    if _EGRESS_PROXY_RESOLVED:
+        return _EGRESS_PROXY_CACHE
+    if _EGRESS_POOL_OVERRIDE is not None:
+        # Hub-authoritative: empty list = direct (no env fallback).
+        chosen = random.choice(_EGRESS_POOL_OVERRIDE) if _EGRESS_POOL_OVERRIDE else ""
+    else:
+        pool = [p for p in re.split(r"[,\s]+", os.environ.get("PAPRIKA_WORKER_PROXY_POOL", "")) if p]
+        if pool:
+            chosen = random.choice(pool)
+        else:
+            chosen = os.environ.get("PAPRIKA_WORKER_PROXY", "").strip()
+    _EGRESS_PROXY_CACHE = chosen
+    _EGRESS_PROXY_RESOLVED = True
+    return chosen
+
+
+def _worker_proxy_bypass() -> str:
+    """Chrome ``--proxy-bypass-list``: never send loopback / LAN through the
+    egress proxy (hub, redis, noVNC, devtools all live on the LAN)."""
+    default = (
+        "localhost;127.0.0.1;10.0.0.0/8;172.16.0.0/12;"
+        "192.168.0.0/16;<-loopback>"
+    )
+    extra = os.environ.get("PAPRIKA_WORKER_PROXY_BYPASS", "").strip()
+    return f"{default};{extra}" if extra else default
 
 
 # CDP wire format is camelCase but nodriver's CookieParam dataclass uses
@@ -707,6 +793,12 @@ def run_ytdlp(
         "--no-overwrites",
         "-o", output_template,
     ]
+    # Route the video download out through the same egress proxy as the
+    # browser fetch, so segment/CDN requests share the page's exit IP
+    # (token/IP-bound manifests reject a mismatched download IP).
+    _egress_proxy = _worker_egress_proxy()
+    if _egress_proxy:
+        cmd += ["--proxy", _egress_proxy]
     # Impersonate a real browser to bypass Cloudflare / anti-bot
     # challenges.  Requires curl_cffi (pip install curl_cffi).
     # yt-dlp auto-selects the best target; we just need to enable it.
@@ -1294,6 +1386,137 @@ async def pick_representative_image(tab) -> dict:
     return out
 
 
+# Structural "is the content blocked by a full-screen overlay?" probe. The
+# crux: we do NOT parse z-index or match site-specific keywords/URLs. We ask
+# the browser's own hit-testing (elementFromPoint) what is painted on top at a
+# grid of viewport points, then read resolved layout + ARIA standards. That
+# makes it generic across sites (login walls, age gates, cookie/consent
+# modals, paywalls) with zero hardcoding. Everything is wrapped so a probe
+# failure returns {error:...} and never breaks the fetch.
+_DETECT_OVERLAY_JS = r"""
+JSON.stringify((() => {
+  try {
+    const W = Math.max(1, window.innerWidth || 0);
+    const H = Math.max(1, window.innerHeight || 0);
+    const A = W * H;
+    // (1) viewport grid hit-test -> which painted "layer root" owns each point.
+    // Climb each hit element to its nearest positioned (fixed/absolute/sticky)
+    // ancestor: that is the resolved stacking layer the browser drew on top,
+    // so z-index / transforms / stacking contexts are all already accounted
+    // for by hit-testing -- we never interpret z-index ourselves.
+    const layerRoot = (el) => {
+      let r = el;
+      while (r && r.parentElement) {
+        let pos = '';
+        try { pos = getComputedStyle(r).position; } catch (e) {}
+        if (pos === 'fixed' || pos === 'absolute' || pos === 'sticky') break;
+        r = r.parentElement;
+      }
+      return r || el;
+    };
+    const COLS = 9, ROWS = 9;
+    const hits = new Map();
+    let samples = 0;
+    for (let i = 1; i < COLS; i++) {
+      for (let j = 1; j < ROWS; j++) {
+        const el = document.elementFromPoint(W * i / COLS, H * j / ROWS);
+        if (!el) continue;
+        samples++;
+        const root = layerRoot(el);
+        hits.set(root, (hits.get(root) || 0) + 1);
+      }
+    }
+    let top = null, topN = 0;
+    for (const [el, c] of hits) { if (c > topN) { topN = c; top = el; } }
+    let coverage = 0, topTag = '', topRole = '', topPos = '';
+    if (top) {
+      try {
+        const r = top.getBoundingClientRect();
+        coverage = Math.min(1, (Math.max(0, r.width) * Math.max(0, r.height)) / A);
+      } catch (e) {}
+      topTag = (top.tagName || '').toLowerCase();
+      try { topRole = top.getAttribute('role') || ''; } catch (e) {}
+      try { topPos = getComputedStyle(top).position; } catch (e) {}
+    }
+    const dominance = samples ? topN / samples : 0;
+    // (2) background scroll lock -- modals almost always pin the page.
+    let scrollLock = false;
+    try {
+      const bo = getComputedStyle(document.body).overflowY;
+      const ho = getComputedStyle(document.documentElement).overflowY;
+      scrollLock = (bo === 'hidden' || bo === 'clip' || ho === 'hidden' || ho === 'clip');
+    } catch (e) {}
+    // (3) standards-based modal markers (ARIA + top-layer pseudo) -- web
+    // standards, not site keywords. Each guarded: invalid selectors throw.
+    let ariaModal = false;
+    try {
+      ariaModal = !!document.querySelector('dialog[open], [aria-modal="true"], [role="dialog"], [role="alertdialog"]');
+    } catch (e) {}
+    if (!ariaModal) {
+      try { ariaModal = !!document.querySelector(':modal, [popover]:popover-open'); } catch (e) {}
+    }
+    let inertMain = false;
+    try { inertMain = !!document.querySelector('[inert], [aria-hidden="true"]'); } catch (e) {}
+    // (4) login password field -- a standard element, far stronger than the
+    // word "login" appearing somewhere on the page.
+    let hasPassword = false;
+    try { hasPassword = !!document.querySelector('input[type="password"]'); } catch (e) {}
+    // (5) visible-image scarcity (the operator's intuition), counted on
+    // actually-rendered, in-viewport images only.
+    let visibleImages = 0;
+    try {
+      for (const im of document.images) {
+        const b = im.getBoundingClientRect();
+        if (b.width > 32 && b.height > 32 && b.bottom > 0 && b.top < H && b.right > 0 && b.left < W) {
+          visibleImages++;
+        }
+      }
+    } catch (e) {}
+    // (6) visible text length (content scarcity).
+    let textLen = 0;
+    try { textLen = ((document.body && document.body.innerText) || '').trim().length; } catch (e) {}
+    return {
+      coverage: +coverage.toFixed(3),
+      dominance: +dominance.toFixed(3),
+      scrollLock: scrollLock,
+      ariaModal: ariaModal,
+      inertMain: inertMain,
+      hasPassword: hasPassword,
+      visibleImages: visibleImages,
+      textLen: textLen,
+      samples: samples,
+      topTag: topTag,
+      topRole: topRole || '',
+      topPos: topPos || '',
+    };
+  } catch (e) {
+    return { error: String((e && e.message) || e) };
+  }
+})())
+"""
+
+
+async def probe_occlusion(tab) -> dict:
+    """Probe the live DOM for a full-screen blocking overlay (login / age /
+    consent / paywall modal). Returns a small structural report:
+
+      {coverage, dominance, scrollLock, ariaModal, inertMain, hasPassword,
+       visibleImages, textLen, samples, topTag, topRole, topPos}
+
+    or ``{"error": ...}`` / ``{}`` on failure. The hub turns this into the
+    "課題" (review) classification (server/hub/_review.py); this function only
+    measures. Best-effort -- never raises."""
+    try:
+        raw = await tab.evaluate(_DETECT_OVERLAY_JS)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    try:
+        out = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
 async def trigger_videos(tab) -> dict:
     """Find videos, play() new <video>s, click the center of visible ones.
     If nothing detected, click viewport center once."""
@@ -1719,6 +1942,15 @@ class FetchResult:
     # {url, referer, label}. The caller (worker) runs these in a detached
     # background task after releasing the lane.
     deferred_video_targets: list[dict] = field(default_factory=list)
+    # Occlusion / overlay report from the LIVE DOM at capture time: a grid
+    # hit-test (what fraction of the viewport one top layer covers + owns),
+    # background scroll-lock, standards-based modal markers (ARIA / top-layer),
+    # a login password field, and visible-image / text scarcity. Purely
+    # OBSERVATIONAL here -- the hub classifies it into the "課題" (review)
+    # bucket when a full-screen login / age / modal wall blocked the content
+    # (server/hub/_review.py). Structural + standards-based, NO site-specific
+    # hardcoding. {} when the probe failed or wasn't run.
+    occlusion: dict = field(default_factory=dict)
 
 
 async def fetch(opts: FetchOptions) -> FetchResult:
@@ -1747,9 +1979,19 @@ async def fetch(opts: FetchOptions) -> FetchResult:
         )
         keep_open = True  # never close someone else's browser
     else:
+        _spawn_args = ["--window-size=1920,1080", "--lang=ja-JP"]
+        _egress_proxy = _worker_egress_proxy()
+        if _egress_proxy:
+            _spawn_args += [
+                f"--proxy-server={_egress_proxy}",
+                f"--proxy-bypass-list={_worker_proxy_bypass()}",
+                # Stop WebRTC from leaking the real egress IP around the proxy.
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            ]
+            log(f"  ... egress via proxy {_egress_proxy}")
         start_kwargs = dict(
             headless=opts.headless,
-            browser_args=["--window-size=1920,1080", "--lang=ja-JP"],
+            browser_args=_spawn_args,
         )
         if opts.user_data_dir is not None:
             start_kwargs["user_data_dir"] = str(opts.user_data_dir)
@@ -2524,6 +2766,27 @@ async def fetch(opts: FetchOptions) -> FetchResult:
                 log(f"  representative image: {_rep['url']} (via {_rep.get('source')})")
         except Exception as e:
             log(f"  (representative-image pick failed: {e})")
+
+        # 課題(review) signal: probe the live DOM for a full-screen blocking
+        # overlay (login / age / consent / paywall modal). Structural +
+        # standards-based (hit-test coverage + scroll-lock + ARIA modal +
+        # visible-content scarcity) -- no site-specific hardcoding. Purely
+        # observational here; the hub classifies + buckets the job. The DOM
+        # is final at this point (settled, scrolled, recipe-applied), so any
+        # auto-dismissed consent banner is already gone and won't false-fire.
+        # Best-effort: a probe failure never fails the fetch.
+        try:
+            result.occlusion = await probe_occlusion(tab)
+            _o = result.occlusion or {}
+            if _o and not _o.get("error"):
+                log(
+                    f"  occlusion: coverage={_o.get('coverage')} "
+                    f"dominance={_o.get('dominance')} lock={_o.get('scrollLock')} "
+                    f"modal={_o.get('ariaModal')} pw={_o.get('hasPassword')} "
+                    f"visImg={_o.get('visibleImages')} textLen={_o.get('textLen')}"
+                )
+        except Exception as e:
+            log(f"  (occlusion probe failed: {type(e).__name__}: {e})")
 
         if assets_dir is not None:
             log(

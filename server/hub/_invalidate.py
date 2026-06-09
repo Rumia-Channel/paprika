@@ -50,6 +50,12 @@ _STATE_ATTR = {
     "conventions": "conventions",
     "presets": "presets",
     "hosts": "hosts",
+    # Engines (incl. per-engine GPU thermal config) propagate cross-hub too,
+    # so a UI edit on one hub updates every hub's read cache without a
+    # restart. MariaDB write-through stays in the engine routes (_mdb_upsert),
+    # so "engines" is intentionally absent from _MDB_UPSERT/_MDB_DELETE here
+    # -- share_upsert/share_delete only publish the surgical invalidate.
+    "engines": "engines",
 }
 
 # Settings keys that must NOT be shared cross-hub: the MariaDB DSN itself is

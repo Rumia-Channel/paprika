@@ -77,7 +77,12 @@ async def job_events(ws: WebSocket, job_id: str, since: int = 0):
     except Exception:
         pass
 
-    if info.status in (JobStatus.completed, JobStatus.failed, JobStatus.cancelled):
+    if info.status in (
+        JobStatus.completed,
+        JobStatus.failed,
+        JobStatus.cancelled,
+        JobStatus.review,
+    ):
         await ws.send_json(
             Event(type="done", job_id=job_id, data={"status": info.status.value}).model_dump(
                 mode="json"

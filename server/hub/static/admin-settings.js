@@ -92,6 +92,9 @@ async function loadSettingsPanel() {
       // V: URL blacklist textarea
       const _blEl = document.getElementById('setAssetUrlBlacklist');
       if (_blEl) _blEl.value = hub.asset_url_blacklist ?? '';
+      // Egress proxy pool textarea
+      const _ppEl = document.getElementById('setProxyPool');
+      if (_ppEl) _ppEl.value = hub.proxy_pool ?? '';
       // Fetch defaults
       document.getElementById('setFetchWait').value         = hub.fetch_wait_seconds       ?? 20;
       document.getElementById('setFetchSettle').value       = hub.fetch_settle_seconds     ?? 0;
@@ -255,6 +258,29 @@ async function saveSettingsAssetCapture() {
         min_asset_size_bytes: v,
         asset_url_blacklist: blacklist,
       }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      if (errEl) errEl.textContent = 'save failed (' + r.status + '): ' + t.slice(0, 200);
+      return;
+    }
+  } catch (e) {
+    if (errEl) errEl.textContent = 'save failed: ' + e.message;
+    return;
+  }
+  flashSavedHint();
+}
+
+async function saveSettingsProxyPool() {
+  const errEl = document.getElementById('setProxyErr');
+  if (errEl) errEl.textContent = '';
+  const ppEl = document.getElementById('setProxyPool');
+  const proxy_pool = ppEl ? (ppEl.value || '').trim() : '';
+  try {
+    const r = await fetch(SETTINGS_URL, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ proxy_pool }),
     });
     if (!r.ok) {
       const t = await r.text();
@@ -682,12 +708,14 @@ async function mdbRefreshTableCounts() {
   const resetUi = document.getElementById('setResetUiBtn');
   const saveHub = document.getElementById('setSaveHubBtn');
   const saveAsset = document.getElementById('setSaveAssetBtn');
+  const saveProxy = document.getElementById('setSaveProxyBtn');
   const saveFetch = document.getElementById('setSaveFetchBtn');
   const resetFetch = document.getElementById('setResetFetchBtn');
   if (saveUi) saveUi.addEventListener('click', saveSettingsUi);
   if (resetUi) resetUi.addEventListener('click', resetSettingsUi);
   if (saveHub) saveHub.addEventListener('click', saveSettingsHub);
   if (saveAsset) saveAsset.addEventListener('click', saveSettingsAssetCapture);
+  if (saveProxy) saveProxy.addEventListener('click', saveSettingsProxyPool);
   if (saveFetch) saveFetch.addEventListener('click', saveSettingsFetchDefaults);
   if (resetFetch) resetFetch.addEventListener('click', resetFetchDefaults);
   const saveWs = document.getElementById('setSaveWebSearchBtn');

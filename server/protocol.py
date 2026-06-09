@@ -266,6 +266,14 @@ class JobStatus(str, Enum):
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"
+    # 課題 ("review"): the fetch returned HTML/result but the content was
+    # blocked by a full-screen login / age / consent / paywall overlay
+    # (detected structurally via the worker's occlusion probe; classified
+    # hub-side in server/hub/_review.py). TERMINAL like completed/failed --
+    # the result IS kept (operator can inspect the captured wall) but the
+    # job is bucketed apart from clean successes. Anything enumerating
+    # terminal states must include this (wait_job / events / result / etc.).
+    review = "review"
 
 
 class AssetInfo(BaseModel):
@@ -375,6 +383,15 @@ class JobResult(BaseModel):
     # callers reconstruct the agent's navigation path.
     visited_urls: list[str] = Field(default_factory=list)
     error: str | None = None
+    # Occlusion / overlay report from the worker's live-DOM probe (see
+    # core/fetcher.probe_occlusion). Observational signal the hub uses to
+    # classify a "課題" (review) outcome. {} when not probed.
+    occlusion: dict[str, Any] = Field(default_factory=dict)
+    # Human-readable reason set by the hub when this job was bucketed as
+    # 課題 (review) -- e.g. "全面オーバーレイでコンテンツが取得できていません
+    # (login form, scroll-locked, overlay covers 96% of viewport)". None for
+    # normal completions.
+    review_reason: str | None = None
 
 
 # ----------------------------------------------------------------------------
@@ -1169,6 +1186,29 @@ class HubProfileDelete(BaseModel):
     name: str
 
 
+class HubProxyPoolSync(BaseModel):
+    """Push the operator's egress proxy pool (Settings.proxy_pool) to a
+    worker. The worker picks ONE entry at random for its target-site
+    egress (browser + yt-dlp) so sites see that proxy's IP instead of the
+    fleet's -- the worker-side half of IP-block avoidance.
+
+    Sent to every connected worker after PUT /settings changes
+    ``proxy_pool``, and once per worker on connect (handshake catch-up --
+    same pattern as HubProfileSync / _sync_all_profiles_to_worker).
+
+    ``pool == []`` is meaningful: the operator cleared the pool, so the
+    worker egresses directly. A worker that has never received this
+    message falls back to the ``PAPRIKA_WORKER_PROXY*`` env vars.
+    """
+
+    type: Literal["proxy_pool_sync"] = "proxy_pool_sync"
+    pool: list[str] = Field(
+        default_factory=list,
+        description="Proxy URLs (full scheme, e.g. http://h:3128 / "
+        "socks5://h:1080). The worker random-picks one per process.",
+    )
+
+
 class HubUpdateGate(BaseModel):
     """Hub's response to a WorkerDraining: either grant a "you may
     proceed with the source fetch + exit now" green light, or hold
@@ -1242,6 +1282,7 @@ HubToWorkerMsg = Annotated[
         HubSessionAgent,
         HubProfileSync,
         HubProfileDelete,
+        HubProxyPoolSync,
         HubSessionInteraction,
         HubUpdateGate,
         HubExpectedVersion,

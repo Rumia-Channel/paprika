@@ -579,7 +579,7 @@ async def _fetch_and_wait(arguments: dict[str, Any]) -> str:
     assets_text = await _hub_request("GET", f"/jobs/{job_id}/assets.json")
     parts.append(f"### Assets\n{assets_text}\n")
 
-    if status not in ("completed", "failed", "cancelled"):
+    if status not in ("completed", "failed", "cancelled", "review"):
         parts.append(
             f"\n⚠ Job did not finish within {timeout}s (status: {status})"
         )

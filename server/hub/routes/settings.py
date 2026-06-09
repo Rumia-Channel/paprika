@@ -7,6 +7,7 @@ instantiated by app.py's lifespan and stashed on
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException
 
@@ -29,6 +30,57 @@ def _require_settings() -> SettingsRegistry:
     if state.settings is None:
         raise HTTPException(503, "settings registry not initialised")
     return state.settings
+
+
+# -------------------------------------------------------------------
+# Egress proxy pool (Settings.proxy_pool) -> worker broadcast
+#
+# Settings stores proxy_pool as a free-form string (one proxy per line /
+# comma / space). We normalise it to a URL list and push it to workers
+# via HubProxyPoolSync -- both live (after a PUT that changes it) and on
+# worker connect (catch-up). Mirrors profiles.py's _broadcast_profile_sync
+# / _sync_all_profiles_to_worker.
+# -------------------------------------------------------------------
+def _split_proxy_pool(raw: str) -> list[str]:
+    return [p for p in re.split(r"[\s,]+", raw or "") if p]
+
+
+def _current_proxy_pool() -> list[str]:
+    if state.settings is None:
+        return []
+    return _split_proxy_pool(str(state.settings.get("proxy_pool", "") or ""))
+
+
+async def send_proxy_pool_to_worker(worker) -> None:
+    """Send the current egress proxy pool to ONE worker (connect-time
+    catch-up). Best-effort."""
+    from server.protocol import HubProxyPoolSync
+    try:
+        await worker.send(HubProxyPoolSync(pool=_current_proxy_pool()))
+    except Exception:
+        log.warning(
+            "proxy_pool sync to %s failed",
+            getattr(worker, "worker_id", "?"),
+            exc_info=True,
+        )
+
+
+async def _broadcast_proxy_pool() -> None:
+    """Push the current pool to EVERY connected worker (after a Settings
+    edit). Best-effort per worker."""
+    from server.protocol import HubProxyPoolSync
+    if state.registry is None:
+        return
+    pool = _current_proxy_pool()
+    for w in list(state.registry.connections.values()):
+        try:
+            await w.send(HubProxyPoolSync(pool=pool))
+        except Exception:
+            log.warning(
+                "proxy_pool broadcast to %s failed",
+                getattr(w, "worker_id", "?"),
+                exc_info=True,
+            )
 
 
 # -------------------------------------------------------------------
@@ -149,6 +201,13 @@ async def put_settings(body: dict) -> dict:
         await share_settings(_changed)
     except Exception:
         log.debug("settings write-through/publish failed", exc_info=True)
+    # Egress proxy pool changed -> push it to every connected worker now so
+    # the edit is adopted on their next Chrome / yt-dlp spawn (no restart).
+    if "proxy_pool" in body:
+        try:
+            await _broadcast_proxy_pool()
+        except Exception:
+            log.debug("proxy_pool broadcast failed", exc_info=True)
     return await get_settings()
 
 

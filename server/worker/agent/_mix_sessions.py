@@ -778,6 +778,29 @@ class _SessionsMixin:
         if engine in ("auto", "cogagent"):
             engine = "qwen"
 
+        # page.agent backend is operator-selected via the Engines tab
+        # ("use this engine for page.agent" -> Settings
+        # worker_agent_engine_slug). NO engine selected -> page.agent is
+        # DISABLED (refuse the loop). A transient resolve error returns None
+        # -> keep the legacy AGENT_URL path so a hub hiccup never disables
+        # page.agent. The selected engine also names the model/slug used for
+        # token-usage attribution; the /act endpoint stays AGENT_URL (the
+        # agent_service wrapper is separate from an engine's model endpoint).
+        _agent_sel = await self.resolve_worker_agent_engine()
+        if _agent_sel is False:
+            result.error = (
+                "page.agent is disabled: no engine is selected as the "
+                "page.agent backend — tick 'use this engine for page.agent' "
+                "on an engine in the Engines tab."
+            )
+            try:
+                await self._send(result)
+            except Exception:
+                pass
+            return
+        _agent_sel_slug = (_agent_sel.get("slug") or "") if isinstance(_agent_sel, dict) else ""
+        _agent_sel_model = (_agent_sel.get("model") or "") if isinstance(_agent_sel, dict) else ""
+
         # Env knobs (read per-request so changes are hot-reloadable
         # without a worker restart).
         agent_url = os.environ.get(
@@ -799,7 +822,7 @@ class _SessionsMixin:
             "AGENT_LLM_URL",
             "http://<gpu-host>:15082",
         ).rstrip("/")
-        agent_llm_model = os.environ.get(
+        agent_llm_model = _agent_sel_model or os.environ.get(
             "AGENT_MODEL_NAME",
             "qwen2.5-vl-72b",
         )
@@ -936,6 +959,7 @@ class _SessionsMixin:
                 _u = payload.get("usage") or {}
                 await self.report_engine_usage(
                     model=agent_llm_model,
+                    engine_slug=_agent_sel_slug,
                     prompt_tokens=_u.get("prompt_tokens"),
                     completion_tokens=_u.get("completion_tokens"),
                     source="agent",

@@ -34,6 +34,7 @@ from server.protocol import (
     HubExpectedVersion,
     HubProfileDelete,
     HubProfileSync,
+    HubProxyPoolSync,
     HubRegistered,
     HubPreviewSubscribe,
     HubScreenshotRequest,
@@ -732,6 +733,12 @@ class _RunMixin:
             return
         if isinstance(msg, HubProfileDelete):
             asyncio.create_task(self._handle_profile_delete(msg))
+            return
+        if isinstance(msg, HubProxyPoolSync):
+            # Adopt the operator's egress proxy pool (Settings.proxy_pool).
+            # Cheap + synchronous: stores the list + forces a re-pick that
+            # takes effect on the next Chrome / yt-dlp spawn.
+            self._handle_proxy_pool_sync(msg)
             return
         if isinstance(msg, HubSessionInteraction):
             # Record that the operator is actively driving this session

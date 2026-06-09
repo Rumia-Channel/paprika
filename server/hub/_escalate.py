@@ -119,6 +119,16 @@ _VIDEO_FAIL_RE = re.compile(
     r"|no video|sign in to confirm|drm|fragment|video unavailable|私的録画)",
     re.I,
 )
+# Hard dead-ends an AI retry can't fix (DNS / TLS / connection / 404 / 410).
+# Used to keep the generic ``under_delivered`` supply path from spending GPU
+# on pages that simply don't exist or won't connect.
+_HARD_DEAD_RE = re.compile(
+    r"(name or service not known|nodename nor servname|temporary failure in name"
+    r" resolution|no address associated|getaddrinfo|connection refused|connection"
+    r" reset|connection timed out|ssl|certificate|err_cert|\b404\b|not found"
+    r"|\b410\b|\bgone\b|\b50[0235]\b)",
+    re.I,
+)
 
 
 def _read_log_tail(job_id: str, max_bytes: int = 8000) -> str:
@@ -217,18 +227,25 @@ def classify_completed(info: JobInfo, result) -> str | None:
     Most "auth screen" / "video won't download" outcomes are NOT hard
     failures -- the worker returns a FetchResult (login page captured /
     yt-dlp errored) and the job ends ``completed``. This classifier finds
-    the recoverable ones from the JobResult, conservatively (only when
-    there's positive evidence the goal was achievable):
+    the recoverable ones from the JobResult:
 
-      ``video_dl``  -- download_video was requested, a video was DETECTED
-                       (or yt-dlp was attempted) yet none was saved.
-                       (No video evidence at all -> NOT escalated: the
-                       page simply had no video, nothing to recover.)
-      ``auth_gate`` -- HostKnowledge already knows this host gates
-                       (login_wall / age_gate / paywall) AND the job
-                       saved zero assets -> a known gate ate the content.
+      ``video_dl``       -- download_video was requested, a video was
+                            DETECTED (or yt-dlp attempted) yet none saved.
+      ``auth_gate``      -- a login / age / consent / paywall wall ate the
+                            content. Signals, strongest first:
+                              1. the structural occlusion probe behind the
+                                 課題/review feature flagged a full-screen
+                                 blocking overlay (server/hub/_review.py),
+                              2. HostKnowledge already marks the host gated,
+                              3. a gate keyword in the captured log/page.
+      ``under_delivered`` -- (opt-in) completed but saved ZERO assets and
+                            isn't an obvious hard dead-end. The broad supply
+                            path that lets the AI loop actually run at the
+                            target cadence; the rate limiter -- not this
+                            classifier -- caps how many we spend GPU on.
     """
     opts = info.options
+    host = _host_of(info.url)
 
     # ---- video requested, evidence existed, nothing saved ----
     if opts is not None and getattr(opts, "download_video", False):
@@ -241,11 +258,41 @@ def classify_completed(info: JobInfo, result) -> str | None:
             if detected or yt_all_failed:
                 return "video_dl"
 
-    # ---- known-gated host returned nothing ----
-    barriers = _host_barriers(_host_of(info.url))
-    if barriers & {"login_wall", "age_gate", "paywall"}:
-        if len(getattr(result, "assets", None) or []) == 0:
+    asset_count = len(getattr(result, "assets", None) or [])
+
+    # ---- full-screen overlay wall (login / age / consent / paywall) ----
+    # Reuse the structural occlusion probe that powers the 課題/review
+    # bucket: if it flagged this completed fetch as content-blocked, that IS
+    # a recoverable gate the codegen-loop should drive past. Far higher
+    # precision than a keyword scan and no per-site rules. Best-effort: any
+    # import/exec error falls through to the heuristics below.
+    try:
+        from server.hub._review import classify_review
+
+        if classify_review(info, result):
             return "auth_gate"
+    except Exception:
+        pass
+
+    # ---- known-gated host returned nothing ----
+    barriers = _host_barriers(host)
+    if barriers & {"login_wall", "age_gate", "paywall"} and asset_count == 0:
+        return "auth_gate"
+
+    # ---- gate / under-delivery from the captured log+page ----
+    if asset_count == 0:
+        blob = _read_log_tail(info.job_id)
+        # A gate keyword even before HostKnowledge has learned the host.
+        if blob and _AUTH_RE.search(blob):
+            return "auth_gate"
+        # Generic under-delivery (opt-in via the ``under_delivered``
+        # category): completed but captured nothing, and not an obvious hard
+        # dead-end (DNS / 404 / TLS / refused). Bounded by the per-host
+        # cooldown + hourly cap, so a noisy long tail is fine.
+        if "under_delivered" in _enabled_categories() and not (
+            blob and _HARD_DEAD_RE.search(blob)
+        ):
+            return "under_delivered"
 
     return None
 
@@ -278,6 +325,31 @@ def _gpu_idle() -> bool:
     except Exception:
         pass
     return True
+
+
+async def _thermal_ok() -> bool:
+    """Preemptive thermal gate: True when the CODER engine's local GPU is
+    accepting, so we don't spawn a codegen-loop onto a hot GPU. Delegates to
+    the per-engine thermal config (server/hub/thermal.py) of the engine that
+    serves the default codegen model -- the call sites enforce per call, this
+    just avoids wasting a lane. Open when no coder engine / thermal window is
+    configured; never blocks on the thermal layer's own error."""
+    try:
+        from server.hub.codegen import _env_default_target, _slug_for_model
+        from server.hub import thermal
+
+        reg = getattr(state, "engines", None)
+        if reg is None:
+            return True
+        slug = _slug_for_model(getattr(_env_default_target(), "model", "") or "")
+        if not slug:
+            return True
+        rec = reg.get(slug)
+        if rec is None:
+            return True
+        return await thermal.engine_thermal_ok(rec)
+    except Exception:
+        return True
 
 
 def _rate_ok(host: str | None) -> bool:
@@ -320,6 +392,14 @@ _GOALS = {
         "通常の自動取得(fetch)は認証/年齢ゲートで失敗しました。"
         "保存済みの Cookie やプロフィールがあれば活用し、無ければ"
         "確認ダイアログをクリック操作で通過してください。\n対象URL: {url}"
+    ),
+    "under_delivered": (
+        "このページを開き、ページの主要なコンテンツ(画像・動画・本文)を"
+        "取得・保存してください。通常の自動取得(fetch)ではアセットを1件も"
+        "保存できませんでした。原因として、スクロールやクリックで遅延ロード"
+        "される画像、iframe 内の本体、lazy-load、年齢確認や Cookie 同意など"
+        "の軽い障壁が考えられます。必要ならスクロール・クリック・JS での展開"
+        "を行い、本来取得すべきメディアと本文を保存してください。\n対象URL: {url}"
     ),
 }
 
@@ -380,6 +460,12 @@ async def _escalate_if_eligible(info: JobInfo, category: str | None) -> str | No
     if not _rate_ok(host):
         log.info(
             "escalate: rate/cooldown gate skipped %s (host=%s, cat=%s)",
+            info.job_id, host, category,
+        )
+        return None
+    if not await _thermal_ok():
+        log.info(
+            "escalate: GPU-thermal gate closed -- not escalating %s (host=%s, cat=%s)",
             info.job_id, host, category,
         )
         return None

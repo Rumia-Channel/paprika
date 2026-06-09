@@ -1333,7 +1333,7 @@ async def run_iterative_codegen(
                             reasoning_target = resolve_engine_target(
                                 _reasoning_engine_slug, _st.engines
                             )
-                        vision_target = find_vision_capable_target()
+                        vision_target = await find_vision_capable_target()
                     except Exception as _re:
                         _log(f"  !! reasoning-judge: target resolve failed: {_re}")
 

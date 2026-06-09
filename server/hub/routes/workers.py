@@ -1394,6 +1394,18 @@ async def worker_link(ws: WebSocket, worker_id: str):
                 worker_id,
                 exc_info=True,
             )
+        # Send the current egress proxy pool (Settings.proxy_pool) so a
+        # freshly-connected worker picks its exit proxy immediately. Live
+        # edits arrive separately via _broadcast_proxy_pool. Fire-and-forget.
+        try:
+            from server.hub.routes.settings import send_proxy_pool_to_worker
+            await send_proxy_pool_to_worker(worker)
+        except Exception:
+            log.warning(
+                "initial proxy_pool sync to %s failed",
+                worker_id,
+                exc_info=True,
+            )
         # Main loop
         while True:
             raw = await ws.receive_text()
@@ -1909,6 +1921,30 @@ async def _handle_worker_message(worker, msg) -> None:
                 info.status = JobStatus.completed
                 info.progress.phase = "completed"
                 info.completed_at = datetime.utcnow()
+                # 課題(review): the fetch returned a result but its content was
+                # blocked by a full-screen login / age / consent / paywall
+                # overlay (measured structurally by the worker's occlusion
+                # probe; classified here). Re-bucket into the distinct
+                # terminal status WITHOUT discarding the result -- the operator
+                # can still inspect the captured wall, and escalation below
+                # still runs. Best-effort + gated (Settings review_flag_enabled,
+                # default on; env PAPRIKA_REVIEW_DISABLE kill-switch).
+                try:
+                    from server.hub._review import classify_review
+
+                    _rv = classify_review(info, msg.result)
+                    if _rv:
+                        info.status = JobStatus.review
+                        info.progress.phase = "review"
+                        info.progress.last_log = _rv
+                        try:
+                            msg.result.status = JobStatus.review
+                            msg.result.review_reason = _rv
+                        except Exception:
+                            pass
+                        log.info("job %s bucketed as 課題(review): %s", msg.job_id, _rv)
+                except Exception:
+                    log.debug("review classify crashed for %s", msg.job_id, exc_info=True)
             info.progress.assets_saved = len(msg.result.assets)
             info.progress.assets_failed = msg.result.assets_failed
             await state.store.save_job_info(info)
