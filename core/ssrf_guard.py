@@ -70,13 +70,39 @@ def classify_ip(ip: "ipaddress._BaseAddress | str") -> str:
     return ""
 
 
-def resolve_all(host: str) -> list[str]:
+def resolve_all(host: str, _attempts: int = 2) -> list[str]:
     """Every IPv4 + IPv6 address ``host`` resolves to (deduped), via
     ``socket.getaddrinfo`` so /etc/hosts + OS policy match what Chrome sees.
-    AAAA records are included (IPv6 private ranges are equally attackable)."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:
+    AAAA records are included (IPv6 private ranges are equally attackable).
+
+    Retries once on a TRANSIENT resolver failure (``EAI_AGAIN`` /
+    "Temporary failure in name resolution") or an empty result. The worker
+    fleet resolves through docker's embedded DNS (127.0.0.11) forwarding to
+    the LAN gateway, which intermittently drops a COLD lookup -> getaddrinfo
+    times out (~4-8s) and yields nothing. Without the retry that made the
+    SSRF guard reject a perfectly valid host (e.g. monsnode.com) with "does
+    not resolve to any address" (the failures crawl_movie.py hit). A genuine
+    NXDOMAIN (``EAI_NONAME`` / ``EAI_NODATA``) fails fast and is NOT retried,
+    so the retry only ever costs extra time on the real flaky-resolver case."""
+    import time as _t
+
+    _eai_again = getattr(socket, "EAI_AGAIN", -3)
+    infos = None
+    for _i in range(max(1, _attempts)):
+        try:
+            infos = socket.getaddrinfo(host, None)
+            break
+        except socket.gaierror as e:
+            # Only a transient failure is worth retrying; a definitive
+            # "no such name" / "no data" won't change on a retry.
+            if getattr(e, "errno", None) != _eai_again:
+                return []
+            infos = None
+        except Exception:
+            infos = None
+        if _i + 1 < _attempts:
+            _t.sleep(0.25)
+    if not infos:
         return []
     seen: set[str] = set()
     out: list[str] = []
