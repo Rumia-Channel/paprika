@@ -1,0 +1,137 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+    <meta http-equiv="Pragma" content="no-cache"/>
+    <meta http-equiv="Expires" content="0"/>
+    <meta charset="UTF-8">
+    <title>TOS Loading</title>
+    <script src="/data/jquery.js"></script>
+    <style>
+        * {
+            margin: 0px;
+            padding: 0px;
+            font-family: "Verdana","微软雅黑", "黑体", "PingFangSC-Regular","PingFang SC";
+        }
+
+        body,
+        html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .loading {
+            width: 640px;
+            height: 100vh;
+            margin: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        @media screen and (max-width: 640px) {
+            .loading {
+                width: 100vw;
+            }
+        }
+
+        .filesystem {
+            line-height: 30px;
+        }
+
+        .complete,
+        .reboot {
+            display: none;
+        }
+
+
+    </style>
+</head>
+
+<body>
+<div class="loading" style="text-align:center;line-height:150%;">
+    <div class="filesystem"></div>
+</div>
+<div class="complete"></div>
+<div class="reboot"></div>
+</body>
+<script>
+    (function () {
+        var rebootTimer = null, rebootTotalTime = 180, filesystem_check = {
+            "en-US": "Checking file system..., please wait!<br>If an abnormality is found in the file system, the system will repair it, which may take up to several hours.",
+            "zh-CN": "文件系统检查中...，请等待！<br>如发现文件系统存在异常，系统将对其进行修复，耗时有可能长达几个小时。"
+        }, loading = {
+            "en-US": "Loading..., please wait!",
+            "zh-CN": "加载中...，请稍候！",
+            "zh-HK": "加載中...，請稍候！",
+            "zh-TW": "加載中...，請稍候！",
+            "ko": "로딩 중 기다려주세요!",
+            "ja": "読み込み中...，待って下さい！",
+            "de": "Laden, bitte warten!",
+            "fr": "Chargement, veuillez patienter!",
+            "ru": "Загрузка, пожалуйста подождите!",
+            "es": "¡Cargando por favor espere!",
+            "it": "Attendere il caricamento prego!",
+            "pl": "Ładowanie proszę czekać!",
+            "hu": "Betöltés; kérem várjon!",
+            "pt": "Carregando, por favor espere!",
+            "tr": "Yükleniyor lütfen bekleyin!"
+        };
+        var filesystem = filesystem_check[navigator.language];
+        if (!filesystem_check.hasOwnProperty(navigator.language)) {
+            filesystem = filesystem_check["en-US"];
+        }
+        var loadString = loading[navigator.language];
+        if (!loading.hasOwnProperty(navigator.language)) {
+            loadString = loading["en-US"];
+        }
+        $(".filesystem").html(loadString);
+        wait_rcs();
+        function wait_rcs() {
+            $(".complete").load("/databack/complete", (response, status, xhr) => {
+                if (status == "error") {
+                    $(".complete").load("/databack/checkraid?v=" + Math.random(), (response, status, xhr) => {
+                        if (status == "error") {
+                            $(".filesystem").html(loadString);
+                        } else {
+                            $(".filesystem").html(filesystem);
+                        }
+                    });
+                    setTimeout(() => { wait_rcs(); }, 1000);
+                } else {
+                    checkreboot();
+                }
+            });
+        }
+
+        function checkreboot() {
+            $(".reboot").load('/data/loading.gif?key=' + Math.random(), (response, status, xhr) => {
+                if (rebootTotalTime <= 0) {
+                    goto();
+                } else {
+                    if (status == "error") {
+                        rebootTotalTime--;
+                        rebootTimer = setTimeout(() => {
+                            checkreboot();
+                        }, 1000);
+                    } else {
+                        goto();
+                    }
+                }
+            });
+        }
+
+        function goto() {
+            clearTimeout(rebootTimer);
+            top.window.location.href = '/tos/';
+        }
+    })($);
+
+
+</script>
+
+</html>

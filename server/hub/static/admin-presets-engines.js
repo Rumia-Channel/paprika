@@ -678,6 +678,7 @@ function renderEnginesList() {
     const isSel = rec.slug === ENGINES_STATE.selectedSlug;
     const bg = isSel ? '#fff4d4' : '';
     const promoted = rec.promoted ? ' <span title="promoted" style="color:#d4a13d;">●</span>' : '';
+    const stoppedTag = (rec.enabled === false) ? ' <span title="停止中 (operator が停止)" style="color:#c0392b; font-size:.8em; font-weight:700;">■停止</span>' : '';
     // Cost chip (U): show today's ¥ next to the row so the operator
     // can spot the expensive engine at a glance. Green at ¥0, amber
     // < ¥100, red ≥ ¥100.
@@ -694,7 +695,7 @@ function renderEnginesList() {
     }
     const costChip = `<span class="engine-cost-chip" title="本日累計コスト" style="float:right; padding:0 6px; border-radius:8px; font-size:.72em; background:${costBg}; color:${costColor}; font-weight:600;">¥${cost.toLocaleString(undefined, {minimumFractionDigits: cost < 10 ? 2 : 0, maximumFractionDigits: 2})}</span>`;
     return `<div class="engine-row" data-slug="${esc(rec.slug)}" style="padding:6px 8px; border-radius:4px; cursor:pointer; background:${bg};">
-      <div style="font-weight:600; font-size:.92em;">${esc(rec.slug)}${promoted}${costChip}</div>
+      <div style="font-weight:600; font-size:.92em;">${esc(rec.slug)}${promoted}${stoppedTag}${costChip}</div>
       <div style="font-size:.78em; color:#666; margin-top:1px;">${kindBadge(rec.kind)} ${esc(rec.model || '')}</div>
     </div>`;
   }).join('');
@@ -842,6 +843,27 @@ function fillEngineForm(rec) {
   document.getElementById('engineNotes').value = rec.notes || '';
   document.getElementById('engineDeleteBtn').disabled = false;
   document.getElementById('engineDeleteBtn').title = '削除';
+  // Manual stop/resume (停止中) — POST /engines/{slug}/stop|resume toggles the
+  // engines_disabled setting. A stopped engine is skipped by EVERY AI call
+  // (codegen / judge / distiller / perception / page.agent) and fails over.
+  { const stopped = rec.enabled === false;
+    const badge = document.getElementById('engineEnabledBadge');
+    if (badge) {
+      badge.textContent = ENGINES_STATE.isNew ? '' : (stopped ? '● 停止中' : '● 有効');
+      badge.style.color = stopped ? '#c0392b' : '#196b2c';
+    }
+    const sb = document.getElementById('engineStopResumeBtn');
+    const sl = document.getElementById('engineStopResumeLabel');
+    if (sb && sl) {
+      sb.style.display = ENGINES_STATE.isNew ? 'none' : '';
+      sl.textContent = stopped ? '再開' : '停止';
+      sb.style.background = stopped ? '#eef8ee' : '#fdeaea';
+      sb.style.borderColor = stopped ? '#7ab68a' : '#d68080';
+      sb.style.color = stopped ? '#196b2c' : '#8a1d1d';
+      sb.dataset.slug = rec.slug || '';
+      sb.dataset.stop = stopped ? '0' : '1';
+    }
+  }
   const meta = document.getElementById('engineMeta');
   if (meta) {
     if (ENGINES_STATE.isNew) {
@@ -1122,6 +1144,19 @@ async function testEngine() {
   if (saveBtn) saveBtn.addEventListener('click', saveEngine);
   if (delBtn) delBtn.addEventListener('click', deleteEngine);
   if (testBtn) testBtn.addEventListener('click', testEngine);
+  const stopResumeBtn = document.getElementById('engineStopResumeBtn');
+  if (stopResumeBtn) stopResumeBtn.addEventListener('click', async () => {
+    const slug = stopResumeBtn.dataset.slug;
+    if (!slug) return;
+    const stop = stopResumeBtn.dataset.stop === '1';
+    stopResumeBtn.disabled = true;
+    try {
+      await fetch('/engines/' + encodeURIComponent(slug) + '/' + (stop ? 'stop' : 'resume'), { method: 'POST' });
+    } catch (e) { /* transient */ }
+    await loadEngines();
+    selectEngine(slug);   // re-fill form + re-render list with fresh enabled state
+    stopResumeBtn.disabled = false;
+  });
   if (clearKeyBtn) clearKeyBtn.addEventListener('click', () => {
     // Marks the direct-key field for explicit wipe on next save.
     // We don't fire the PUT immediately so the operator can pair it

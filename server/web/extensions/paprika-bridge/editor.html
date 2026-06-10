@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Paprika Bridge — クッキー編集</title>
+<style>
+  :root { --paprika: #d4a13d; --paprika-bg: #fef5e7; --paprika-ink: #8a5a00; }
+  * { box-sizing: border-box; }
+  body { font: 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         color: #222; margin: 0; padding: 0 0 80px; background: #fafafa; }
+  header { position: sticky; top: 0; z-index: 5; background: #fff;
+           border-bottom: 1px solid #e4e4ea; padding: 12px 18px;
+           box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+  h1 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  h1 img { width: 20px; height: 20px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 11px; font-weight: 600; color: #666; }
+  .field input { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;
+                 font-size: 13px; }
+  #host { width: 240px; }
+  #hub  { width: 220px; }
+  button { background: #fff; border: 1px solid #ccc; color: #333; cursor: pointer;
+           padding: 7px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+  button:hover { background: #f3f3f7; }
+  button.primary { background: var(--paprika-bg); border-color: var(--paprika);
+                   color: var(--paprika-ink); }
+  button.primary:hover { background: #fce5b2; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .spacer { flex: 1; }
+  main { padding: 14px 18px; }
+  .meta { font-size: 11px; color: #888; margin: 0 0 8px; }
+  table { border-collapse: collapse; width: 100%; background: #fff;
+          border: 1px solid #e4e4ea; border-radius: 6px; overflow: hidden; }
+  th, td { border-bottom: 1px solid #eee; padding: 5px 6px; text-align: left;
+           vertical-align: middle; font-size: 12px; }
+  th { background: #f7f7fa; font-size: 11px; color: #555; position: sticky; top: 0;
+       white-space: nowrap; }
+  td input[type=text] { width: 100%; border: 1px solid transparent; background: transparent;
+                        padding: 4px 5px; border-radius: 3px; font: inherit; }
+  td input[type=text]:focus { border-color: var(--paprika); background: #fffdf7;
+                              outline: none; }
+  td.name input  { min-width: 110px; font-weight: 600; }
+  td.value input { min-width: 220px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+                   font-size: 11px; color: #2a4; }
+  td.domain input{ min-width: 130px; }
+  td.path input  { min-width: 60px; }
+  td.exp { white-space: nowrap; }
+  td.exp input { width: 120px; font-family: ui-monospace, monospace; font-size: 11px; }
+  td.exp .hint { display: block; font-size: 10px; color: #999; margin-top: 1px; }
+  td.center { text-align: center; }
+  td.center input { width: auto; }
+  select.ss { font-size: 11px; padding: 3px; border: 1px solid #ddd; border-radius: 3px; }
+  tr.off { opacity: .4; }
+  tr:hover td { background: #fcfcff; }
+  .del { color: #a23822; border: none; background: none; font-size: 15px; padding: 2px 6px; }
+  .del:hover { background: #fbe9e7; }
+  #empty { color: #999; padding: 30px; text-align: center; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; background: #fff;
+           border-top: 1px solid #e4e4ea; padding: 10px 18px; display: flex;
+           gap: 10px; align-items: center; box-shadow: 0 -1px 4px rgba(0,0,0,.04); }
+  #status { flex: 1; font-size: 12px; white-space: pre-wrap; }
+  #status.ok  { color: #2a7a2a; }
+  #status.err { color: #a23822; }
+  #status.info{ color: #3a5a8b; }
+  details.json { margin-top: 14px; }
+  details.json summary { cursor: pointer; color: #666; font-size: 12px; }
+  details.json pre { background: #1e1e28; color: #d6d6e0; padding: 12px; border-radius: 6px;
+                     overflow: auto; font-size: 11px; max-height: 280px; }
+  .count { font-weight: 700; color: var(--paprika-ink); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><img src="icon-48.png" alt=""> Paprika Bridge — クッキーを表で編集</h1>
+  <div class="bar">
+    <div class="field">
+      <label for="host">ホスト (host)</label>
+      <input id="host" type="text" placeholder="example.com" />
+    </div>
+    <div class="field">
+      <label for="hub">Hub URL</label>
+      <input id="hub" type="text" placeholder="http://paprika.lan" />
+    </div>
+    <button id="loadChrome" title="このホストの現在の Chrome クッキーを読み込む">Chrome から読込</button>
+    <button id="loadHub" title="Paprika に登録済みのクッキーを読み込む">Hub から読込</button>
+    <button id="addRow">＋ 行を追加</button>
+    <div class="spacer"></div>
+    <span class="meta" id="rowmeta"></span>
+  </div>
+</header>
+
+<main>
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th class="center" title="登録に含める">✓</th>
+        <th>name</th>
+        <th>value</th>
+        <th>domain</th>
+        <th>path</th>
+        <th>expires</th>
+        <th class="center" title="Secure">🔒</th>
+        <th class="center" title="HttpOnly">H</th>
+        <th>SameSite</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="empty">行がありません。「Chrome から読込」または「＋ 行を追加」で開始してください。</div>
+
+  <details class="json">
+    <summary>登録される JSON を確認 (読み取り専用)</summary>
+    <pre id="jsonpreview">[]</pre>
+  </details>
+</main>
+
+<footer>
+  <div id="status" class="info">準備完了。</div>
+  <button id="register" class="primary">Paprika に登録</button>
+</footer>
+
+<script src="lib.js"></script>
+<script src="editor.js"></script>
+</body>
+</html>

@@ -190,7 +190,12 @@ def _should_generate_perception(
 # support. Text-only models (vLLM-served Qwen3 / DeepSeek / etc.) will OOM
 # or reject multipart content.  Conservative -- err on the side of NOT
 # sending the image and rely on DOM outline instead.
-_VISION_MODEL_PATTERNS = ("vl", "vision", "gpt-4o", "claude-3", "gemini")
+# NB ``qwen3.5`` is the .26 box's served alias for Qwen3-VL-32B (a real VL
+# model) -- added explicitly because the alias lacks the "vl" substring;
+# verified live to accept image_url content. Gates BOTH the perception
+# vision pool (find_vision_capable_target) AND the image-send decision
+# (can_use_vision), since both call _model_is_vision_capable.
+_VISION_MODEL_PATTERNS = ("vl", "vision", "gpt-4o", "claude-3", "gemini", "qwen3.5")
 
 
 def _model_is_vision_capable(model_name: str) -> bool:
@@ -745,9 +750,33 @@ async def find_vision_capable_target() -> LLMTarget | None:
     vis = [r for r in recs if _model_is_vision_capable(getattr(r, "model", "") or "")]
     if not vis:
         return None
-    # Promoted first, then by slug -- a stable order so all hubs fail over
-    # to the same engine.
-    vis.sort(key=lambda r: (not getattr(r, "promoted", False), getattr(r, "slug", "")))
+    # Order: LOCAL GPU vision engines first (thermal-managed -- a gpu_temp_url
+    # or a gpu_temp_stop_c is set), CLOUD engines LAST (no thermal window,
+    # e.g. OpenAI gpt-4o-mini). So a cloud engine is only a FALLBACK, used
+    # when every local vision GPU is throttled / down. Within each group:
+    # promoted first, then slug (stable order so all hubs pick the same one).
+    def _vis_is_cloud(r):
+        return not (
+            str(getattr(r, "gpu_temp_url", "") or "").strip()
+            or float(getattr(r, "gpu_temp_stop_c", 0) or 0) > 0
+        )
+    # Operator's explicit priority from the 役割(Roles) panel -- Settings
+    # ``vision_engine_order`` (csv of slugs). Listed engines come FIRST in
+    # that exact order; anything unlisted falls back to the default
+    # local-GPU-first / cloud-last heuristic.
+    _order = []
+    try:
+        if _st.settings is not None:
+            _order = [s.strip() for s in (_st.settings.get("vision_engine_order", "") or "").split(",") if s.strip()]
+    except Exception:
+        _order = []
+    _rank = {s: i for i, s in enumerate(_order)}
+    vis.sort(key=lambda r: (
+        _rank.get(getattr(r, "slug", ""), len(_order)),
+        _vis_is_cloud(r),
+        not getattr(r, "promoted", False),
+        getattr(r, "slug", ""),
+    ))
     chosen = await thermal.first_accepting(vis)
     if chosen is None:
         return None  # every vision engine is thermally throttled

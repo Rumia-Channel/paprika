@@ -1307,14 +1307,22 @@ async def run_iterative_codegen(
 
                     # Resolve the reasoning engine slug from settings,
                     # falling back to env / "deepseek-r1".
+                    # 役割(Roles) panel ordered list first (judge_engine_order
+                    # -> first accepting), then the legacy single setting / env.
                     _reasoning_engine_slug = ""
                     try:
-                        if _reasoning_st.settings is not None:
-                            _reasoning_engine_slug = (
-                                _reasoning_st.settings.get("reasoning_judge_engine", "") or ""
-                            ).strip()
+                        from server.hub._roles import resolve_role_engine_slug
+                        _reasoning_engine_slug = await resolve_role_engine_slug("judge")
                     except Exception:
-                        pass
+                        _reasoning_engine_slug = ""
+                    if not _reasoning_engine_slug:
+                        try:
+                            if _reasoning_st.settings is not None:
+                                _reasoning_engine_slug = (
+                                    _reasoning_st.settings.get("reasoning_judge_engine", "") or ""
+                                ).strip()
+                        except Exception:
+                            pass
                     if not _reasoning_engine_slug:
                         _reasoning_engine_slug = os.environ.get(
                             "PAPRIKA_R1_DISTILLER_ENGINE", "deepseek-r1"

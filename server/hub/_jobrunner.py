@@ -354,19 +354,29 @@ async def _run_codegen_loop_job(request: Request, info: JobInfo) -> None:
     # ``options.codegen_engine`` -- the LLM helpers then fall back
     # to the env-var defaults (CODEGEN_LLM_URL + CODEGEN_MODEL_NAME).
     llm_target = None
-    if opts.codegen_engine:
+    # Per-job ``options.codegen_engine`` wins; else the 役割(Roles) panel's
+    # ordered list (Settings ``codegen_engine_order`` -> first accepting);
+    # else env (CODEGEN_LLM_URL).
+    _cg_slug = opts.codegen_engine
+    if not _cg_slug:
+        try:
+            from server.hub._roles import resolve_role_engine_slug
+            _cg_slug = await resolve_role_engine_slug("codegen")
+        except Exception:
+            _cg_slug = ""
+    if _cg_slug:
         from server.hub.codegen import resolve_engine_target as _resolve_engine
 
         try:
-            llm_target = _resolve_engine(opts.codegen_engine, state.engines)
+            llm_target = _resolve_engine(_cg_slug, state.engines)
             _log(
-                f"==> codegen engine: {opts.codegen_engine!r} "
+                f"==> codegen engine: {_cg_slug!r} "
                 f"({llm_target.model} @ {llm_target.url})"
             )
         except Exception as e:
             _log(
                 f"!! engine resolution failed for "
-                f"{opts.codegen_engine!r}: {type(e).__name__}: {e}; "
+                f"{_cg_slug!r}: {type(e).__name__}: {e}; "
                 f"falling back to env defaults"
             )
             llm_target = None
@@ -935,6 +945,19 @@ async def _distill_skill_background(
         except Exception:
             pass
         return
+    # Share the freshly distilled AUTO skill cross-hub: write it through to
+    # MariaDB (durable source of truth) + broadcast it to peer hubs, exactly
+    # like the curated PUT route does. Without this an auto skill lived only
+    # on the distilling hub's disk -- so the admin "コード" button
+    # (GET /skills/{slug}) round-robined via nginx to a peer hub and 404'd,
+    # and the skill was wiped on the next restart's MariaDB restore. Best-
+    # effort: a MariaDB / Redis hiccup must never fail the distillation.
+    try:
+        from server.hub._invalidate import share_upsert
+
+        await share_upsert("skills", state.skills, rec)
+    except Exception:
+        pass
     try:
         log_cb(
             f"==> skill distillation: saved auto/{rec.slug} "
@@ -1030,6 +1053,14 @@ async def _distill_convention_background(
         except Exception:
             pass
         return
+    # Share the freshly distilled AUTO convention cross-hub (MariaDB write-
+    # through + peer broadcast), same rationale as the skill path above.
+    try:
+        from server.hub._invalidate import share_upsert
+
+        await share_upsert("conventions", state.conventions, rec)
+    except Exception:
+        pass
     try:
         log_cb(
             f"==> convention distillation: saved auto/{rec.slug} "

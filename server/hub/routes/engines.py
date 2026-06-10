@@ -678,11 +678,19 @@ async def resolve_worker_agent_engine(body: Optional[dict] = None) -> dict:
     body = body or {}
     _check_worker_secret(str(body.get("secret") or ""))
     slug = ""
+    # 役割(Roles) panel ordered list first (page_agent_engine_order ->
+    # first accepting), then the legacy single setting.
     try:
-        if state.settings is not None:
-            slug = (state.settings.get("worker_agent_engine_slug", "") or "").strip()
+        from server.hub._roles import resolve_role_engine_slug
+        slug = await resolve_role_engine_slug("page_agent")
     except Exception:
         slug = ""
+    if not slug:
+        try:
+            if state.settings is not None:
+                slug = (state.settings.get("worker_agent_engine_slug", "") or "").strip()
+        except Exception:
+            slug = ""
     if not slug:
         raise HTTPException(
             404,
@@ -727,6 +735,17 @@ async def resolve_engine_auto(kind: str, body: Optional[dict] = None) -> dict:
             400, "kind must be one of: chat, vision-chat, reasoning",
         )
     er = _require_engines()
+    # 役割(Roles) panel: the chat role can carry an explicit ordered priority
+    # list (chat_engine_order -> first accepting). Honour it first; fall
+    # through to the promoted/kind default when unset or all throttled.
+    if kind == "chat":
+        try:
+            from server.hub._roles import resolve_role_engine
+            _r = await resolve_role_engine("chat")
+            if _r is not None:
+                return _resolve_engine_payload(_r)
+        except Exception:
+            pass
     # Thermal failover: prefer a promoted, thermally-accepting engine of this
     # kind; 503 when every one is throttled (operator: Agent/LLM may error
     # when all local GPUs are throttling).

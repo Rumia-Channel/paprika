@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 
@@ -51,7 +51,12 @@ _hist_cache: dict = {}
 def exporter_url_for(rec) -> str:
     """Temp-exporter URL for an engine: explicit ``gpu_temp_url`` else
     derived from the endpoint host on the exporter port. "" when neither
-    resolves."""
+    resolves.
+
+    For a multi-GPU box, set the engine's ``gpu_temp_url`` to the card it
+    runs on, e.g. ``http://10.10.50.31:9402/?gpu=0`` -- ``read_temp`` then
+    reads that card's temp and ``read_history`` its own series (both honour
+    the ``?gpu=N`` query; the derived/blank form stays box-wide)."""
     url = (getattr(rec, "gpu_temp_url", "") or "").strip()
     if url:
         return url
@@ -104,7 +109,14 @@ async def read_history(url: str) -> list:
     c = _hist_cache.get(url)
     if c and (now - c["ts"]) < _HIST_CACHE_S:
         return c["hist"]
-    hurl = url.rstrip("/") + "/history"
+    # Build the /history URL while PRESERVING any query string (e.g. the
+    # exporter's ``?gpu=N`` per-card selector). A naive ``url + "/history"``
+    # on ``http://host:9402/?gpu=0`` yields ``...?gpu=0/history`` -> the
+    # exporter can't parse the index and silently returns the box-wide
+    # series (or an empty body), so per-GPU history graphs would collapse.
+    parts = urlsplit(url)
+    hpath = (parts.path.rstrip("/")) + "/history"
+    hurl = urlunsplit((parts.scheme, parts.netloc, hpath, parts.query, parts.fragment))
     try:
         async with httpx.AsyncClient(timeout=3.0) as cli:
             r = await cli.get(hurl)

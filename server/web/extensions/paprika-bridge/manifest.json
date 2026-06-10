@@ -1,18 +1,21 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvCW+4JQHga2UV5Dq09zFWdhk8U2yGovOl+Np3TEQrUHtRNWj+lmG9FISEXK4A4ihKj1nOndOC2RgD/yixMrfl2kN6ump6kNnQpNRYWyRfmAcP2RAzBYizyvDRKZgViZh3aZFDfto4IKk9h4X6yerYTDqD+ouKE3ksUuaoc/YO82NCbW3obllq2Xn3JoXHPm1K3eX15jXVdJikccn/gHC1XeukdVWMfOQpl9BjuD/LpvOKy5E8LqwLf28p6kLN3a7RCKCaRGZgB/bVg6crnsUS5q7cwCpXROiwjPDWR1jllOTuEFzdDp5WdWIihcXFU4Yyq/1bmxS8YWOIzHy0JPGpQIDAQAB",
   "name": "Paprika Bridge",
-  "version": "0.2.0",
-  "description": "Connect Chrome to a Paprika Hub: push cookies for the host registry, send URLs / clipboard to running jobs, and assist copy-paste workflows.",
+  "version": "0.3.0",
+  "description": "Connect Chrome to a Paprika Hub. By default it auto-syncs the browser's login cookies into the worker fleet's host registry; switch on Developer mode for manual, table-based cookie editing.",
   "permissions": [
     "cookies",
     "storage",
     "activeTab",
-    "tabs",
-    "clipboardWrite"
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "Paprika Bridge",

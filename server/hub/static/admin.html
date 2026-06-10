@@ -72,7 +72,7 @@
   <button class="tab" data-tab="submit"><iconify-icon icon="lucide:send-horizontal"></iconify-icon> <span data-i18n="tab.submit">Submit</span></button>
   <button class="tab" data-tab="workers"><iconify-icon icon="lucide:cpu"></iconify-icon> <span data-i18n="tab.workers">Workers</span> <span class="count" id="cntWorkers">0</span></button>
   <button class="tab" data-tab="jobs"><iconify-icon icon="lucide:list-checks"></iconify-icon> <span data-i18n="tab.jobs">Recent jobs</span> <span class="count" id="cntJobs">0</span></button>
-  <button class="tab" data-tab="presets"><iconify-icon icon="lucide:bookmark"></iconify-icon> <span data-i18n="tab.presets">Preset job</span> <span class="count" id="cntPresets">0</span></button>
+  <button class="tab" data-tab="ai"><iconify-icon icon="lucide:sparkles"></iconify-icon> <span data-i18n="tab.ai">AI 学習機能</span></button>
   <button class="tab" data-tab="screens"><iconify-icon icon="lucide:monitor"></iconify-icon> <span data-i18n="tab.screens">Live preview</span></button>
   <div class="tab-dropdown" id="moreTabWrap">
     <button type="button" class="tab tab-dropdown-trigger" id="moreTabBtn"
@@ -84,8 +84,7 @@
       <button class="tab" data-tab="hosts" role="menuitem"><iconify-icon icon="lucide:cookie"></iconify-icon> <span data-i18n="tab.hosts">Hosts</span> <span class="count" id="cntHosts">0</span></button>
       <button class="tab" data-tab="profiles" role="menuitem"><iconify-icon icon="lucide:user-cog"></iconify-icon> <span data-i18n="tab.profiles">Profiles</span> <span class="count" id="cntProfiles">0</span></button>
       <button class="tab" data-tab="extensions" role="menuitem"><iconify-icon icon="lucide:puzzle"></iconify-icon> <span data-i18n="tab.extensions">Extensions</span> <span class="count" id="cntExtensions">0</span></button>
-      <button class="tab" data-tab="engines" role="menuitem"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> <span data-i18n="tab.engines">AI Engines</span> <span class="count" id="cntEngines">0</span></button>
-      <button class="tab" data-tab="ai" role="menuitem"><iconify-icon icon="lucide:sparkles"></iconify-icon> <span data-i18n="tab.ai">AI 学習機能</span></button>
+      <button class="tab" data-tab="presets" role="menuitem"><iconify-icon icon="lucide:bookmark"></iconify-icon> <span data-i18n="tab.presets">Preset job</span> <span class="count" id="cntPresets">0</span></button>
       <button class="tab" data-tab="plugins" role="menuitem"><iconify-icon icon="lucide:plug"></iconify-icon> <span data-i18n="tab.plugins">Plugins</span> <span class="count" id="cntPlugins">0</span></button>
       <button class="tab" data-tab="settings" role="menuitem"><iconify-icon icon="lucide:settings"></iconify-icon> <span data-i18n="tab.settings">Settings</span></button>
       <!-- v2: Recipes / Skills / Conventions tabs removed.
@@ -1891,6 +1890,8 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
             <button type="button" id="engineSaveBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c; font-weight:600;"><iconify-icon icon="lucide:save"></iconify-icon> <span data-i18n="engines.save">Save</span></button>
             <button type="button" id="engineTestBtn" class="pill"><iconify-icon icon="lucide:plug-zap"></iconify-icon> <span data-i18n="engines.test">Test connection</span></button>
             <button type="button" id="engineDeleteBtn" class="pill" style="background:#fde6e6; border-color:#d68080; color:#8a1d1d;"><iconify-icon icon="lucide:trash-2"></iconify-icon> <span data-i18n="engines.delete">Delete</span></button>
+            <button type="button" id="engineStopResumeBtn" class="pill" style="display:none;" title="このエンジンを全AI呼び出し(codegen/judge/distiller/perception/page.agent)から外す/戻す"><iconify-icon icon="lucide:power"></iconify-icon> <span id="engineStopResumeLabel">停止</span></button>
+            <span id="engineEnabledBadge" style="font-size:.85em; font-weight:600;"></span>
             <span id="engineStatus" style="margin-left:auto; font-size:.85em; color:#666;"></span>
           </div>
           <pre id="engineMeta" style="margin-top:10px; padding:8px 10px; background:#fafafb; border:1px solid #e0e0e8; border-radius:4px; font-size:11px; color:#666;"></pre>
@@ -2144,6 +2145,8 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
     </div>
     <div class="ai-subtabs" role="tablist">
       <button type="button" class="ai-subtab active" data-ai-subtab="live" role="tab" aria-selected="true"><iconify-icon icon="lucide:activity"></iconify-icon> <span data-i18n="ai.subtab.live">稼働中</span></button>
+      <button type="button" class="ai-subtab" data-ai-subtab="roles" role="tab" aria-selected="false"><iconify-icon icon="lucide:sliders-horizontal"></iconify-icon> <span data-i18n="ai.subtab.roles">役割</span></button>
+      <button type="button" class="ai-subtab" data-ai-subtab="engines" role="tab" aria-selected="false"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> <span data-i18n="ai.subtab.engines">エンジン</span> <span class="count" id="cntEngines">0</span></button>
       <button type="button" class="ai-subtab" data-ai-subtab="knowledge" role="tab" aria-selected="false"><iconify-icon icon="lucide:brain"></iconify-icon> <span data-i18n="ai.subtab.knowledge">ホスト知識</span> <span class="count" id="cntKnowledge">0</span></button>
       <button type="button" class="ai-subtab" data-ai-subtab="skills" role="tab" aria-selected="false"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> <span data-i18n="ai.subtab.skills">スキル</span> <span class="count" id="cntSkills">0</span></button>
       <button type="button" class="ai-subtab" data-ai-subtab="conventions" role="tab" aria-selected="false"><iconify-icon icon="lucide:scroll-text"></iconify-icon> <span data-i18n="ai.subtab.conventions">作法</span> <span class="count" id="cntConventions">0</span></button>
@@ -2170,6 +2173,17 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
     <h3 style="margin:6px 0;font-size:1em;"><iconify-icon icon="lucide:history"></iconify-icon> 直近のAIイベント <span style="font-size:.72em;color:#999;font-weight:normal;">(蒸留 / 視覚 / エスカレ / recipe)</span></h3>
     <div id="aiLiveRecent"></div>
   </section>
+    </div>
+    <div class="ai-subpane" data-ai-subpane="roles" style="display:none;">
+  <section>
+    <h2><iconify-icon icon="lucide:sliders-horizontal"></iconify-icon> 役割（AI の仕事ごとに担当エンジン）
+      <span style="font-size:0.7em; color:#888; font-weight:normal; margin-left:8px;">どの「仕事」をどのエンジンが担当するかを1画面で割り当て。視覚は上から順に試す（過熱/停止なら次へ）</span>
+    </h2>
+    <div id="aiRolesPanel" style="margin-top:12px;"><div class="empty">読み込み中…</div></div>
+  </section>
+    </div>
+    <div class="ai-subpane" data-ai-subpane="engines" style="display:none;">
+      <div id="aiEnginesMount"></div>
     </div>
     <div class="ai-subpane" data-ai-subpane="knowledge" style="display:none;">
   <section>
@@ -2392,6 +2406,15 @@ table.aitbl code { font-size:0.95em; }
 .aibtn:hover { background:#eef4fa; }
 .aibtn.del { color:#933; border-color:#e8b4b0; }
 .aibtn.del:hover { background:#fdecea; }
+/* 役割パネル: custom-arrow の select + iOS風 segmented toggle (premium) */
+.ro-sel { -webkit-appearance:none; appearance:none; padding:4px 26px 4px 12px; height:28px; border:1px solid #dcdfe6; border-radius:8px; background:#fff url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2.5 4L5 6.5L7.5 4' stroke='%237a8292' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 9px center; font-size:0.82em; font-weight:500; color:#2c3340; cursor:pointer; line-height:1.4; box-shadow:0 1px 0 rgba(15,20,28,.02); transition:border-color .15s ease, box-shadow .15s ease, background-color .15s ease; }
+.ro-sel:hover { border-color:#b2b9c5; background-color:#fbfcfe; }
+.ro-sel:focus { outline:none; border-color:#7ab68a; box-shadow:0 0 0 3px rgba(122,182,138,.18); background-color:#fff; }
+.ro-seg { display:inline-flex; padding:2px; background:#f0f1f5; border-radius:9px; vertical-align:middle; gap:2px; }
+.ro-seg button { position:relative; padding:3px 12px; border:0; background:transparent; font-size:0.76em; font-weight:500; color:#6b7380; cursor:pointer; line-height:1.55; border-radius:7px; transition:color .18s ease, background-color .18s ease, box-shadow .18s ease, transform .12s ease; }
+.ro-seg button:hover { color:#2c3340; }
+.ro-seg button.on { background:#fff; color:#1f2632; box-shadow:0 1px 2px rgba(15,20,28,.08), 0 0 0 1px rgba(15,20,28,.04); }
+.ro-seg button:active { transform:scale(0.97); }
 .ai-tile { background:#fff; border:1px solid #e8ecf0; border-radius:8px; padding:10px 14px; }
 .ai-tile-label { font-size:0.78em; color:#666; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px; }
 .ai-tile-value { font-size:1.6em; font-weight:700; color:#1f2328; font-variant-numeric:tabular-nums; line-height:1.1; }

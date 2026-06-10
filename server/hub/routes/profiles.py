@@ -103,21 +103,25 @@ ol li{margin:8px 0;}
        ピン留めしておくと押しやすいです。</li>
 </ol>
 
+<!--CRX_SECTION-->
+
 <h2>3. 使い方</h2>
 <ol>
   <li>ログインしておきたいサイトを Chrome で開いてログインしておく
        (普段使いの Chrome そのままで OK)。</li>
-  <li>ツールバーの paprika アイコンをクリック → ポップアップ。</li>
-  <li>初回は Hub URL を入力 (例: <code>http://paprika.lan</code>)。
-       次回からは保存される。</li>
-  <li>「Push cookies to hub」を押すと、対象ホスト (現在のタブのドメインを
-       デフォルトとする) のクッキーがハブに送られる。</li>
+  <li>ツールバーの paprika アイコンをクリック → <code>⚙</code> から Hub URL を入力
+       (例: <code>http://paprika.lan</code>)。次回からは保存される。</li>
+  <li><strong>自動モード (既定):</strong> 見ているサイトにログインすると、その
+       cookie が数秒後に自動で hub の <code>/hosts/&lt;host&gt;</code> に登録され、
+       worker がそのまま使える。手動で送るなら「このサイトを今すぐ登録」。</li>
+  <li><strong>開発モード:</strong> <code>⚙</code> で ON にすると自動登録を止め、
+       cookie を<strong>表形式</strong>で可視化・編集してから登録できる。</li>
   <li>送ったホストは admin UI の <a href="/#hosts">Hosts</a> タブに出る。
        <code>cookies_from</code> で参照可能。</li>
 </ol>
 
 <div class="note">
-  <strong>制限事項 (0.2 現在):</strong>
+  <strong>制限事項:</strong>
   cookie 転送のみ動作します (Chrome 拡張 API の制約)。
   Login Data SQLite / IndexedDB / Local Storage は含まれません。
   実用上、cookie だけで 90% のログインサイトには再ログイン不要で入れます。
@@ -131,6 +135,22 @@ ol li{margin:8px 0;}
   <li><a href="https://github.com/paps-jp/paprika">paprika ソース (GitHub)</a></li>
 </ul>
 </body></html>
+"""
+
+
+# Injected into the install page (replacing the <!--CRX_SECTION--> marker)
+# when a packed paprika-bridge.crx is present. Kept separate from the main
+# template so it can be .format()'d without tripping over the CSS braces.
+_CRX_INSTALL_FRAGMENT = """
+<h2>署名付き .crx でインストール (組織展開 / デベロッパーモード不要)</h2>
+<p>安定した拡張 ID を持つ署名済み .crx です。複数 PC へ Chrome ポリシーで
+   強制インストールでき、デベロッパーモードの警告も出ません。</p>
+<a class="dl" href="/profiles/extension/paprika-bridge.crx">paprika-bridge.crx をダウンロード</a>
+<p>拡張 ID: <code>{ext_id}</code></p>
+<p>Chrome ポリシー <code>ExtensionInstallForcelist</code> に次の1行を追加:</p>
+<pre>{ext_id};{base}/profiles/extension/paprika-bridge/updates.xml</pre>
+<p class="sub">※ 単体の .crx はドラッグ&amp;ドロップでは入りません (Chrome の仕様)。
+   個人利用なら上の Load unpacked が簡単。組織配布は上記ポリシーを使います。</p>
 """
 
 
@@ -953,15 +973,25 @@ async def upload_profile(
 
 
 @router.get("/profiles/extension/install", include_in_schema=False)
-async def profile_extension_install_page() -> HTMLResponse:
+async def profile_extension_install_page(request: Request) -> HTMLResponse:
     """Landing page with the Paprika Bridge .zip + install instructions.
 
     Operator clicks the "Paprika Bridge" link in the admin UI's
-    Profiles tab, lands here, downloads the .zip, follows the
-    "Load unpacked" instructions. The extension itself is built on
-    the fly from server/web/extensions/paprika-bridge/.
+    Profiles tab, lands here, downloads the .zip (load-unpacked) or the
+    signed .crx (force-install via policy), follows the instructions.
+    The .zip is built on the fly from
+    server/web/extensions/paprika-bridge/; the .crx is the pre-signed
+    committed artefact (see scripts/pack_paprika_bridge_crx.py).
     """
-    return HTMLResponse(_PROFILE_EXTENSION_INSTALL_HTML)
+    ext_id = _paprika_bridge_ext_id()
+    if ext_id and _BRIDGE_CRX.exists():
+        base = str(request.base_url).rstrip("/")
+        crx_section = _CRX_INSTALL_FRAGMENT.format(ext_id=ext_id, base=base)
+    else:
+        # No packed .crx in this build -> show the zip/load-unpacked flow only.
+        crx_section = ""
+    html = _PROFILE_EXTENSION_INSTALL_HTML.replace("<!--CRX_SECTION-->", crx_section)
+    return HTMLResponse(html)
 
 
 def _build_paprika_bridge_zip() -> Response:
@@ -977,7 +1007,7 @@ def _build_paprika_bridge_zip() -> Response:
 
     from fastapi.responses import Response
 
-    src = Path(__file__).parent.parent / "web" / "extensions" / "paprika-bridge"
+    src = Path(__file__).resolve().parents[2] / "web" / "extensions" / "paprika-bridge"
     if not src.exists():
         raise HTTPException(404, "extension source not bundled in this hub build")
     buf = io.BytesIO()
@@ -1008,6 +1038,100 @@ async def profile_extension_download():
 @router.get("/profiles/extension/cookie-pusher.zip", include_in_schema=False)
 async def profile_extension_download_legacy():
     return _build_paprika_bridge_zip()
+
+
+# ---- signed CRX + force-install (Omaha) ---------------------------------
+# Mirrors the paprika-agent.crx model: a pre-signed, COMMITTED .crx the hub
+# serves statically. This gives the Bridge a STABLE extension ID and lets
+# operators force-install it across machines via an enterprise policy
+# (ExtensionInstallForcelist=<id>;<updates.xml-url>) -- no Developer-mode
+# nag, auto-updates. We pre-sign (rather than sign on the fly) because the
+# hub image ships no crypto lib and the .34 deploy-watcher does NOT rebuild
+# images: a committed .crx ships as a plain server/ file, byte-identical on
+# every hub, so the ID is fleet-wide consistent. Re-pack after editing the
+# source with scripts/pack_paprika_bridge_crx.py. The signing key stays
+# operator-held (never on the hub); the hub only serves the public .crx.
+
+_BRIDGE_EXT_ROOT = Path(__file__).resolve().parents[2] / "web" / "extensions"
+_BRIDGE_DIR = _BRIDGE_EXT_ROOT / "paprika-bridge"
+_BRIDGE_CRX = _BRIDGE_EXT_ROOT / "paprika-bridge.crx"
+
+
+def _paprika_bridge_ext_id() -> str | None:
+    """Derive the stable extension ID from the committed manifest's ``key``
+    (base64 SPKI): first 128 bits of SHA256, each nibble mapped 0..15 ->
+    'a'..'p'. None when the manifest carries no ``key`` (un-signed source
+    tree) -- callers then fall back to the zip/load-unpacked flow."""
+    import base64
+    import hashlib
+    import json as _json
+
+    try:
+        man = _json.loads((_BRIDGE_DIR / "manifest.json").read_text("utf-8"))
+        spki = base64.b64decode(man["key"])
+    except Exception:
+        return None
+    digest = hashlib.sha256(spki).digest()[:16]
+    return "".join(chr(97 + (b >> 4)) + chr(97 + (b & 0x0F)) for b in digest)
+
+
+@router.get("/profiles/extension/paprika-bridge.crx", include_in_schema=False)
+async def profile_extension_crx():
+    """Serve the pre-signed Paprika Bridge CRX3 (stable extension ID).
+
+    404 with a clear hint when the .crx hasn't been packed yet (run
+    scripts/pack_paprika_bridge_crx.py and redeploy). Use the .zip +
+    load-unpacked flow for dev; the .crx is for force-install via an
+    enterprise policy (see the install page / updates.xml below).
+    """
+    if not _BRIDGE_CRX.exists():
+        raise HTTPException(
+            404,
+            "paprika-bridge.crx is not packed in this build -- run "
+            "scripts/pack_paprika_bridge_crx.py and redeploy.",
+        )
+    return Response(
+        content=_BRIDGE_CRX.read_bytes(),
+        media_type="application/x-chrome-extension",
+        headers={
+            "Content-Disposition": 'attachment; filename="paprika-bridge.crx"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/profiles/extension/paprika-bridge/updates.xml", include_in_schema=False)
+async def profile_extension_updates(request: Request):
+    """Omaha update manifest for force-installing / auto-updating the Bridge.
+
+    Operators set the Chrome policy
+    ``ExtensionInstallForcelist = <id>;<this-url>`` to push the extension
+    to managed machines (silent install, auto-update, no Developer-mode
+    nag). The <updatecheck> version comes from the packed manifest, so a
+    re-pack with a bumped ``version`` triggers Chrome's auto-update.
+    """
+    import json as _json
+
+    ext_id = _paprika_bridge_ext_id()
+    if ext_id is None or not _BRIDGE_CRX.exists():
+        raise HTTPException(404, "paprika-bridge.crx is not packed in this build")
+    try:
+        ver = _json.loads(
+            (_BRIDGE_DIR / "manifest.json").read_text("utf-8")
+        ).get("version", "0.0.0")
+    except Exception:
+        ver = "0.0.0"
+    base = str(request.base_url).rstrip("/")
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">\n'
+        f'  <app appid="{ext_id}">\n'
+        f'    <updatecheck codebase="{base}/profiles/extension/paprika-bridge.crx" '
+        f'version="{ver}" />\n'
+        '  </app>\n'
+        '</gupdate>\n'
+    )
+    return Response(content=xml, media_type="application/xml")
 
 
 @router.delete("/profiles/{name}")

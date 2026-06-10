@@ -455,7 +455,16 @@ async def distill_for_job(
         from server.hub._state import state
         if state.engines is None:
             return None
-        engine_slug = _distiller_engine_slug()
+        # 役割(Roles) panel ordered list first (distiller_engine_order ->
+        # first accepting), then the legacy single setting.
+        engine_slug = ""
+        try:
+            from server.hub._roles import resolve_role_engine_slug
+            engine_slug = await resolve_role_engine_slug("distiller")
+        except Exception:
+            engine_slug = ""
+        if not engine_slug:
+            engine_slug = _distiller_engine_slug()
         target: LLMTarget = resolve_engine_target(engine_slug, state.engines)
     except Exception as e:
         _log.info("[distiller-r1] engine resolve failed: %s", e)

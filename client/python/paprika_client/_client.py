@@ -243,6 +243,19 @@ class PaprikaClient:
     def base_url(self) -> str:
         return self._base_url
 
+    @property
+    def assets(self) -> "_AssetsHandle":
+        """Register or list this job's gallery assets -- ``await
+        pap.assets.add(url)``.
+
+        The target job defaults to ``PAPRIKA_JOB_ID`` (the runner sandbox
+        injects it), so inside a codegen script ``pap.assets.add(url)``
+        attaches to the job it's running for. See ``_AssetsHandle`` for
+        when you need this -- ``page.download_video()`` and fetch
+        ``capture_assets`` already auto-register, so most scripts don't.
+        """
+        return _AssetsHandle(self, _AMBIENT_PARENT_JOB_ID)
+
     async def health(self) -> dict:
         """GET /health -- handy for smoke tests."""
         return await self._json("GET", "/health")
@@ -803,6 +816,91 @@ class PaprikaClient:
                 status_code=r.status_code,
             )
         return r.content
+
+
+class _AssetsHandle:
+    """Register (or list) a job's gallery assets -- reached via ``pap.assets``.
+
+    Most codegen scripts never need this. Two paths already auto-register,
+    because both write into the session's ``assets_dir`` which the worker
+    auto-uploads to ``/jobs/{id}/assets``:
+      * ``await page.download_video()`` -- ships yt-dlp output to the gallery,
+      * a fetch with ``capture_assets`` -- passively captures page images.
+    Reach for ``pap.assets.add(url)`` ONLY for a resource you located or
+    downloaded yourself that neither path covers -- e.g. a direct image/file
+    URL you pulled out of the DOM, or an album image that only loads on hover.
+
+    The target job defaults to ``PAPRIKA_JOB_ID`` (the runner sandbox sets it).
+    """
+
+    def __init__(self, client: "PaprikaClient", job_id: Optional[str]) -> None:
+        self._client = client
+        self._job_id = job_id
+
+    def _resolve_job(self, job_id: Optional[str]) -> str:
+        jid = job_id or self._job_id or _AMBIENT_PARENT_JOB_ID
+        if not jid:
+            raise PaprikaError(
+                "pap.assets: no job to attach to -- set PAPRIKA_JOB_ID (the "
+                "runner sandbox does this automatically) or pass job_id=..."
+            )
+        return jid
+
+    async def add(
+        self,
+        url: Optional[str] = None,
+        *,
+        mime: Optional[str] = None,
+        page_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+    ) -> dict:
+        """Register a resource URL as a job asset (it then shows up in the
+        gallery / ``assets.json``).
+
+        The hub fetches ``url`` server-side and stores it under the job's
+        assets -- the same path the Live panel's "add to assets" button uses,
+        so **no worker_secret is required**. Returns the hub's reply, e.g.
+        ``{"status": "saved", "name": "x.jpg", "size": 12345}`` (or
+        ``status="already_exists"`` if that filename was already captured).
+
+        Example -- register every image the page exposes::
+
+            for u in await page.assets():        # -> [url, url, ...]
+                await pap.assets.add(u)
+
+        For VIDEOS use ``page.download_video()`` and for ordinary page images
+        rely on fetch ``capture_assets`` -- both auto-register, so you do NOT
+        need this for them.
+
+        Args:
+          url: the resource URL to fetch + register.
+          mime: optional content-type hint (e.g. "image/jpeg").
+          page_url: optional originating page URL (shown in the gallery popup).
+          job_id: target job; defaults to ``PAPRIKA_JOB_ID`` (the current job).
+        """
+        if not url or not isinstance(url, str):
+            raise PaprikaError(
+                "pap.assets.add(url): pass the resource URL to register, e.g. "
+                "await pap.assets.add('https://cdn.example.com/x.jpg'). To "
+                "save a video use page.download_video(); ordinary page images "
+                "are captured automatically by fetch capture_assets."
+            )
+        jid = self._resolve_job(job_id)
+        body: dict = {"url": url}
+        if mime:
+            body["mime"] = mime
+        if page_url:
+            body["page_url"] = page_url
+        return await self._client._json(
+            "POST", f"/jobs/{jid}/assets/from_url", json=body,
+        )
+
+    async def list(self, *, job_id: Optional[str] = None) -> list:
+        """List the job's captured assets (GET /jobs/{id}/assets.json) --
+        returns the ``items`` list (name / href / size / source_url / ...)."""
+        jid = self._resolve_job(job_id)
+        data = await self._client._json("GET", f"/jobs/{jid}/assets.json")
+        return data.get("items") or data.get("assets") or []
 
 
 class _AsyncPaprikaNamespace:

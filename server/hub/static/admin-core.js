@@ -1205,7 +1205,11 @@ function _hashTab() {
 // The #live/ form is what "watch live" / submit-and-attach write so the
 // address bar reflects the attached job and the link is shareable.
 function _parseHash() {
-  const h = (location.hash || '').replace(/^#/, '').trim();
+  let h = (location.hash || '').replace(/^#/, '').trim();
+  // Compat: #engines / #engines/<slug> -> #ai/engines / #ai/engine/<slug>
+  // (the old standalone Engines tab is now an AI sub-tab.)
+  if (h === 'engines') h = 'ai/engines';
+  else if (h.startsWith('engines/')) h = 'ai/engine/' + h.slice('engines/'.length);
   // #live/<jobid> -> Submit tab + Live panel attached to that job.
   let m = h.match(/^live\/(.+)$/);
   if (m) return { tab: 'submit', jobId: decodeURIComponent(m[1]), entityId: null };

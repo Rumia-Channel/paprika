@@ -199,6 +199,15 @@
       return;
     }
     _aiLiveStop();
+    if (name === 'roles') {
+      loadRoles();
+      return;
+    }
+    if (name === 'engines') {
+      _aiMountEnginesPanel();
+      if (typeof loadEngines === 'function') loadEngines().then(() => { if (typeof renderEnginesList === 'function') renderEnginesList(); });
+      return;
+    }
     if (name === 'knowledge') {
       if (typeof loadKnowledge === 'function') loadKnowledge();
     } else if (name === 'grooming') {
@@ -378,6 +387,132 @@
     _aiEngWired = true;
   }
 
+  // Move the existing #engines panel DOM (the full CRUD form) under the AI
+  // tab's エンジン sub-pane on first activation. Idempotent: re-runs are
+  // no-ops once mounted. Preserves all wiring + IDs so admin-presets-engines.js
+  // listeners (newBtn / refresh / save / delete / stop-resume) keep working.
+  function _aiMountEnginesPanel() {
+    const mount = document.getElementById('aiEnginesMount');
+    if (!mount || mount._mounted) return;
+    const panel = document.querySelector('.panel[data-panel="engines"]');
+    if (!panel) return;
+    while (panel.firstChild) mount.appendChild(panel.firstChild);
+    panel.style.display = 'none';
+    mount._mounted = true;
+  }
+
+  // ===== 役割 (Roles): each AI job = an ORDERED priority list of engines =====
+  // UI over Settings: each role writes {role}_engine_order (csv). Resolvers in
+  // server/hub/_roles.py try the list top-down with thermal/stop failover.
+  // Empty -> the role's legacy default (promoted / env / single setting).
+  let _rolesEngines = [], _rolesSettings = {}, _rolesEditing = {};
+  const _VIS_PAT = ['vl', 'vision', 'gpt-4o', 'claude-3', 'gemini', 'qwen3.5'];
+  const _ROLE_DEFS = [
+    { key: 'chat', setting: 'chat_engine_order', icon: 'lucide:message-square', name: 'チャット', code: 'page.ask / extract / observe', desc: '指定なし(auto)でページを読む・質問' },
+    { key: 'codegen', setting: 'codegen_engine_order', icon: 'lucide:code-2', name: 'コード生成', code: 'codegen-loop', desc: 'スクリプト自動生成（Submit で上書き可）' },
+    { key: 'page_agent', setting: 'page_agent_engine_order', icon: 'lucide:bot', name: '自律エージェント', code: 'page.agent()', desc: '空なら page.agent は無効' },
+    { key: 'vision', setting: 'vision_engine_order', icon: 'lucide:eye', name: '視覚', code: 'perception', desc: 'ページを画像で見る（画像対応エンジンのみ）', vis: true },
+    { key: 'judge', setting: 'judge_engine_order', icon: 'lucide:scale', name: '判定', code: 'judge', desc: 'codegen がゴール達成か採点', mode: 'reasoning_judge_mode', modes: ['off', 'on', 'shadow'] },
+    { key: 'distiller', setting: 'distiller_engine_order', icon: 'lucide:brain', name: '推論蒸留', code: 'distiller', desc: '失敗から壁・ホスト知識を学習', mode: 'reasoning_distiller_mode', modes: ['off', 'on', 'new'] },
+  ];
+  const _ROLE_BY_KEY = {}; _ROLE_DEFS.forEach(d => { _ROLE_BY_KEY[d.key] = d; });
+
+  async function loadRoles() {
+    try {
+      const [er, sr] = await Promise.all([fetch('/engines'), fetch('/settings')]);
+      _rolesEngines = ((await er.json()).engines) || [];
+      _rolesSettings = ((await sr.json()).values) || {};
+      _renderRoles();
+    } catch (e) { /* transient */ }
+  }
+  function _engBySlug(sl) { return _rolesEngines.find(x => x.slug === sl); }
+  function _enabledOf(sl) { const e = _engBySlug(sl); return e ? (e.enabled !== false) : true; }
+  function _isCloud(e) { return !((String(e.gpu_temp_url || '').trim()) || ((e.gpu_temp_stop_c || 0) > 0)); }
+  function _visSlugs() {
+    return _rolesEngines.filter(e => _VIS_PAT.some(p => (e.model || '').toLowerCase().includes(p)))
+      .sort((a, b) => (_isCloud(a) - _isCloud(b)) || a.slug.localeCompare(b.slug)).map(e => e.slug);
+  }
+  function _legacyDefault(key) {
+    const s = _rolesSettings;
+    if (key === 'chat') { const e = _rolesEngines.find(x => x.promoted && x.kind === 'chat'); return e ? [e.slug] : []; }
+    if (key === 'page_agent') return s.worker_agent_engine_slug ? [s.worker_agent_engine_slug] : [];
+    if (key === 'judge') return s.reasoning_judge_engine ? [s.reasoning_judge_engine] : [];
+    if (key === 'distiller') return s.reasoning_distiller_engine ? [s.reasoning_distiller_engine] : [];
+    if (key === 'vision') return _visSlugs();
+    return [];
+  }
+  function _roleOrder(def) {
+    const all = _rolesEngines.map(e => e.slug);
+    let o = (_rolesSettings[def.setting] || '').split(',').map(x => x.trim()).filter(Boolean).filter(sl => all.includes(sl));
+    if (!o.length) o = _legacyDefault(def.key).filter(sl => all.includes(sl));
+    return o;
+  }
+  function _roleCard(def) {
+    const order = _roleOrder(def);
+    const editing = !!_rolesEditing[def.key];
+    const badge = (sl, first) => '<span class="aibadge ' + (first ? 'tier-cur' : 'tier-auto') + '"' + (_enabledOf(sl) ? '' : ' style="opacity:.5;text-decoration:line-through;"') + '>' + _esc(sl) + '</span>';
+    let control;
+    if (editing) {
+      const rows = order.map((sl, i) =>
+        '<div style="display:flex;align-items:center;gap:5px;margin:2px 0;">' +
+        '<span style="font-size:11px;color:#9aa3ab;width:13px;text-align:right;">' + (i + 1) + '</span>' +
+        '<span class="aibadge ' + (i === 0 ? 'tier-cur' : 'tier-auto') + '" style="min-width:124px;text-align:center;' + (_enabledOf(sl) ? '' : 'opacity:.5;text-decoration:line-through;') + '">' + _esc(sl) + '</span>' +
+        '<button class="aibtn ro-up" data-role="' + def.key + '" data-i="' + i + '"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
+        '<button class="aibtn ro-down" data-role="' + def.key + '" data-i="' + i + '"' + (i === order.length - 1 ? ' disabled' : '') + '>▼</button>' +
+        '<button class="aibtn del ro-del" data-role="' + def.key + '" data-i="' + i + '" title="外す">×</button></div>').join('');
+      const pool = (def.vis ? _visSlugs() : _rolesEngines.map(e => e.slug)).filter(sl => !order.includes(sl));
+      const addSel = pool.length ? '<select class="ro-add ro-sel" data-role="' + def.key + '"><option value="">＋ 追加…</option>' + pool.map(sl => '<option value="' + _esc(sl) + '">' + _esc(sl) + '</option>').join('') + '</select>' : '';
+      control = '<div style="display:flex;flex-direction:column;gap:2px;align-items:flex-end;">' + (rows || '<span style="font-size:12px;color:#9aa3ab;">なし</span>') + '<div style="margin-top:5px;display:flex;gap:6px;align-items:center;">' + addSel + '<button class="aibtn ro-done" data-role="' + def.key + '">完了</button></div></div>';
+    } else {
+      const chain = order.length ? order.map((sl, i) => badge(sl, i === 0)).join('<span style="color:#9aa3ab;margin:0 1px;">›</span>') : '<span style="font-size:12px;color:#9aa3ab;">（env 既定）</span>';
+      control = chain + ' <button class="aibtn ro-edit" data-role="' + def.key + '">編集</button>';
+    }
+    let modeSel = '';
+    if (def.mode) {
+      const cur = _rolesSettings[def.mode] || 'off';
+      modeSel = ' <span class="ro-seg">' + def.modes.map(m => '<button type="button" class="ro-mode' + (m === cur ? ' on' : '') + '" data-mode="' + def.mode + '" data-val="' + m + '">' + m + '</button>').join('') + '</span>';
+    }
+    return '<div style="display:flex;align-items:' + (editing ? 'flex-start' : 'center') + ';gap:14px;border:1px solid ' + (def.vis ? '#b5d4f4' : '#e2e6ea') + ';border-radius:10px;padding:10px 14px;margin-bottom:9px;background:#fff;">' +
+      '<iconify-icon icon="' + def.icon + '" style="font-size:20px;color:#5b6770;margin-top:' + (editing ? '2px' : '0') + ';"></iconify-icon>' +
+      '<div style="flex:1;min-width:0;"><div style="font-size:14.5px;font-weight:600;">' + def.name + ' <span style="font-size:11.5px;color:#9aa3ab;font-weight:400;font-family:monospace;">' + def.code + '</span>' + modeSel + '</div>' +
+      '<div style="font-size:12px;color:#6b7680;">' + def.desc + '</div></div>' +
+      '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end;">' + control + '</div></div>';
+  }
+  function _renderRoles() {
+    const el = document.getElementById('aiRolesPanel'); if (!el) return;
+    el.innerHTML = _ROLE_DEFS.map(_roleCard).join('') +
+      '<div style="font-size:11.5px;color:#9aa3ab;margin-top:8px;line-height:1.5;">▲▼ で優先順、× で除外、＋ で追加。上から試し、過熱/停止のエンジンは飛ばして次へ。空欄は従来の既定（promoted / env / 単一設定）にフォールバック。</div>';
+    _wireRoles();
+  }
+  async function _putSetting(obj) { try { await fetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) }); } catch (e) { /* transient */ } }
+  async function _saveOrder(def, arr) { const o = {}; o[def.setting] = arr.join(','); await _putSetting(o); }
+  function _wireRoles() {
+    const el = document.getElementById('aiRolesPanel'); if (!el || el._wired) return; el._wired = true;
+    el.addEventListener('click', async (ev) => {
+      const b = ev.target.closest('button'); if (!b) return;
+      const role = b.dataset.role, def = _ROLE_BY_KEY[role];
+      if (b.classList.contains('ro-edit')) { _rolesEditing[role] = true; _renderRoles(); return; }
+      if (b.classList.contains('ro-done')) { _rolesEditing[role] = false; _renderRoles(); return; }
+      if (b.classList.contains('ro-mode')) { const o = {}; o[b.dataset.mode] = b.dataset.val; await _putSetting(o); loadRoles(); return; }
+      if (!def) return;
+      const order = _roleOrder(def), i = parseInt(b.dataset.i, 10);
+      if (isNaN(i)) return;
+      const a = order.slice();
+      if (b.classList.contains('ro-up') && i > 0) { const t = a[i]; a[i] = a[i - 1]; a[i - 1] = t; }
+      else if (b.classList.contains('ro-down') && i < a.length - 1) { const t = a[i]; a[i] = a[i + 1]; a[i + 1] = t; }
+      else if (b.classList.contains('ro-del')) { a.splice(i, 1); }
+      else return;
+      await _saveOrder(def, a); loadRoles();
+    });
+    el.addEventListener('change', async (ev) => {
+      const sel = ev.target;
+      if (sel.classList && sel.classList.contains('ro-add') && sel.value) {
+        const def = _ROLE_BY_KEY[sel.dataset.role]; const a = _roleOrder(def).slice(); a.push(sel.value);
+        await _saveOrder(def, a); loadRoles();
+      }
+    });
+  }
+
   function _esc(s) { return (s == null ? '' : ('' + s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
 
   function _aiRow(x, kind) {
@@ -469,6 +604,24 @@
     const kind = (i >= 0 ? s.slice(0, i) : 'skill').toLowerCase();
     const id = i >= 0 ? s.slice(i + 1) : s;
     if (!id) return;
+    if (kind === 'engines' || s === 'engines') {
+      setAiSubtab('engines');
+      return;
+    }
+    if (kind === 'engine') {
+      setAiSubtab('engines');
+      // selectEngine is defined in admin-presets-engines.js (global) after
+      // loadEngines populates the records; wait briefly for both.
+      let tries = 12;
+      const open = () => {
+        if (typeof selectEngine === 'function' && Array.isArray(window.ENGINES_STATE && ENGINES_STATE.records) && ENGINES_STATE.records.length) {
+          selectEngine(id); return;
+        }
+        if (--tries > 0) setTimeout(open, 400);
+      };
+      open();
+      return;
+    }
     if (kind === 'host' || kind === 'hosts' || kind === 'knowledge') {
       setAiSubtab('knowledge');
       // _hkData is empty on a cold deep-link; setAiSubtab() kicked off

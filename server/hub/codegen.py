@@ -186,20 +186,27 @@ def adapt_chat_body(target: LLMTarget, body: dict) -> dict:
         existing.setdefault("enable_thinking", False)
         body["chat_template_kwargs"] = existing
 
-    # DeepSeek R1 family (deepseek-reasoner, deepseek-r1*, plus distill
-    # variants). The R1 line emits an internal <think>...</think> block
-    # that counts against max_tokens before the actual content, so the
-    # default 700/2048 budgets common in paprika's call sites truncate
-    # mid-thought and leave content empty. Floor the budget at 8192 and
-    # match DeepSeek's recommended temperature (0.5-0.7). Also drop
-    # response_format=json_object: R1 does not yet officially support
-    # the OpenAI structured-outputs flag and rejects it on some routes.
+    # DeepSeek R1 + V4 reasoning family.
+    #   R1: deepseek-reasoner, deepseek-r1*, plus distill variants.
+    #       Always thinks; emits an internal <think>...</think> block.
+    #   V4: deepseek-v4-flash / deepseek-v4-pro / deepseek-v4*.
+    #       Hybrid model with selectable thinking. DeepSeek retires
+    #       the deepseek-reasoner alias 2026-07-24 in favour of these
+    #       explicit V4 names.
+    # Both lines emit reasoning tokens (R1 in <think>, V4 in
+    # reasoning_content) that count against max_tokens before the
+    # visible content, so the default 700/2048 budgets common in
+    # paprika's call sites truncate mid-thought and leave content
+    # empty. Floor the budget at 8192 and match DeepSeek's recommended
+    # temperature (0.5-0.7). Also drop response_format=json_object: R1
+    # doesn't speak it and V4 thinking-mode rejects it on some routes.
     is_deepseek_r1 = (
         "deepseek-reasoner" in model
         or "deepseek-r1" in model
         or model.startswith("r1-")
     )
-    if is_deepseek_r1:
+    is_deepseek_v4 = model.startswith("deepseek-v4")
+    if is_deepseek_r1 or is_deepseek_v4:
         body = dict(body)
         if "max_tokens" in body:
             body["max_tokens"] = max(int(body["max_tokens"]), 8192)
@@ -219,6 +226,8 @@ def adapt_chat_body(target: LLMTarget, body: dict) -> dict:
         # ("unknown variant `image_url`, expected `text`"). Flatten
         # any multipart user/system messages to text-only by joining
         # the text parts and dropping image_url / audio_url chunks.
+        # V4 thinking-mode is also text-only on the chat-completions
+        # route, so the same flatten is correct.
         msgs = body.get("messages")
         if isinstance(msgs, list):
             flat_msgs: list[dict] = []
@@ -240,6 +249,20 @@ def adapt_chat_body(target: LLMTarget, body: dict) -> dict:
                     m["content"] = "\n\n".join(p for p in text_parts if p)
                 flat_msgs.append(m)
             body["messages"] = flat_msgs
+        # V4 only: turn thinking ON. The V4 line defaults to non-think
+        # (unlike R1 which always thinks), so without these fields the
+        # paprika "deepseek-r1" reasoning slot silently degrades to a
+        # non-reasoning chat call after the operator migrates the model
+        # field from deepseek-reasoner to deepseek-v4-flash. Operators
+        # who actually want non-think can register a separate engine
+        # entry with a non-reasoning slug to bypass this branch.
+        if is_deepseek_v4:
+            body.setdefault("reasoning_effort", "high")
+            # OpenAI SDK pattern is extra_body={thinking:{type:enabled}};
+            # when POSTing JSON directly to /chat/completions the field
+            # goes at the top level. Sent alongside reasoning_effort for
+            # unambiguous routing through LiteLLM / OpenRouter proxies.
+            body.setdefault("thinking", {"type": "enabled"})
     return body
 
 
