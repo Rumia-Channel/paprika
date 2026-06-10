@@ -865,12 +865,24 @@ async def _distill_skill_background(
     """
     if state.skills is None:
         return
+    # Give the distiller the current skill set so it can REUSE an existing
+    # skill instead of minting yet another near-duplicate variant.
+    _known_skills = []
+    try:
+        for _s in state.skills.list_all():
+            _known_skills.append({
+                "slug": _s.slug, "tier": _s.tier,
+                "description": _s.description, "tags": list(_s.tags or []),
+            })
+    except Exception:
+        _known_skills = []
     try:
         parsed, meta = await distill_skill_from_job(
             job_id=job_id,
             goal=goal,
             winning_script=winning_code,
             attempt_count=attempt_count,
+            known_skills=_known_skills,
         )
     except Exception as e:
         try:
@@ -885,6 +897,20 @@ async def _distill_skill_background(
                 f"(reason={meta.get('reason')!r}, "
                 f"model={meta.get('model')}, "
                 f"llm_ms={meta.get('elapsed_ms')})"
+            )
+        except Exception:
+            pass
+        return
+    # Reuse signal: the distiller recognised this technique is already covered
+    # by an existing skill -> reinforce by NOT creating a near-duplicate.
+    if parsed.get("reuse"):
+        _reuse_slug = str(parsed.get("reuse")).strip()
+        _found = state.skills.get(_reuse_slug) is not None
+        try:
+            log_cb(
+                f"==> skill distillation: REUSED existing skill '{_reuse_slug}' (no new variant created)"
+                if _found
+                else f"==> skill distillation: reuse slug '{_reuse_slug}' unknown; nothing saved"
             )
         except Exception:
             pass

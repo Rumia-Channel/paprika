@@ -78,9 +78,20 @@ Skip when:
     paprika-client function (no compound pattern)
   - This was a one-attempt success on a trivial page (no learning)
 
-Output JSON ONLY (no commentary, no markdown fences). Two shapes:
+REUSE OVER CREATE: You will be shown EXISTING SKILLS. If your distilled
+technique is essentially the same as one of them (same barrier / goal class,
+their code would work with a small edit), output {"reuse": "<slug>"} INSTEAD
+of a new skill -- never emit a near-duplicate variant of an existing skill
+(e.g. yet another "get past the age-gate then grab the video"). Prefer reuse
+so the skill set CONVERGES instead of proliferating into one-off variants.
+
+Output JSON ONLY (no commentary, no markdown fences). Three shapes:
 
   {"skip": true, "reason": "one short sentence"}
+
+  {"reuse": "<existing-slug>"}   // technique already captured by an EXISTING
+                                 // SKILL listed below -- reinforce it, do NOT
+                                 // create a near-duplicate variant
 
   {"skip": false,
    "slug":              <kebab-case name, <= 60 chars>,
@@ -241,6 +252,7 @@ async def distill_skill_from_job(
     winning_script: str,
     attempt_count: int,
     extra_context: str | None = None,
+    known_skills: list[dict] | None = None,
 ) -> tuple[dict | None, dict]:
     """Ask the LLM to abstract a skill from a successful job.
 
@@ -279,6 +291,15 @@ async def distill_skill_from_job(
     ]
     if extra_context:
         user_parts += ["", "ADDITIONAL CONTEXT:", extra_context.strip()]
+    if known_skills:
+        kl = ["", "EXISTING SKILLS (prefer {\"reuse\":\"<slug>\"} over a near-duplicate):"]
+        for s in known_skills[:50]:
+            _tags = ",".join(s.get("tags") or [])
+            kl.append(
+                f"- {s.get('slug')} [{s.get('tier') or 'auto'}]"
+                f"{(' (' + _tags + ')') if _tags else ''}: {(s.get('description') or '').strip()}"
+            )
+        user_parts += kl
     user = "\n".join(user_parts)
 
     t0 = time.time()
@@ -305,6 +326,10 @@ async def distill_skill_from_job(
     if parsed.get("skip"):
         meta["reason"] = f"skip: {parsed.get('reason') or 'unspecified'}"
         return None, meta
+    # Reuse: the technique matches an existing skill -- don't mint a variant.
+    if parsed.get("reuse"):
+        meta["reason"] = f"reuse existing skill: {parsed.get('reuse')}"
+        return {"reuse": str(parsed.get("reuse"))}, meta
     # Validate required fields. Be lenient -- we want to capture
     # anything the LLM bothered to produce, even partial.
     required = ("slug", "name", "description", "code_template", "llm_instructions")
