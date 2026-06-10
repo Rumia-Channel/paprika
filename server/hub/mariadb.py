@@ -125,6 +125,31 @@ _TABLES: list[tuple[str, str]] = [
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
     ),
+    # ---- Per-host URL history (durable learning store) ----
+    # Fetched/escalated URLs accumulate here so the per-host page-role
+    # predictor (server/hub/_page_role.py) can learn each site's structure
+    # from URLs that long outlive the jobs table (which gets purged on a
+    # rolling window). Distinct from ``visited_urls`` (walker-only dedup):
+    # this is written by EVERY job completion, not just pap.walk(), so it
+    # captures the full URL set the fleet has seen on each host.
+    (
+        "host_url_history",
+        """
+        CREATE TABLE IF NOT EXISTS host_url_history (
+            host           VARCHAR(255) NOT NULL,
+            url_hash       CHAR(40)     NOT NULL,
+            url            TEXT         NOT NULL,
+            template       VARCHAR(512),
+            video_evidence TINYINT(1)   NOT NULL DEFAULT 0,
+            hit_count      INT          NOT NULL DEFAULT 1,
+            first_seen_at  DATETIME(3)  DEFAULT CURRENT_TIMESTAMP(3),
+            last_seen_at   DATETIME(3)  DEFAULT CURRENT_TIMESTAMP(3),
+            PRIMARY KEY (host, url_hash),
+            INDEX idx_host_recent (host, last_seen_at),
+            INDEX idx_host_template (host, template(128))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
     (
         "visited_urls",
         """
@@ -1295,6 +1320,58 @@ async def restore_hosts(pool: Any, host_registry: Any) -> int:
         except Exception as e:
             log.warning("restore host %s failed: %s", row[0], e)
     return restored
+
+
+async def record_host_url_row(
+    pool: Any,
+    *,
+    host: str,
+    url: str,
+    template: str,
+    has_video_evidence: bool,
+) -> None:
+    """UPSERT one (host, url) row into ``host_url_history``.
+
+    Called fire-and-forget on every job completion so the per-host URL set
+    survives the rolling purge of the jobs table. Repeated hits on the same
+    URL bump ``hit_count`` and refresh ``last_seen_at``; ``video_evidence``
+    is sticky (a single positive observation marks the template forever, so
+    a later non-video hit can't un-flag a known detail).
+    """
+    import hashlib
+    if not host or not url:
+        return
+    url_hash = hashlib.sha1(url.encode("utf-8", errors="replace")).hexdigest()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """INSERT INTO host_url_history
+                   (host, url_hash, url, template, video_evidence)
+                   VALUES (%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                     hit_count = hit_count + 1,
+                     last_seen_at = CURRENT_TIMESTAMP(3),
+                     video_evidence = video_evidence | VALUES(video_evidence),
+                     template = COALESCE(VALUES(template), template)""",
+                (host, url_hash, url, template or None,
+                 1 if has_video_evidence else 0),
+            )
+
+
+async def fetch_host_url_history(
+    pool: Any, host: str, limit: int = 2000
+) -> list[tuple]:
+    """Read recent URLs for ``host`` (most-recent-first). Returns rows of
+    ``(url, template, video_evidence, hit_count)``."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT url, template, video_evidence, hit_count "
+                "FROM host_url_history WHERE host=%s "
+                "ORDER BY last_seen_at DESC LIMIT %s",
+                (host, int(limit)),
+            )
+            return list(await cur.fetchall())
 
 
 async def restore_visited_urls(pool: Any, visited_registry: Any) -> int:

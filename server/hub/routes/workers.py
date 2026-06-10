@@ -2122,6 +2122,18 @@ async def _handle_worker_message(worker, msg) -> None:
                 )
             except Exception:
                 pass
+            # Persist this URL into the durable host_url_history table so the
+            # per-host page-role predictor (server/hub/_page_role.py) keeps
+            # learning beyond the jobs-table rolling purge. Fire-and-forget;
+            # never raises.
+            try:
+                from server.hub._page_role import record_url
+                _vid = bool(getattr(msg.result, "video_detection", None)) or bool(
+                    getattr(msg.result, "video_urls_seen", None)
+                )
+                record_url(getattr(info, "url", "") or "", has_video_evidence=_vid)
+            except Exception:
+                pass
         return
 
     if isinstance(msg, WorkerJobFailed):

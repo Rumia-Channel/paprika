@@ -239,9 +239,11 @@ def host_from_url(url: str) -> str:
 
 
 async def get_host_roles(host: str) -> HostPageRoles:
-    """Return a (cached) HostPageRoles for ``host``, building from recent
-    job history on first call / after TTL expiry. Falls back to an empty
-    object on any error (so the caller behaves like "unknown role")."""
+    """Return a (cached) HostPageRoles for ``host``, building from the
+    durable ``host_url_history`` MariaDB table on first call / after TTL
+    expiry. Falls back to the rolling jobs window when MariaDB is empty for
+    this host (cold-start). Any error returns an empty object so the caller
+    behaves like "unknown role"."""
     h = _normalise_host_str(host)
     now = time.time()
     c = _cache.get(h)
@@ -250,9 +252,18 @@ async def get_host_roles(host: str) -> HostPageRoles:
     roles = HostPageRoles()
     try:
         from server.hub._state import state
-        if state.store is not None:
-            # Pull up to a few hundred recent jobs for this host. The store's
-            # url_substr filter keeps this cheap (indexed).
+        # Primary source: durable host_url_history (survives jobs-table purge).
+        if getattr(state, "mariadb_pool", None) is not None:
+            try:
+                from server.hub.mariadb import fetch_host_url_history
+                rows = await fetch_host_url_history(state.mariadb_pool, h, limit=2000)
+                for (url, _tpl, vid, _hit) in rows:
+                    roles.observe(url, has_video_evidence=bool(vid))
+            except Exception:
+                pass
+        # Cold start (or MariaDB down): seed from the rolling jobs window so
+        # the host has SOME signal until completions populate the durable table.
+        if not roles.templates and state.store is not None:
             jobs, _ = await state.store.list_job_infos(
                 url_substr=h, limit=400,
             )
@@ -260,7 +271,6 @@ async def get_host_roles(host: str) -> HostPageRoles:
                 u = getattr(j, "url", "") or ""
                 if not u or host_from_url(u) != h:
                     continue
-                # Best-effort video-evidence read off the persisted result.
                 vid = False
                 try:
                     r = getattr(j, "result", None)
@@ -285,6 +295,37 @@ def observe_url(host: str, url: str, *, has_video_evidence: bool = False) -> Non
     c = _cache.get(h)
     if c is not None:
         c[1].observe(url, has_video_evidence=has_video_evidence)
+
+
+def record_url(url: str, *, has_video_evidence: bool = False) -> None:
+    """Fire-and-forget: persist ``url`` to ``host_url_history`` and update
+    the in-process cache. Called from the job-completion hook so the per-host
+    URL set accumulates durably (survives the jobs-table purge that bounds
+    ``get_host_roles``' fallback). Never raises; failures are silent so a
+    transient MariaDB hiccup can't break completion handling.
+    """
+    import asyncio
+    h = host_from_url(url)
+    if not h or not url:
+        return
+    # 1) In-process cache: surface immediately on the next role lookup.
+    observe_url(h, url, has_video_evidence=has_video_evidence)
+    # 2) Durable write-through (best-effort, off the completion fast path).
+    try:
+        from server.hub._state import state
+        pool = getattr(state, "mariadb_pool", None)
+        if pool is None:
+            return
+        tpl = templatize(url)
+        from server.hub.mariadb import record_host_url_row
+        asyncio.create_task(
+            record_host_url_row(
+                pool, host=h, url=url, template=tpl,
+                has_video_evidence=has_video_evidence,
+            )
+        )
+    except Exception:
+        pass
 
 
 async def role_for_url(url: str) -> tuple[str, float, str]:
