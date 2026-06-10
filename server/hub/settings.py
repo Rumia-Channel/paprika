@@ -64,6 +64,18 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # Cross-hub + restart-safe via the settings table (no engines DB column).
     # Toggled by POST /engines/{slug}/stop|resume.
     "engines_disabled": ("", "str"),
+    # 役割(Roles) パネル: 各 AI の仕事に「優先順のエンジン列」を割り当てる
+    # (csv, 上から試し、過熱/停止なら次へ = thermal.first_accepting)。空なら
+    # 従来の既定にフォールバック: チャット=promoted(kind=chat) / コード生成=
+    # env(CODEGEN_LLM_URL) / page.agent=worker_agent_engine_slug / 判定=
+    # reasoning_judge_engine / 蒸留=reasoning_distiller_engine。解決は
+    # server/hub/_roles.py (vision は perception_llm が同じキーを読む)。
+    "chat_engine_order": ("", "str"),
+    "codegen_engine_order": ("", "str"),
+    "page_agent_engine_order": ("", "str"),
+    "vision_engine_order": ("", "str"),
+    "judge_engine_order": ("", "str"),
+    "distiller_engine_order": ("", "str"),
     # 課題(review) auto-classification: when a `fetch` job COMPLETES but its
     # content was blocked by a full-screen login / age / consent / paywall
     # overlay (detected structurally by the worker's live-DOM occlusion probe),
@@ -177,6 +189,11 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # engine: slug in the Engines tab; empty -> env -> "deepseek-r1".
     "reasoning_distiller_mode": ("off", "str"),
     "reasoning_distiller_engine": ("", "str"),
+    # Per-host URL-template page-role gate: skip escalation when the URL is a
+    # high-confidence listing / error / top page (nothing for codegen to
+    # recover). See server/hub/_page_role.py. Default OFF so operators can opt
+    # in after the role tables warm up. Detected-video fetches always bypass.
+    "escalate_page_role_gate": (False, "bool"),
     # ---- Database: MariaDB -----------------------------------------------
     # External MariaDB / MySQL connection for persistent structured data.
     # When configured and reachable, the hub can migrate job state,
@@ -243,6 +260,7 @@ def _env_default(key: str, fallback: Any) -> Any:
         "reasoning_judge_engine": ("PAPRIKA_R1_DISTILLER_ENGINE", "str"),
         "reasoning_distiller_mode": ("PAPRIKA_REASONING_DISTILLER_MODE", "str"),
         "reasoning_distiller_engine": ("PAPRIKA_REASONING_DISTILLER_ENGINE", "str"),
+        "escalate_page_role_gate": ("PAPRIKA_ESCALATE_PAGE_ROLE_GATE", "bool"),
         # MariaDB: settings.json -> env vars -> static default.
         "mariadb_host": ("PAPRIKA_MARIADB_HOST", "str"),
         "mariadb_port": ("PAPRIKA_MARIADB_PORT", "int"),

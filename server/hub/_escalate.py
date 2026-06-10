@@ -550,6 +550,52 @@ async def maybe_escalate_failed_fetch(info: JobInfo, error: str) -> str | None:
         return None
 
 
+async def _page_role_blocks_escalation(info: JobInfo, result) -> bool:
+    """Per-host URL-template gate: skip escalation when the URL is clearly a
+    LISTING / ERROR / TOP page (nothing for codegen to recover). Only fires
+    above a high confidence threshold; unknown / detail / low-confidence
+    URLs fall through to the normal classifier.
+
+    Operator-gated (default OFF) via Settings ``escalate_page_role_gate``
+    until the role table has matured for the active hosts. Pages that the
+    operator actually wants the AI to attempt -- a detected video that
+    failed to download -- bypass this gate entirely (download_video=True +
+    no video asset saved == retry regardless of the page role).
+    """
+    # Env / Settings kill switch.
+    try:
+        from server.hub._state import state as _st
+        if _st.settings is not None:
+            if not bool(_st.settings.get("escalate_page_role_gate", False)):
+                return False
+    except Exception:
+        return False
+    if os.environ.get("PAPRIKA_PAGE_ROLE_GATE_DISABLE", "").lower() in ("1", "true", "yes"):
+        return False
+    # Always let the video-download recovery path through: a detail page
+    # MISCLASSIFIED as listing must not block a real video_dl escalation.
+    opts = getattr(info, "options", None)
+    if opts is not None and getattr(opts, "download_video", False):
+        if not _has_video_asset(result):
+            detected = bool(getattr(result, "video_detection", None)) or bool(
+                getattr(result, "video_urls_seen", None)
+            )
+            if detected:
+                return False
+    try:
+        from server.hub._page_role import role_for_url, ROLE_TRUST_THRESHOLD
+        role, conf, reason = await role_for_url(getattr(info, "url", "") or "")
+    except Exception:
+        return False
+    if role in ("listing", "error", "top") and conf >= ROLE_TRUST_THRESHOLD:
+        log.info(
+            "escalate: skipped %s — page role %s (conf=%.2f, %s)",
+            getattr(info, "job_id", "?"), role, conf, reason,
+        )
+        return True
+    return False
+
+
 async def maybe_escalate_completed_fetch(info: JobInfo, result) -> str | None:
     """A worker `fetch` job COMPLETED but may not have delivered (login
     page captured / video detected-but-not-downloaded). Most real "auth
@@ -559,6 +605,8 @@ async def maybe_escalate_completed_fetch(info: JobInfo, result) -> str | None:
     """
     try:
         if not _precheck(info):
+            return None
+        if await _page_role_blocks_escalation(info, result):
             return None
         category = await asyncio.to_thread(classify_completed, info, result)
         return await _escalate_if_eligible(info, category)
