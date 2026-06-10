@@ -1315,6 +1315,10 @@ asyncio.run(main())"
         <input type="checkbox" id="hostModalExcluded">
         <span><strong>対象外（このサイトは何もしない）</strong> <small style="font-weight:normal; color:#888;">— 「課題(review)」判定も AI エスカレーションも対象から外す。確実に動画が無い／そっとしておきたいサイト向け</small></span>
       </label>
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" id="hostModalDownloadVideo">
+        <span><strong>動画あり（download_video）</strong> <small style="font-weight:normal; color:#888;">— このサイトは動画サイト。fetch の download_video 未指定(null)時に動画DLを行う。動画の無いサイトは OFF にして重い動画処理(1h timeout)を避ける</small></span>
+      </label>
       <div style="display:flex; gap:6px; flex-wrap:wrap; color:#666; font-size:0.85em;">
         <span>使える CDP フィールド:</span>
         <code>name</code> <code>value</code> <code>domain</code> <code>path</code>

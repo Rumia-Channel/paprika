@@ -117,6 +117,7 @@ _TABLES: list[tuple[str, str]] = [
             owner_id            VARCHAR(64)  NOT NULL DEFAULT 'default',
             shared              TINYINT(1)   NOT NULL DEFAULT 1,
             excluded            TINYINT(1)   NOT NULL DEFAULT 0,
+            download_video      TINYINT(1)   NOT NULL DEFAULT 0,
             created_at          DATETIME(3),
             updated_at          DATETIME(3),
             last_used_at        DATETIME(3),
@@ -492,6 +493,7 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     ("hosts", "owner_id", "VARCHAR(64) NOT NULL DEFAULT 'default'"),
     ("hosts", "shared", "TINYINT(1) NOT NULL DEFAULT 1"),
     ("hosts", "excluded", "TINYINT(1) NOT NULL DEFAULT 0"),
+    ("hosts", "download_video", "TINYINT(1) NOT NULL DEFAULT 0"),
 ]
 
 
@@ -1242,7 +1244,7 @@ async def restore_hosts(pool: Any, host_registry: Any) -> int:
                 "popup_policy, login_url, login_goal, login_check, "
                 "login_refresh_ttl_s, last_login_at, fetch_recipes, "
                 "created_at, updated_at, last_used_at, owner_id, shared, "
-                "excluded "
+                "excluded, download_video "
                 "FROM hosts"
             )
             rows = await cur.fetchall()
@@ -1287,6 +1289,7 @@ async def restore_hosts(pool: Any, host_registry: Any) -> int:
                 owner_id=row[14] or "default",
                 shared=bool(row[15]) if row[15] is not None else True,
                 excluded=bool(row[16]) if len(row) > 16 and row[16] is not None else False,
+                download_video=bool(row[17]) if len(row) > 17 and row[17] is not None else False,
             )
             restored += 1
         except Exception as e:
@@ -1404,6 +1407,29 @@ async def restore_skills(pool: Any, skill_registry: Any) -> int:
     for existing in list(skill_registry.list_all()):
         key = (existing.tier, _norm_sk_slug(existing.slug))
         if key not in mariadb_keys:
+            # AUTO skills are distilled locally per-hub. Historically they
+            # were never written through to MariaDB, so a file-only auto
+            # entry is NOT a MariaDB-side deletion to mirror -- it's a not-
+            # yet-shared skill. Back it UP into MariaDB instead of deleting
+            # it, so (a) it survives this very restart and (b) every hub
+            # converges on the union of auto skills. The branch only runs
+            # for keys absent from MariaDB, so this never clobbers a peer's
+            # row -- whichever hub restarts first becomes the writer.
+            # CURATED is operator-owned + always write-through, so a file-
+            # only curated entry really was deleted elsewhere -> mirror it.
+            if existing.tier == "auto":
+                try:
+                    await upsert_skill_row(pool, existing)
+                    log.info(
+                        "restore: backfilled local auto skill %s to MariaDB",
+                        existing.slug,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "restore: backfill skill %s to MariaDB failed: %s",
+                        existing.slug, e,
+                    )
+                continue
             try:
                 if skill_registry.delete(existing.slug, tier=existing.tier):
                     log.info(
@@ -1459,6 +1485,23 @@ async def restore_conventions(pool: Any, convention_registry: Any) -> int:
     for existing in list(convention_registry.list_all()):
         key = (existing.tier, _norm_cv_slug(existing.slug))
         if key not in mariadb_keys:
+            # AUTO conventions: back up file-only entries into MariaDB rather
+            # than deleting them (same rationale as restore_skills above --
+            # auto rules are distilled per-hub and must converge cross-hub,
+            # not be wiped on restart). CURATED orphans are real deletions.
+            if existing.tier == "auto":
+                try:
+                    await upsert_convention_row(pool, existing)
+                    log.info(
+                        "restore: backfilled local auto convention %s to MariaDB",
+                        existing.slug,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "restore: backfill convention %s to MariaDB failed: %s",
+                        existing.slug, e,
+                    )
+                continue
             try:
                 if convention_registry.delete(existing.slug, tier=existing.tier):
                     log.info(
@@ -1944,6 +1987,7 @@ async def upsert_host_row(pool: Any, rec: Any) -> None:
         str(d.get("owner_id") or "default"),
         1 if d.get("shared", True) else 0,
         1 if d.get("excluded") else 0,
+        1 if d.get("download_video") else 0,
         _parse_dt(d.get("created_at")),
         _parse_dt(d.get("updated_at")),
         _parse_dt(d.get("last_used_at")),
@@ -1956,8 +2000,8 @@ async def upsert_host_row(pool: Any, rec: Any) -> None:
                     popup_policy, login_url, login_goal,
                     login_check, login_refresh_ttl_s,
                     last_login_at, fetch_recipes, owner_id, shared,
-                    excluded, created_at, updated_at, last_used_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    excluded, download_video, created_at, updated_at, last_used_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON DUPLICATE KEY UPDATE
                      cookies=VALUES(cookies), notes=VALUES(notes),
                      recrawl_patterns=VALUES(recrawl_patterns),
@@ -1969,6 +2013,7 @@ async def upsert_host_row(pool: Any, rec: Any) -> None:
                      fetch_recipes=VALUES(fetch_recipes),
                      owner_id=VALUES(owner_id), shared=VALUES(shared),
                      excluded=VALUES(excluded),
+                     download_video=VALUES(download_video),
                      updated_at=VALUES(updated_at),
                      last_used_at=VALUES(last_used_at)""",
                 params,

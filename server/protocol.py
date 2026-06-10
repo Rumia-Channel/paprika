@@ -40,8 +40,12 @@ class JobOptions(BaseModel):
     #     収集する。
     #   * page.download_video() が後付けで呼ばれた場合は、その時点で
     #     iframe トレースを ON にしてから yt-dlp 実行 (False のとき)。
-    # False (default) では一切の動画 DL ロジックが休眠する。
-    download_video: bool = False
+    # None (default = unset): the hub resolves it from the target host's
+    # ``HostRecord.download_video`` flag in create_job (so a fetch pulls video
+    # only when the caller asked OR the host is a registered video host).
+    # An explicit True/False from the caller always wins. False keeps the
+    # whole video-DL path dormant.
+    download_video: bool | None = None
     cookies_from: str | None = None
     referer: str | None = None
     headless: bool = False

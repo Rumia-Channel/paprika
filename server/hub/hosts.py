@@ -163,6 +163,12 @@ class HostRecord:
     # absent. Curated / operator-asserted (set via PUT /hosts/{host} or the
     # #hosts edit modal). Read by server/hub/_escalate.py classify_completed.
     excluded: bool = False
+    # Per-host video intent. When True, a fetch on this host whose
+    # ``download_video`` was left unset (None) downloads video; non-video hosts
+    # stay False so they never get the heavy (1h-timeout) video path. The
+    # operator marks the actual video sites here. Resolved in
+    # routes/jobs/lifecycle.create_job (explicit opts.download_video wins).
+    download_video: bool = False
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -239,6 +245,7 @@ class HostRecord:
             owner_id=str(d.get("owner_id") or "default"),
             shared=bool(d.get("shared", True)),
             excluded=bool(d.get("excluded") or False),
+            download_video=bool(d.get("download_video") or False),
         )
 
 
@@ -509,6 +516,7 @@ class HostRegistry(JsonRecordRegistry[HostRecord]):
         owner_id: str | None = None,
         shared: bool | None = None,
         excluded: bool | None = None,
+        download_video: bool | None = None,
     ) -> HostRecord:
         h = _normalise_host(host)
         if not h:
@@ -586,6 +594,10 @@ class HostRegistry(JsonRecordRegistry[HostRecord]):
             merged_excluded = existing.excluded if existing else False
         else:
             merged_excluded = bool(excluded)
+        if download_video is None:
+            merged_download_video = existing.download_video if existing else False
+        else:
+            merged_download_video = bool(download_video)
 
         rec = HostRecord(
             host=h,
@@ -605,6 +617,7 @@ class HostRegistry(JsonRecordRegistry[HostRecord]):
             owner_id=merged_owner,
             shared=merged_shared,
             excluded=merged_excluded,
+            download_video=merged_download_video,
         )
         self._write(rec)
         return rec

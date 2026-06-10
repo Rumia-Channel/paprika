@@ -792,6 +792,26 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
             503, "fleet at capacity (all lanes busy); retry with backoff"
         )
 
+    # download_video resolution (operator design 2026-06-10): an explicit
+    # opts value (True/False) wins; the default None falls back to the target
+    # host's HostRecord.download_video flag (default False). Stops the
+    # indiscriminate download_video=True that bumped every fetch/escalation to
+    # a 1h lane-hogging timeout on non-video pages -- a fetch now pulls video
+    # only when asked OR the host is a registered video host. The auto-escalator
+    # inherits this resolved value via model_copy.
+    if req.options.download_video is None:
+        _dv = False
+        try:
+            from urllib.parse import urlparse as _urlparse
+            _dvh = _normalise_host(_urlparse(req.url).hostname or "")
+            _dvrec = state.hosts.get(_dvh) if (_dvh and state.hosts is not None) else None
+            _dv = bool(getattr(_dvrec, "download_video", False)) if _dvrec else False
+        except Exception:
+            _dv = False
+        req.options.download_video = _dv
+        if _dv and not req.options.capture_assets:
+            req.options.capture_assets = True
+
     # v2 Phase 5: HostKnowledge consultation.
     # If we have learned knowledge for this URL's host, apply hints
     # before the job is dispatched. Today this just tweaks JobOptions

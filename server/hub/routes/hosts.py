@@ -62,6 +62,8 @@ def _host_to_dict(rec, *, include_visited_count: bool = False) -> dict:
         "popup_policy": rec.popup_policy or "kill",
         # Operator-registered "this host has no video" (skips video escalation).
         "excluded": bool(getattr(rec, "excluded", False)),
+        # Per-host video intent (resolves a fetch's download_video=None).
+        "download_video": bool(getattr(rec, "download_video", False)),
         "created_at": rec.created_at,
         "updated_at": rec.updated_at,
         "last_used_at": rec.last_used_at,
@@ -557,6 +559,7 @@ async def put_host(host: str, body: dict, request: Request = None) -> dict:
     popup_policy = body.get("popup_policy")
     fetch_recipes = body.get("fetch_recipes")
     excluded = body.get("excluded")
+    download_video = body.get("download_video")
     if cookies is not None and not isinstance(cookies, list):
         raise HTTPException(400, "'cookies' must be a list of CDP CookieParam-shaped dicts")
     if notes is not None and not isinstance(notes, str):
@@ -580,6 +583,8 @@ async def put_host(host: str, body: dict, request: Request = None) -> dict:
             )
     if excluded is not None and not isinstance(excluded, bool):
         raise HTTPException(400, "'excluded' must be a boolean")
+    if download_video is not None and not isinstance(download_video, bool):
+        raise HTTPException(400, "'download_video' must be a boolean")
     # Phase 2b: stamp the pushing tenant on the host record. A scoped (enforce,
     # non-admin) user's push is private (shared=False) and may NOT clobber a
     # host owned by another tenant (404, same as the read-scope); off / optional
@@ -606,6 +611,7 @@ async def put_host(host: str, body: dict, request: Request = None) -> dict:
             owner_id=owner_of(request),
             shared=not _scoped,
             excluded=excluded,
+            download_video=download_video,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
