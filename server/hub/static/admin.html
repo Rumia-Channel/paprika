@@ -2561,9 +2561,26 @@ table.aitbl code { font-size:0.95em; }
       LLM URL / モデル名 / Worker / Data dir 等は <strong>環境変数で固定</strong> (デプロイ時に決まるので表示のみ)。
     </p>
 
+    <!-- Sub-tabs: same visual language as #submit (browser-tab style,
+         active tab merges with the subpane below). data-settings-subpane
+         keys map 1:1 to the subpanes that follow. -->
+    <div class="settings-subtabs" role="tablist">
+      <button type="button" class="settings-subtab active" data-settings-subtab="defaults" role="tab" aria-selected="true"><iconify-icon icon="lucide:send-horizontal"></iconify-icon> ジョブ既定</button>
+      <button type="button" class="settings-subtab" data-settings-subtab="learning" role="tab" aria-selected="false"><iconify-icon icon="lucide:sparkles"></iconify-icon> AI 学習動作</button>
+      <button type="button" class="settings-subtab" data-settings-subtab="capture" role="tab" aria-selected="false"><iconify-icon icon="lucide:package"></iconify-icon> Asset / Proxy</button>
+      <button type="button" class="settings-subtab" data-settings-subtab="storage" role="tab" aria-selected="false"><iconify-icon icon="lucide:database"></iconify-icon> ストレージ / DB</button>
+      <button type="button" class="settings-subtab" data-settings-subtab="system" role="tab" aria-selected="false"><iconify-icon icon="lucide:info"></iconify-icon> システム情報</button>
+    </div>
+
+    <!-- ============================================================
+         Sub-pane: ジョブ既定 (Submit defaults + Fetch defaults)
+         ============================================================ -->
+    <div class="settings-subpane" data-settings-subpane="defaults">
+
     <!-- A. Submit defaults (localStorage) -->
-    <h3 style="margin-top:.6rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;">📥 Submit defaults
-      <small style="font-weight:normal; color:#888;">— このブラウザにだけ保存</small>
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:send-horizontal"></iconify-icon> Submit defaults
+      <small>このブラウザにだけ保存</small>
     </h3>
     <div style="display:grid; grid-template-columns: 220px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
       <label for="setDefaultMode">Default mode:</label>
@@ -2595,109 +2612,12 @@ table.aitbl code { font-size:0.95em; }
         <button id="setResetUiBtn" class="pill" style="background:#fee; border-color:#c88; color:#933;"><iconify-icon icon="lucide:rotate-ccw"></iconify-icon> デフォルトに戻す</button>
       </div>
     </div>
+    </div><!-- /.settings-card Submit defaults -->
 
-    <!-- B. Hub-side learning behaviour -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;">🧠 学習動作
-      <small style="font-weight:normal; color:#888;">— Hub 永続 (全 operator 共通)</small>
-    </h3>
-    <div style="display:grid; grid-template-columns: 280px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
-      <label>Skill auto-extract:</label>
-      <label style="font-weight:normal;">
-        <input type="checkbox" id="setSkillAutoExtract">
-        codegen-loop の成功後に skill を自動抽出
-      </label>
-
-      <label>Convention auto-extract:</label>
-      <label style="font-weight:normal;">
-        <input type="checkbox" id="setConventionAutoExtract">
-        failure→success diff から convention を自動抽出 (attempts ≥ 2 のとき)
-      </label>
-
-      <label>失敗→AI 自動再挑戦:</label>
-      <label style="font-weight:normal;">
-        <input type="checkbox" id="setAutoEscalate">
-        fetch が「認証/年齢ゲート」や「動画DL失敗」で落ちたら AI(codegen-loop) で自動再挑戦（GPU アイドル時のみ・既定OFF）
-      </label>
-
-      <label for="setSkillTopK">Skill retrieval top-K:</label>
-      <input type="number" id="setSkillTopK" min="0" max="10" style="width:80px; padding:4px 8px;">
-
-      <div></div>
-      <div>
-        <button id="setSaveHubBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> 学習動作を保存</button>
-        <span id="setHubErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
-      </div>
-    </div>
-
-    <!-- B2. Asset capture (hub-side, persisted) -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;"><iconify-icon icon="lucide:package"></iconify-icon> Asset capture
-      <small style="font-weight:normal; color:#888;">— Hub 永続。Fetch / Code / LLM すべてに適用</small>
-    </h3>
-    <div style="display:grid; grid-template-columns: 280px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
-      <label for="setMinAssetSize">最小ファイルサイズ (bytes):</label>
-      <div>
-        <input type="text" id="setMinAssetSize" inputmode="numeric" placeholder="0 / 1k / 10kb" title="バイト数。1k=1024 / 10kb=10240 のような単位付きでも可。0 = フィルタ無効" style="width:120px; padding:4px 8px;">
-        <span style="color:#888; font-size:.85em; margin-left:8px;">
-          このサイズ未満の asset は保存しない。<strong>0</strong> = フィルタ無効。
-          目安: <code>1024</code>=1KB / <code>4096</code>=4KB / <code>10240</code>=10KB
-        </span>
-      </div>
-
-      <!-- V + Y: Asset URL blacklist. 1 行 1 パターン (4 種類のシンタックス)。
-           マッチした URL は assets/ に保存されず、yt-dlp も発火しない。
-           広告 CDN / 計測ピクセル / 不要な動画 (preview / ads) を除外できる。 -->
-      <label for="setAssetUrlBlacklist" style="align-self:start; padding-top:6px;">URL ブラックリスト:</label>
-      <div>
-        <textarea id="setAssetUrlBlacklist" rows="6"
-          placeholder="例:&#10;media-hls.saawsedge.com           # 部分一致&#10;https://media-hls.saawsedge.com*  # ワイルドカード (前方一致)&#10;*/ads/*.js                        # glob (どこにあっても)&#10;^https://tracker.                 # ^ で先頭固定&#10;/saawsedge\.com/(media|preview)/.*\.ts/  # /regex/&#10;# 行頭 # はコメント"
-          style="width:100%; max-width:680px; padding:5px 8px; font-family:monospace; font-size:12px;"></textarea>
-        <div style="color:#888; font-size:.85em; margin-top:4px; max-width:680px;">
-          マッチした URL は <strong>asset 保存スキップ</strong> & <strong>yt-dlp も発火しない</strong>。
-          1 行 1 パターン。<code>#</code> 行頭はコメント。シンタックス:
-          <ul style="margin:4px 0 0 18px; padding:0; font-size:.95em;">
-            <li><b>部分一致</b>: 特殊文字なし → URL 中にその文字列があれば block (case-insensitive)。<br>
-                例: <code>media-hls.saawsedge.com</code></li>
-            <li><b>glob ワイルドカード</b>: <code>*</code> 任意文字列 / <code>?</code> 1 文字 / <code>^</code> 先頭固定 / <code>$</code> 末尾固定。<br>
-                例: <code>https://media-hls.saawsedge.com*</code> · <code>*/ads/*.js</code> · <code>^https://tracker.</code></li>
-            <li><b>正規表現</b>: <code>/.../</code> で囲む。case-insensitive。<br>
-                例: <code>/saawsedge\.com/(media|preview)/.*\.ts/</code></li>
-          </ul>
-        </div>
-      </div>
-
-      <div></div>
-      <div>
-        <button id="setSaveAssetBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> Asset capture を保存</button>
-        <span id="setAssetErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
-      </div>
-    </div>
-
-    <!-- B2b. Egress proxy pool (hub-side, persisted; broadcast to workers) -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;"><iconify-icon icon="lucide:globe"></iconify-icon> Egress プロキシ
-      <small style="font-weight:normal; color:#888;">— Hub 永続・全 worker へ配信。IP ブロック回避</small>
-    </h3>
-    <div style="display:grid; grid-template-columns: 280px 1fr; gap:8px 12px; align-items:start; padding:8px 4px;">
-      <label for="setProxyPool" style="align-self:start; padding-top:6px;">プロキシプール:</label>
-      <div>
-        <textarea id="setProxyPool" rows="5"
-          placeholder="例:&#10;http://10.20.0.5:3128&#10;socks5://10.20.0.6:1080&#10;1 行 1 プロキシ (スキーム付き URL)"
-          style="width:100%; max-width:680px; padding:5px 8px; font-family:monospace; font-size:12px;"></textarea>
-        <div style="color:#888; font-size:.85em; margin-top:4px; max-width:680px;">
-          1 行 1 プロキシ (スキーム付き URL)。各 worker が<strong>ランダムに 1 つ</strong>選び、対象サイトへの egress (ブラウザ + yt-dlp) をそこ経由にする。<strong>空 = 直結</strong>。<br>
-          反映は各 worker の<strong>次の Chrome 起動時</strong> (実行中ブラウザは起動時の proxy を維持)。worker↔hub の制御通信は直結のまま。
-        </div>
-      </div>
-
-      <div></div>
-      <div>
-        <button id="setSaveProxyBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> Egress プロキシを保存</button>
-        <span id="setProxyErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
-      </div>
-    </div>
-
-    <!-- B3. Fetch defaults (hub-side, persisted) -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;"><iconify-icon icon="lucide:file-down"></iconify-icon> Fetch defaults
-      <small style="font-weight:normal; color:#888;">— Hub 永続。Fetch mode のジョブで client が明示してない項目に自動適用</small>
+    <!-- B3. Fetch defaults (hub-side, persisted) — same subpane (defaults) -->
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:file-down"></iconify-icon> Fetch defaults
+      <small>Hub 永続 — fetch mode で client が明示しない項目に自動適用</small>
     </h3>
     <div style="display:grid; grid-template-columns: 240px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
       <div style="grid-column: 1 / -1; color:#555; font-size:.85em; font-weight:600; margin-top:4px;">▸ Wait timing</div>
@@ -2738,10 +2658,54 @@ table.aitbl code { font-size:0.95em; }
         <span id="setFetchErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
       </div>
     </div>
+    </div><!-- /.settings-card Fetch defaults -->
+
+    </div><!-- /.settings-subpane defaults -->
+
+    <!-- ============================================================
+         Sub-pane: AI 学習動作 (学習動作 + Web search + 推論ジャッジ)
+         ============================================================ -->
+    <div class="settings-subpane" data-settings-subpane="learning" style="display:none;">
+
+    <!-- B. Hub-side learning behaviour -->
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:brain"></iconify-icon> 学習動作
+      <small>Hub 永続 — 全 operator 共通</small>
+    </h3>
+    <div style="display:grid; grid-template-columns: 280px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
+      <label>Skill auto-extract:</label>
+      <label style="font-weight:normal;">
+        <input type="checkbox" id="setSkillAutoExtract">
+        codegen-loop の成功後に skill を自動抽出
+      </label>
+
+      <label>Convention auto-extract:</label>
+      <label style="font-weight:normal;">
+        <input type="checkbox" id="setConventionAutoExtract">
+        failure→success diff から convention を自動抽出 (attempts ≥ 2 のとき)
+      </label>
+
+      <label>失敗→AI 自動再挑戦:</label>
+      <label style="font-weight:normal;">
+        <input type="checkbox" id="setAutoEscalate">
+        fetch が「認証/年齢ゲート」や「動画DL失敗」で落ちたら AI(codegen-loop) で自動再挑戦（GPU アイドル時のみ・既定OFF）
+      </label>
+
+      <label for="setSkillTopK">Skill retrieval top-K:</label>
+      <input type="number" id="setSkillTopK" min="0" max="10" style="width:80px; padding:4px 8px;">
+
+      <div></div>
+      <div>
+        <button id="setSaveHubBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> 学習動作を保存</button>
+        <span id="setHubErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
+      </div>
+    </div>
+    </div><!-- /.settings-card 学習動作 -->
 
     <!-- B4. Web search (Codegen) — SearXNG-backed LLM tool -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;"><iconify-icon icon="lucide:search"></iconify-icon> Web search (Codegen)
-      <small style="font-weight:normal; color:#888;">— Hub 永続。Coder LLM が外部知識を引くツール</small>
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:search"></iconify-icon> Web search (Codegen)
+      <small>Coder LLM が外部知識を引くツール</small>
     </h3>
     <div style="display:grid; grid-template-columns: 240px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
       <label for="setSearxngUrl" title="SearXNG の HTTP エンドポイント (例: http://searxng.local:8080)。空にするとツール無効。">SearXNG URL:</label>
@@ -2768,10 +2732,12 @@ table.aitbl code { font-size:0.95em; }
         <span id="setWebSearchErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
       </div>
     </div>
+    </div><!-- /.settings-card Web search -->
 
     <!-- B6. Reasoning Judge -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;"><iconify-icon icon="lucide:brain-circuit"></iconify-icon> 推論ジャッジ
-      <small style="font-weight:normal; color:#888;">— 高品質な LLM 判定 (DeepSeek R1 / Claude / GPT 等)</small>
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:brain-circuit"></iconify-icon> 推論ジャッジ
+      <small>高品質な LLM 判定 (DeepSeek R1 / Claude / GPT 等)</small>
     </h3>
     <p style="margin:4px 0 8px; color:#666; font-size:.88em;">
       デフォルトジャッジに加え、推論特化モデルで判定を行う。
@@ -2802,16 +2768,102 @@ table.aitbl code { font-size:0.95em; }
         <span id="setReasoningJudgeStatus" style="font-size:.9em; margin-left:4px;"></span>
       </div>
     </div>
+    </div><!-- /.settings-card 推論ジャッジ -->
+
+    </div><!-- /.settings-subpane learning -->
+
+    <!-- ============================================================
+         Sub-pane: Asset / Proxy (Asset capture + Egress proxy)
+         ============================================================ -->
+    <div class="settings-subpane" data-settings-subpane="capture" style="display:none;">
+
+    <!-- B2. Asset capture (hub-side, persisted) -->
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:package"></iconify-icon> Asset capture
+      <small>Hub 永続 — Fetch / Code / LLM すべてに適用</small>
+    </h3>
+    <div style="display:grid; grid-template-columns: 280px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
+      <label for="setMinAssetSize">最小ファイルサイズ (bytes):</label>
+      <div>
+        <input type="text" id="setMinAssetSize" inputmode="numeric" placeholder="0 / 1k / 10kb" title="バイト数。1k=1024 / 10kb=10240 のような単位付きでも可。0 = フィルタ無効" style="width:120px; padding:4px 8px;">
+        <span style="color:#888; font-size:.85em; margin-left:8px;">
+          このサイズ未満の asset は保存しない。<strong>0</strong> = フィルタ無効。
+          目安: <code>1024</code>=1KB / <code>4096</code>=4KB / <code>10240</code>=10KB
+        </span>
+      </div>
+
+      <!-- V + Y: Asset URL blacklist. 1 行 1 パターン (4 種類のシンタックス)。
+           マッチした URL は assets/ に保存されず、yt-dlp も発火しない。
+           広告 CDN / 計測ピクセル / 不要な動画 (preview / ads) を除外できる。 -->
+      <label for="setAssetUrlBlacklist" style="align-self:start; padding-top:6px;">URL ブラックリスト:</label>
+      <div>
+        <textarea id="setAssetUrlBlacklist" rows="6"
+          placeholder="例:&#10;media-hls.saawsedge.com           # 部分一致&#10;https://media-hls.saawsedge.com*  # ワイルドカード (前方一致)&#10;*/ads/*.js                        # glob (どこにあっても)&#10;^https://tracker.                 # ^ で先頭固定&#10;/saawsedge\.com/(media|preview)/.*\.ts/  # /regex/&#10;# 行頭 # はコメント"
+          style="width:100%; max-width:680px; padding:5px 8px; font-family:monospace; font-size:12px;"></textarea>
+        <div style="color:#888; font-size:.85em; margin-top:4px; max-width:680px;">
+          マッチした URL は <strong>asset 保存スキップ</strong> & <strong>yt-dlp も発火しない</strong>。
+          1 行 1 パターン。<code>#</code> 行頭はコメント。シンタックス:
+          <ul style="margin:4px 0 0 18px; padding:0; font-size:.95em;">
+            <li><b>部分一致</b>: 特殊文字なし → URL 中にその文字列があれば block (case-insensitive)。<br>
+                例: <code>media-hls.saawsedge.com</code></li>
+            <li><b>glob ワイルドカード</b>: <code>*</code> 任意文字列 / <code>?</code> 1 文字 / <code>^</code> 先頭固定 / <code>$</code> 末尾固定。<br>
+                例: <code>https://media-hls.saawsedge.com*</code> · <code>*/ads/*.js</code> · <code>^https://tracker.</code></li>
+            <li><b>正規表現</b>: <code>/.../</code> で囲む。case-insensitive。<br>
+                例: <code>/saawsedge\.com/(media|preview)/.*\.ts/</code></li>
+          </ul>
+        </div>
+      </div>
+
+      <div></div>
+      <div>
+        <button id="setSaveAssetBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> Asset capture を保存</button>
+        <span id="setAssetErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
+      </div>
+    </div>
+    </div><!-- /.settings-card Asset capture -->
+
+    <!-- B2b. Egress proxy pool (hub-side, persisted; broadcast to workers) -->
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:globe"></iconify-icon> Egress プロキシ
+      <small>Hub 永続・全 worker へ配信 — IP ブロック回避</small>
+    </h3>
+    <div style="display:grid; grid-template-columns: 280px 1fr; gap:8px 12px; align-items:start; padding:8px 4px;">
+      <label for="setProxyPool" style="align-self:start; padding-top:6px;">プロキシプール:</label>
+      <div>
+        <textarea id="setProxyPool" rows="5"
+          placeholder="例:&#10;http://10.20.0.5:3128&#10;socks5://10.20.0.6:1080&#10;1 行 1 プロキシ (スキーム付き URL)"
+          style="width:100%; max-width:680px; padding:5px 8px; font-family:monospace; font-size:12px;"></textarea>
+        <div style="color:#888; font-size:.85em; margin-top:4px; max-width:680px;">
+          1 行 1 プロキシ (スキーム付き URL)。各 worker が<strong>ランダムに 1 つ</strong>選び、対象サイトへの egress (ブラウザ + yt-dlp) をそこ経由にする。<strong>空 = 直結</strong>。<br>
+          反映は各 worker の<strong>次の Chrome 起動時</strong> (実行中ブラウザは起動時の proxy を維持)。worker↔hub の制御通信は直結のまま。
+        </div>
+      </div>
+
+      <div></div>
+      <div>
+        <button id="setSaveProxyBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> Egress プロキシを保存</button>
+        <span id="setProxyErr" style="color:#a00; font-size:.9em; margin-left:8px;"></span>
+      </div>
+    </div>
+    </div><!-- /.settings-card Egress -->
+
+    </div><!-- /.settings-subpane capture -->
+
+    <!-- ============================================================
+         Sub-pane: ストレージ / DB (MariaDB + S3/MinIO)
+         ============================================================ -->
+    <div class="settings-subpane" data-settings-subpane="storage" style="display:none;">
 
     <!-- B7. Database: MariaDB -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;"><iconify-icon icon="lucide:database"></iconify-icon> Database (MariaDB)
-      <small style="font-weight:normal; color:#888;">— 外部 MariaDB / MySQL への接続</small>
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:database"></iconify-icon> Database (MariaDB)
+      <small>外部 MariaDB / MySQL への接続</small>
     </h3>
     <p style="margin:4px 0 8px; color:#666; font-size:.88em;">
       ジョブ・ワーカー・ホスト等の永続データを MariaDB に保管。未設定なら従来通り Redis + ファイルを使用。
     </p>
 
-    <div id="mariadbStatusBanner" style="display:none; padding:8px 14px; border-radius:6px; margin-bottom:10px; font-size:.9em; display:flex; align-items:center; gap:8px;">
+    <div id="mariadbStatusBanner" style="display:none; padding:8px 14px; border-radius:6px; margin-bottom:10px; font-size:.9em; align-items:center; gap:8px;">
     </div>
 
     <div style="display:grid; grid-template-columns: 200px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
@@ -2849,7 +2901,7 @@ table.aitbl code { font-size:0.95em; }
       </div>
     </div>
 
-    <!-- B7b. MariaDB Data Migration -->
+    <!-- B7b. MariaDB Data Migration (nested inside MariaDB card) -->
     <div id="mariadbMigrationSection" style="display:none; margin-top:12px; padding:12px 16px; background:#f8f9fc; border:1px solid #dde; border-radius:8px;">
       <h4 style="margin:0 0 8px; font-size:.9rem; color:#444;">
         <iconify-icon icon="lucide:database-backup"></iconify-icon>
@@ -2907,9 +2959,13 @@ table.aitbl code { font-size:0.95em; }
 
       <div id="mdbTableCounts" style="display:none; margin-top:10px; padding:8px 12px; background:#fff; border:1px solid #dde; border-radius:6px; font-size:.85em;"></div>
     </div>
+    </div><!-- /.settings-card MariaDB -->
 
     <!-- B8. Object storage: S3 / MinIO -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;">☁ オブジェクトストレージ (S3 / MinIO)</h3>
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:cloud"></iconify-icon> オブジェクトストレージ (S3 / MinIO)
+      <small>ジョブ成果物のミラー兼読み取り元</small>
+    </h3>
     <p style="margin:4px 0 8px; color:#666; font-size:.88em;">
       ジョブ成果物 (assets / page.html / script.py 等) のミラー兼読み取り元。有効時、NAS のローカルコピーが無くても S3 から配信・復元します。未設定ならローカルディスクのみ。<code>PAPRIKA_S3_*</code> 環境変数があればそれを既定値に使用。
     </p>
@@ -2949,16 +3005,29 @@ table.aitbl code { font-size:0.95em; }
         <span id="setS3Status" style="font-size:.9em; margin-left:4px;"></span>
       </div>
     </div>
+    </div><!-- /.settings-card S3 -->
+
+    </div><!-- /.settings-subpane storage -->
+
+    <!-- ============================================================
+         Sub-pane: システム情報 (read-only)
+         ============================================================ -->
+    <div class="settings-subpane" data-settings-subpane="system" style="display:none;">
 
     <!-- C. System info (read-only) -->
-    <h3 style="margin-top:1.2rem; font-size:.95rem; color:#444; border-bottom:1px solid #eee; padding-bottom:.3rem;">ℹ System info
-      <small style="font-weight:normal; color:#888;">— 環境変数依存、再デプロイで変更</small>
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:info"></iconify-icon> System info
+      <small>環境変数依存 — 再デプロイで変更</small>
     </h3>
-    <table style="font-size:.9em; margin-top:.4rem;">
+    <table style="font-size:.9em; margin-top:.4rem; width:100%;">
       <tbody id="setSystemInfoBody">
         <tr><td colspan=2 style="color:#888;">loading…</td></tr>
       </tbody>
     </table>
+    </div><!-- /.settings-card System info -->
+
+    </div><!-- /.settings-subpane system -->
+
   </section>
 </div>
 

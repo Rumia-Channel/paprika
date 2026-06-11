@@ -10,6 +10,7 @@ migrated yet. Both follow when their dependencies do.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -355,6 +356,39 @@ def _build_worker_plugins_tarball() -> bytes:
     return _build_tarball(_WORKER_PLUGINS_TREE_PATHS)
 
 
+# These tarballs were rebuilt -- tar+gzip of the whole server+core tree --
+# SYNCHRONOUSLY ON THE EVENT LOOP for EVERY worker self-update request. During
+# a self-update wave (fleet version churn) that blocked the loop for seconds
+# per build, stalling /jobs, /overview, even /health (confirmed via py-spy:
+# tarfile.add -> gzip.write running on the loop). Now: cache the bytes keyed by
+# source version, (re)build at most once per version, and do the build in a
+# worker thread so the loop never blocks on tar+gzip. The bytes are identical
+# for every worker on a given version, so one build serves the whole wave.
+_TARBALL_CACHE: dict[str, bytes] = {}
+_TARBALL_LOCK = asyncio.Lock()
+
+
+async def _cached_tarball(kind: str, builder) -> tuple[str, bytes]:
+    """Return ``(version, tarball_bytes)`` for ``kind`` ("source"/"plugins"),
+    building at most once per ``_hub_version()`` and off the event loop."""
+    from server.hub._version import _hub_version
+
+    ver = _hub_version()
+    key = f"{kind}:{ver}"
+    data = _TARBALL_CACHE.get(key)
+    if data is not None:
+        return ver, data
+    async with _TARBALL_LOCK:
+        data = _TARBALL_CACHE.get(key)  # double-check after awaiting the lock
+        if data is None:
+            data = await asyncio.to_thread(builder)
+            # Keep only current-version entries so the cache can't grow.
+            for k in [k for k in _TARBALL_CACHE if not k.endswith(":" + ver)]:
+                _TARBALL_CACHE.pop(k, None)
+            _TARBALL_CACHE[key] = data
+    return ver, data
+
+
 @router.post("/internal/prepare-restart")
 async def prepare_restart(timeout_s: float = 120.0) -> dict:
     """Graceful pre-restart drain (in-flight protection, layer 1).
@@ -408,18 +442,14 @@ async def get_worker_source_tarball() -> Response:
     hostile network, gate this with a reverse proxy or add the same
     ``WORKER_SECRET`` check the WS endpoint uses.
     """
-    # Lazy import: _hub_version still lives in app.py (file read +
-    # cache). One round trip's worth of ms is fine for a tarball.
-    from server.hub._version import _hub_version
-
     try:
-        data = _build_worker_source_tarball()
+        ver, data = await _cached_tarball("source", _build_worker_source_tarball)
     except Exception as e:
         raise HTTPException(500, f"failed to build tarball: {e}")
     headers = {
         # Version baked into the response so the operator can sanity-
         # check what they're about to ship out to the fleet (curl -I).
-        "X-Paprika-Version": _hub_version(),
+        "X-Paprika-Version": ver,
         "Content-Disposition": 'attachment; filename="paprika-worker-source.tar.gz"',
     }
     return Response(content=data, media_type="application/gzip", headers=headers)
@@ -438,14 +468,12 @@ async def get_worker_plugins_tarball() -> Response:
     optional ``data/tools/catalog.json``). Stable -- the worker
     extractor enforces this exact prefix.
     """
-    from server.hub._version import _hub_version
-
     try:
-        data = _build_worker_plugins_tarball()
+        ver, data = await _cached_tarball("plugins", _build_worker_plugins_tarball)
     except Exception as e:
         raise HTTPException(500, f"failed to build plugins tarball: {e}")
     headers = {
-        "X-Paprika-Version": _hub_version(),
+        "X-Paprika-Version": ver,
         "Content-Disposition": 'attachment; filename="paprika-worker-plugins.tar.gz"',
     }
     return Response(content=data, media_type="application/gzip", headers=headers)

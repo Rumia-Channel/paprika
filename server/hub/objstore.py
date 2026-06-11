@@ -128,6 +128,13 @@ def _get_client():
                     signature_version="s3v4",
                     s3={"addressing_style": "path"},  # MinIO wants path-style
                     retries={"max_attempts": 2, "mode": "standard"},
+                    # botocore's default pool is 10 -- exhausted under codegen
+                    # asset-I/O bursts ("Connection pool is full, discarding
+                    # connection: <minio>"), which serialises S3 calls and
+                    # holds asyncio to_thread workers, stalling /jobs & /overview.
+                    max_pool_connections=int(
+                        os.environ.get("PAPRIKA_S3_MAX_POOL_CONNECTIONS") or 50
+                    ),
                 ),
             )
         except Exception:

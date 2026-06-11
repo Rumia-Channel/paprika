@@ -1073,3 +1073,37 @@ if (hubsRefreshBtn) hubsRefreshBtn.addEventListener('click', refreshHubsTable);
     cnt.textContent = target.textContent || '0';
   }).observe(target, { childList: true, characterData: true, subtree: true });
 })();
+
+// Settings sub-tabs: same visual language + structure as #submit.
+// Each subtab key maps 1:1 to a `<div class="settings-subpane"
+// data-settings-subpane="...">` wrapping its content; switching tabs
+// is just a display toggle on the subpanes (form values + cached
+// state persist because nothing is removed from the DOM).
+(function wireSettingsSubtabs() {
+  function setSettingsSubtab(name) {
+    if (!name) name = 'defaults';
+    document.querySelectorAll('.settings-subtab[data-settings-subtab]').forEach((t) => {
+      const on = t.dataset.settingsSubtab === name;
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('.settings-subpane[data-settings-subpane]').forEach((p) => {
+      p.style.display = (p.dataset.settingsSubpane === name) ? '' : 'none';
+    });
+  }
+  window.setSettingsSubtab = setSettingsSubtab;
+  document.querySelectorAll('.settings-subtab[data-settings-subtab]').forEach((btn) => {
+    btn.addEventListener('click', () => setSettingsSubtab(btn.dataset.settingsSubtab));
+  });
+  // Activate the default sub-tab on first visit to #settings.
+  // setTab() may run before this script if the operator lands
+  // directly on #settings, so re-init on tab click too.
+  function _initIfActive() {
+    const panel = document.querySelector('.panel[data-panel="settings"]');
+    if (panel && panel.style.display !== 'none') setSettingsSubtab('defaults');
+  }
+  _initIfActive();
+  document.querySelectorAll('.tab[data-tab="settings"]').forEach((btn) => {
+    btn.addEventListener('click', () => setTimeout(_initIfActive, 0));
+  });
+})();
