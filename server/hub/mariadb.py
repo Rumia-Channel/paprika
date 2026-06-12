@@ -327,6 +327,47 @@ _TABLES: list[tuple[str, str]] = [
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
     ),
+    (
+        "workers",
+        """
+        CREATE TABLE IF NOT EXISTS workers (
+            worker_id            VARCHAR(64)  PRIMARY KEY,
+            ip                   VARCHAR(45),
+            ssh_user             VARCHAR(64),
+            ssh_port             INT          DEFAULT 22,
+            ssh_key_ref          VARCHAR(255),
+            last_seen_at         DATETIME(3),
+            last_status          VARCHAR(32),
+            recovery_count       INT          NOT NULL DEFAULT 0,
+            last_recovery_at     DATETIME(3),
+            last_recovery_result VARCHAR(255),
+            last_error           VARCHAR(255),
+            updated_at           DATETIME(3)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
+    (
+        # 段階4 永続化: durable, fleet-wide salvage recovery history. The admin
+        # recovery subtab reads this (cross-hub via the shared MariaDB) so the
+        # operator sees "what was salvaged, when, how" across hub restarts --
+        # the in-memory ring buffer (scheduler.log_event) only survives until a
+        # hub restart. One row per salvage attempt (success OR failure).
+        "recovery_events",
+        """
+        CREATE TABLE IF NOT EXISTS recovery_events (
+            id          BIGINT       PRIMARY KEY AUTO_INCREMENT,
+            worker_id   VARCHAR(64)  NOT NULL,
+            hub_id      VARCHAR(64),
+            ip          VARCHAR(45),
+            method      VARCHAR(32),
+            result      VARCHAR(32),
+            detail      VARCHAR(255),
+            created_at  DATETIME(3)  NOT NULL,
+            INDEX idx_recovery_created (created_at),
+            INDEX idx_recovery_worker (worker_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
 ]
 
 

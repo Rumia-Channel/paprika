@@ -34,7 +34,6 @@ from server.protocol import (
     HubExpectedVersion,
     HubProfileDelete,
     HubProfileSync,
-    HubProxyPoolSync,
     HubRegistered,
     HubPreviewSubscribe,
     HubScreenshotRequest,
@@ -228,6 +227,12 @@ class _RunMixin:
                 f"{self._wd_link_threshold_s:.0f}s, inbound "
                 f"{self._wd_inbound_threshold_s:.0f}s, check {self._wd_check_s:.0f}s)"
             )
+        # self-restart HTTP endpoint (hub salvage path): when a worker ghosts
+        # (proxied WS alive but no hub consumes it) the hub can't reach us over
+        # the WS, so it POSTs /self-restart here -> we exit(42) -> docker
+        # restarts us clean. Daemon thread, so it answers even while the asyncio
+        # loop is idle/ghosted; a fully-wedged box won't answer -> hub SSH fallback.
+        self._start_selfrestart_server()
         async with make_async_client(timeout=60.0) as http:
             self._http = http
             while True:
@@ -607,6 +612,79 @@ class _RunMixin:
         except asyncio.CancelledError:
             return
 
+    def _start_selfrestart_server(self) -> None:
+        """Daemon-thread HTTP server exposing POST /self-restart for the hub's
+        salvage path (ghost recovery). Auth = the same worker_secret via the
+        X-Worker-Secret header; with no secret configured it accepts LAN-local
+        POSTs (same trust level as the rest of the fleet today). Runs in its OWN
+        thread so it answers even while the asyncio loop is idle/ghosted; a
+        fully-wedged box won't answer -> the hub falls back to SSH. Env:
+        PAPRIKA_WORKER_SELFRESTART_DISABLE=1 (off),
+        PAPRIKA_WORKER_SELFRESTART_PORT (default 9099)."""
+        if os.environ.get("PAPRIKA_WORKER_SELFRESTART_DISABLE") == "1":
+            return
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        try:
+            port = int(os.environ.get("PAPRIKA_WORKER_SELFRESTART_PORT") or 9099)
+        except (TypeError, ValueError):
+            port = 9099
+        secret = self.worker_secret or ""
+        wid = self.worker_id
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # silence default stderr noise
+                pass
+
+            def _reply(self, code: int, body: str) -> None:
+                self.send_response(code)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                try:
+                    self.wfile.write(body.encode())
+                except Exception:
+                    pass
+
+            def do_GET(self):  # cheap liveness probe for the salvage path
+                if self.path.rstrip("/") == "/healthz":
+                    return self._reply(200, "ok")
+                return self._reply(404, "not found")
+
+            def do_POST(self):
+                if self.path.rstrip("/") != "/self-restart":
+                    return self._reply(404, "not found")
+                if secret and self.headers.get("X-Worker-Secret") != secret:
+                    return self._reply(403, "bad worker secret")
+                self._reply(200, "restarting")
+                try:
+                    _logger.critical(
+                        f"[worker {wid}] self-restart requested via HTTP "
+                        f"-> exit({WORKER_EXIT_CODE_VERSION_MISMATCH})"
+                    )
+                except Exception:
+                    pass
+                # Delay slightly so the HTTP response flushes before we exit.
+                threading.Timer(
+                    0.3, lambda: os._exit(WORKER_EXIT_CODE_VERSION_MISMATCH)
+                ).start()
+
+        try:
+            srv = HTTPServer(("0.0.0.0", port), _Handler)
+        except Exception as e:
+            _logger.warning(
+                f"[worker {wid}] self-restart server bind failed on :{port}: {e}"
+            )
+            return
+        threading.Thread(
+            target=srv.serve_forever,
+            name=f"selfrestart-{wid}",
+            daemon=True,
+        ).start()
+        _logger.info(
+            f"[worker {wid}] self-restart HTTP server on :{port} "
+            f"(auth={'secret' if secret else 'lan-open'})"
+        )
+
     def _watchdog_loop(self, loop: "asyncio.AbstractEventLoop") -> None:
         """Daemon thread: detect a wedged event loop and force-exit so the
         supervisor (docker ``restart: unless-stopped``) relaunches us clean.
@@ -733,12 +811,6 @@ class _RunMixin:
             return
         if isinstance(msg, HubProfileDelete):
             asyncio.create_task(self._handle_profile_delete(msg))
-            return
-        if isinstance(msg, HubProxyPoolSync):
-            # Adopt the operator's egress proxy pool (Settings.proxy_pool).
-            # Cheap + synchronous: stores the list + forces a re-pick that
-            # takes effect on the next Chrome / yt-dlp spawn.
-            self._handle_proxy_pool_sync(msg)
             return
         if isinstance(msg, HubSessionInteraction):
             # Record that the operator is actively driving this session

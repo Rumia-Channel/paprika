@@ -675,7 +675,19 @@ class WorkerRegistry:
                 pass
             await asyncio.sleep(interval_s)
 
-    async def unregister(self, worker_id: str) -> None:
+    async def unregister(self, worker_id: str, ws: "WebSocket | None" = None) -> None:
+        # Compare-and-delete: a STALE worker_link's finally (the worker has
+        # already reconnected on a NEW ws that re-registered under the same
+        # worker_id) must NOT evict the live registration. Without this guard
+        # the old connection's cleanup pops the NEW connection -> the worker
+        # keeps a live, echoing WS yet is absent from `connections` -> it shows
+        # up as a reaped "/workers ghost" that the worker's own inbound-liveness
+        # watchdog cannot detect (it still receives this hub's heartbeat echoes,
+        # so _last_inbound_ok keeps refreshing). ws=None keeps the legacy
+        # unconditional behaviour for any other caller.
+        cur = self.connections.get(worker_id)
+        if ws is not None and cur is not None and cur.ws is not ws:
+            return  # a newer connection owns this worker_id now -- leave it
         self.connections.pop(worker_id, None)
         self.assignments.pop(worker_id, None)
         if self._r is not None:

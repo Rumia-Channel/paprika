@@ -114,6 +114,12 @@ async def _host_lan_ip_via_redis(redis_client) -> str | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Memoise ssl.create_default_context BEFORE anything creates an httpx
+    # client: the hub's ~25 per-call AI/LLM clients each loaded the system CA
+    # bundle on the event loop (a slow, GIL-releasing C call), stalling the
+    # loop for seconds on hubs running AI tasks -- the #jobs もっさり.
+    from server.hub._ssl_cache import install_ssl_context_cache
+    install_ssl_context_cache()
     if _ADMIN_MODE:
         log.info("role=admin — management service (no WS / dispatch / reapers)")
     config.data_dir.mkdir(parents=True, exist_ok=True)
@@ -430,7 +436,7 @@ async def lifespan(app: FastAPI):
     # delete records, prune the registry, or re-dispatch jobs.
     reaper_task = retire_task = dead_worker_task = job_lease_task = None
     preview_sub_task = cache_evict_task = stale_reconcile_task = None
-    redrive_task = None
+    redrive_task = salvage_task = None
     if not _ADMIN_MODE:
         reaper_task = asyncio.create_task(_session_reaper_loop())
         retire_task = asyncio.create_task(_skill_convention_reaper_loop())
@@ -440,6 +446,13 @@ async def lifespan(app: FastAPI):
         from server.hub._reaper import _job_lease_loop
 
         job_lease_task = asyncio.create_task(_job_lease_loop())
+
+        # Ghost-worker salvage: auto-recover ghosted workers via HTTP
+        # self-restart (:9099) then SSH fallback. OFF unless
+        # PAPRIKA_SALVAGE_ENABLE=1. See server/hub/_salvage.py.
+        from server.hub._salvage import _salvage_loop
+
+        salvage_task = asyncio.create_task(_salvage_loop())
 
         # Durable backstop for orphaned-running + stuck-queued jobs that the
         # per-process nets (startup orphan-recovery, in-process queued-timeout
@@ -534,7 +547,7 @@ async def lifespan(app: FastAPI):
 
     for _t in (reaper_task, retire_task, dead_worker_task, job_lease_task,
                invalidate_task, preview_sub_task, cache_evict_task,
-               stale_reconcile_task, redrive_task):
+               stale_reconcile_task, redrive_task, salvage_task):
         if _t is not None:
             _t.cancel()
     # Stop hub heartbeat + drop the registry row so peers see us as

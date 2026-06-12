@@ -169,6 +169,12 @@ async function loadSettingsPanel() {
       _setSecretPw('setS3SecretKey', !!_secretsSet.s3_secret_key);
       _updateS3StatusBanner(d.s3_status || {});
 
+      // ---- Worker salvage SSH ----
+      _setVal('setWorkerSshUser', hub.worker_ssh_user || 'root');
+      const _wsPort = document.getElementById('setWorkerSshPort');
+      if (_wsPort) _wsPort.value = hub.worker_ssh_port || 22;
+      _setVal('setWorkerSshKeyPath', hub.worker_ssh_key_path);
+
       const sys = d.system || {};
       const tbody = document.getElementById('setSystemInfoBody');
       if (tbody) {
@@ -213,6 +219,36 @@ function resetSettingsUi() {
   loadSettingsPanel();
   applyUiDefaultsToSubmit();
   flashSavedHint();
+}
+
+// Worker salvage SSH (server/hub/_salvage.py). Plain PUT /settings of the
+// three worker_ssh_* keys; no secret redaction (the key is a *path*, not
+// the key material). The actual private key lives in the hub container at
+// that path; operator provisions it out-of-band.
+async function saveSettingsWorkerSsh() {
+  const stEl = document.getElementById('setWorkerSshStatus');
+  if (stEl) { stEl.textContent = ''; stEl.style.color = ''; }
+  const body = {
+    worker_ssh_user: (document.getElementById('setWorkerSshUser').value || '').trim() || 'root',
+    worker_ssh_port: parseInt(document.getElementById('setWorkerSshPort').value, 10) || 22,
+    worker_ssh_key_path: (document.getElementById('setWorkerSshKeyPath').value || '').trim(),
+  };
+  try {
+    const r = await fetch(SETTINGS_URL, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      if (stEl) { stEl.textContent = '保存失敗: ' + t.slice(0, 120); stEl.style.color = '#c0392b'; }
+      return;
+    }
+    if (stEl) { stEl.textContent = '✓ 保存しました (全ハブへ伝播)'; stEl.style.color = '#196b2c'; }
+    flashSavedHint();
+  } catch (e) {
+    if (stEl) { stEl.textContent = '保存失敗: ' + (e.message || e); stEl.style.color = '#c0392b'; }
+  }
 }
 
 async function saveSettingsHub() {
@@ -733,6 +769,9 @@ async function mdbRefreshTableCounts() {
   if (saveS3) saveS3.addEventListener('click', saveSettingsS3);
   const testS3 = document.getElementById('setS3TestBtn');
   if (testS3) testS3.addEventListener('click', testS3Connection);
+  // Worker salvage SSH (サルベージ用)
+  const saveWSsh = document.getElementById('setSaveWorkerSshBtn');
+  if (saveWSsh) saveWSsh.addEventListener('click', saveSettingsWorkerSsh);
   const s3SecToggle = document.getElementById('setS3SecretToggle');
   if (s3SecToggle) s3SecToggle.addEventListener('click', () => {
     const sk = document.getElementById('setS3SecretKey');
@@ -907,8 +946,10 @@ if (_orig_renderHosts_for_url_info) {
 //                (only one button so far: self-restart this hub).
 // State (active sub-tab) persisted to localStorage for refresh survival.
 
+const _WORKERS_SUBTABS = ['workers', 'hubs', 'recovery', 'features'];
+
 function setWorkersSubtab(name) {
-  if (!['workers', 'hubs', 'features'].includes(name)) name = 'workers';
+  if (!_WORKERS_SUBTABS.includes(name)) name = 'workers';
   try { localStorage.setItem('paprika.workersSubtab', name); } catch (_) {}
   document.querySelectorAll('#workersSubtabs .ai-subtab').forEach(t => {
     const on = t.dataset.workersSubtab === name;
@@ -922,6 +963,10 @@ function setWorkersSubtab(name) {
   // operator's on a different sub-tab (or different top-level tab).
   if (name === 'hubs') {
     try { refreshHubsTable(); } catch (_) {}
+  } else if (name === 'recovery') {
+    try { refreshRecoveryTable(); refreshSalvageHistory(); _startRecoveryPoll(); } catch (_) {}
+  } else {
+    try { _stopRecoveryPoll(); } catch (_) {}
   }
 }
 
@@ -932,9 +977,178 @@ function setWorkersSubtab(name) {
   let initial = 'workers';
   try {
     const saved = localStorage.getItem('paprika.workersSubtab');
-    if (saved && ['workers', 'hubs', 'features'].includes(saved)) initial = saved;
+    if (saved && _WORKERS_SUBTABS.includes(saved)) initial = saved;
   } catch (_) {}
   setWorkersSubtab(initial);
+})();
+
+// ---- Recovery sub-tab -----------------------------------------------
+//
+// Fleet-wide recovery / lifecycle events (worker reconnect, orphan
+// reattach, version self-update, restart, errors) aggregated from each
+// worker's in-memory ring buffer via GET /workers/events. Auto-polled
+// while the recovery sub-tab is visible.
+
+let _recoveryPollTimer = null;
+
+function _stopRecoveryPoll() {
+  if (_recoveryPollTimer) { clearInterval(_recoveryPollTimer); _recoveryPollTimer = null; }
+}
+
+function _startRecoveryPoll() {
+  _stopRecoveryPoll();
+  _recoveryPollTimer = setInterval(() => {
+    // Skip if the tab/panel is hidden (don't burn requests).
+    if (document.hidden) return;
+    const active = document.querySelector('.workers-subpane[data-workers-subpane="recovery"]');
+    if (!active || active.style.display === 'none') { _stopRecoveryPoll(); return; }
+    try { refreshRecoveryTable(); } catch (_) {}
+    try { refreshSalvageHistory(); } catch (_) {}
+  }, 10000);
+}
+
+function _fmtRecoveryTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  const HH = String(d.getHours()).padStart(2, '0');
+  const MM = String(d.getMinutes()).padStart(2, '0');
+  const SS = String(d.getSeconds()).padStart(2, '0');
+  const ago = Math.floor((Date.now() / 1000) - ts);
+  const agoStr = ago < 60 ? ago + 's' : ago < 3600 ? Math.floor(ago / 60) + 'm' : Math.floor(ago / 3600) + 'h';
+  return `<span title="${d.toLocaleString()}">${HH}:${MM}:${SS}</span> <small style="color:#888;">(${agoStr})</small>`;
+}
+
+function _recoveryKindBadge(kind) {
+  const colors = {
+    lifecycle: { bg: '#e6f4ff', fg: '#16608f', bd: '#9bf' },
+    warn:      { bg: '#fff3e6', fg: '#a35a00', bd: '#e0b48a' },
+    error:     { bg: '#fee',    fg: '#933',    bd: '#c88' },
+    info:      { bg: '#f5f5fa', fg: '#555',    bd: '#bbc' },
+    job:       { bg: '#ecf7e9', fg: '#196b2c', bd: '#7ab68a' },
+  };
+  const c = colors[kind] || colors.info;
+  return `<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:.78em; font-weight:600; background:${c.bg}; color:${c.fg}; border:1px solid ${c.bd};">${kind}</span>`;
+}
+
+function _esc(s) { return (s == null ? '' : ('' + s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+async function refreshRecoveryTable() {
+  const tbody = document.querySelector('#recoveryTable tbody');
+  if (!tbody) return;
+  const kindSel = document.getElementById('recoveryKindFilter');
+  const sinceSel = document.getElementById('recoverySinceFilter');
+  const workerFilter = (document.getElementById('recoveryWorkerFilter')?.value || '').trim().toLowerCase();
+  const statusEl = document.getElementById('recoveryStatus');
+  const cntBadge = document.getElementById('workersSubtabCntRecovery');
+  const kinds = kindSel?.value || 'lifecycle,warn,error';
+  const since_s = parseInt(sinceSel?.value || '3600', 10);
+  let payload = null;
+  if (statusEl) statusEl.textContent = '取得中…';
+  try {
+    const r = await fetch(`/workers/events?limit=500&kinds=${encodeURIComponent(kinds)}&since_s=${since_s}`);
+    if (r.ok) payload = await r.json();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty" style="padding:20px; text-align:center; color:#a00;">取得失敗: ${_esc(e.message || e)}</td></tr>`;
+    if (statusEl) statusEl.textContent = '';
+    return;
+  }
+  let events = (payload && payload.events) || [];
+  if (workerFilter) {
+    events = events.filter(e => (e.worker_id || '').toLowerCase().includes(workerFilter));
+  }
+  if (cntBadge) cntBadge.textContent = events.length;
+  if (statusEl) {
+    const total = (payload && payload.count) || 0;
+    statusEl.textContent = workerFilter
+      ? `${events.length} 件表示 / 全 ${total} 件`
+      : `${events.length} 件`;
+  }
+  if (!events.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty" style="padding:20px; text-align:center; color:#888;">該当するイベントはありません</td></tr>';
+    return;
+  }
+  const rows = events.map(e => `
+    <tr>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; white-space:nowrap;">${_fmtRecoveryTs(e.ts)}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee;">${_recoveryKindBadge(e.kind || 'info')}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; white-space:nowrap;"><code style="font-size:.85em;">${_esc(e.worker_id)}</code></td>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; font-family:ui-monospace,Consolas,monospace; font-size:.86em; word-break:break-word;">${_esc(e.line)}</td>
+    </tr>
+  `).join('');
+  tbody.innerHTML = rows;
+}
+
+// ---- Durable salvage recovery history (段階4 永続化) -----------------
+//
+// GET /workers/recovery-events -> shared MariaDB recovery_events ledger.
+// Unlike the live ring-buffer table above, this survives hub restarts and
+// is identical on every hub (no per-hub scoping). Rows: one per salvage
+// attempt (success OR failure), recent-first.
+
+function _salvageMethodBadge(m) {
+  const map = {
+    http:       { bg:'#e6f4ff', fg:'#16608f', bd:'#9bf',     t:'HTTP' },
+    ssh:        { bg:'#f0e9ff', fg:'#5a3a8a', bd:'#b9f',     t:'SSH' },
+    'http+ssh': { bg:'#fff3e6', fg:'#a35a00', bd:'#e0b48a',  t:'HTTP+SSH' },
+  };
+  const c = map[m] || { bg:'#f5f5fa', fg:'#555', bd:'#bbc', t:(m || '—') };
+  return `<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:.78em; font-weight:600; background:${c.bg}; color:${c.fg}; border:1px solid ${c.bd};">${c.t}</span>`;
+}
+
+function _salvageResultBadge(r) {
+  const ok = (r === 'ok');
+  const c = ok ? { bg:'#ecf7e9', fg:'#196b2c', bd:'#7ab68a', t:'✓ 成功' }
+               : { bg:'#fee',    fg:'#933',    bd:'#c88',    t:'✗ ' + (r || '失敗') };
+  return `<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:.78em; font-weight:600; background:${c.bg}; color:${c.fg}; border:1px solid ${c.bd};">${c.t}</span>`;
+}
+
+async function refreshSalvageHistory() {
+  const tbody = document.querySelector('#salvageHistoryTable tbody');
+  if (!tbody) return;
+  const cntEl = document.getElementById('salvageHistoryCount');
+  const stEl = document.getElementById('salvageHistoryStatus');
+  let payload = null;
+  try {
+    const r = await fetch('/workers/recovery-events?limit=300');
+    if (r.ok) payload = await r.json();
+  } catch (e) {
+    if (stEl) stEl.textContent = '取得失敗';
+    return;
+  }
+  if (payload && payload.durable === false) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty" style="padding:14px; text-align:center; color:#888;">MariaDB 未設定 — 永続履歴は無効（下のライブイベントのみ）</td></tr>';
+    if (cntEl) cntEl.textContent = '0';
+    if (stEl) stEl.textContent = '';
+    return;
+  }
+  const events = (payload && payload.events) || [];
+  if (cntEl) cntEl.textContent = events.length;
+  if (stEl) stEl.textContent = '';
+  if (!events.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty" style="padding:14px; text-align:center; color:#888;">まだ復旧記録はありません（salvage は既定 OFF）</td></tr>';
+    return;
+  }
+  tbody.innerHTML = events.map(e => `
+    <tr>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; white-space:nowrap;">${_fmtRecoveryTs(e.ts)}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; white-space:nowrap;"><code style="font-size:.85em;">${_esc(e.worker_id)}</code>${e.ip ? ` <small style="color:#999;">${_esc(e.ip)}</small>` : ''}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; white-space:nowrap;">${_salvageMethodBadge(e.method)}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; white-space:nowrap;">${_salvageResultBadge(e.result)}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; white-space:nowrap;"><small style="color:#777;">${_esc(e.hub_id || '—')}</small></td>
+      <td style="padding:4px 8px; border-bottom:1px solid #eee; font-size:.86em; color:#555; word-break:break-word;">${_esc(e.detail || '')}</td>
+    </tr>
+  `).join('');
+}
+
+(function wireRecoveryFilters() {
+  ['recoveryKindFilter', 'recoverySinceFilter', 'recoveryWorkerFilter'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const ev = el.tagName === 'INPUT' ? 'input' : 'change';
+    el.addEventListener(ev, () => { try { refreshRecoveryTable(); } catch (_) {} });
+  });
+  const btn = document.getElementById('recoveryRefreshBtn');
+  if (btn) btn.addEventListener('click', () => { try { refreshRecoveryTable(); refreshSalvageHistory(); } catch (_) {} });
 })();
 
 // ---- Hubs sub-tab ----------------------------------------------------

@@ -134,6 +134,148 @@ class MariaDBJobStore:
                     ),
                 )
 
+    async def save_worker(
+        self,
+        worker_id: str,
+        ip: "str | None" = None,
+        status: "str | None" = None,
+        ssh_user: "str | None" = None,
+        ssh_port: "int | None" = None,
+        ssh_key_ref: "str | None" = None,
+    ) -> None:
+        """Upsert a worker row into the `workers` ledger (台帳). register/heartbeat
+        keep ip/last_seen/status fresh; recovery_* is bumped only by the salvage
+        path (bump_worker_recovery). COALESCE so a plain seen-update never wipes
+        ssh_* set via the settings UI, and recovery_* is left untouched here."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """INSERT INTO workers
+                       (worker_id, ip, ssh_user, ssh_port, ssh_key_ref,
+                        last_seen_at, last_status, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON DUPLICATE KEY UPDATE
+                         ip=COALESCE(VALUES(ip), ip),
+                         ssh_user=COALESCE(VALUES(ssh_user), ssh_user),
+                         ssh_port=COALESCE(VALUES(ssh_port), ssh_port),
+                         ssh_key_ref=COALESCE(VALUES(ssh_key_ref), ssh_key_ref),
+                         last_seen_at=VALUES(last_seen_at),
+                         last_status=VALUES(last_status),
+                         updated_at=VALUES(updated_at)""",
+                    (worker_id, ip, ssh_user, ssh_port, ssh_key_ref,
+                     now, status, now),
+                )
+
+    async def bump_worker_recovery(
+        self, worker_id: str, result: "str | None" = None
+    ) -> None:
+        """Increment recovery_count + stamp last_recovery_* (salvage path, 段階3).
+        Idempotent upsert so it works even if the worker row doesn't exist yet."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """INSERT INTO workers
+                         (worker_id, recovery_count, last_recovery_at,
+                          last_recovery_result, updated_at)
+                       VALUES (%s, 1, %s, %s, %s)
+                       ON DUPLICATE KEY UPDATE
+                         recovery_count = recovery_count + 1,
+                         last_recovery_at = VALUES(last_recovery_at),
+                         last_recovery_result = VALUES(last_recovery_result),
+                         updated_at = VALUES(updated_at)""",
+                    (worker_id, now, result, now),
+                )
+
+    async def record_recovery_event(
+        self, worker_id: str, *, hub_id: str = "", ip: str = "",
+        method: str = "", result: str = "", detail: str = "",
+    ) -> None:
+        """Append one salvage attempt to the durable recovery_events ledger
+        (段階4 永続化). Every hub writes to the shared MariaDB so the history
+        is fleet-wide and survives hub restarts. Best-effort; callers wrap in
+        try/except (store may be in-memory = no such table)."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """INSERT INTO recovery_events
+                         (worker_id, hub_id, ip, method, result, detail, created_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (worker_id, hub_id or None, ip or None, method or None,
+                     result or None, (detail or "")[:255], now),
+                )
+
+    async def get_recovery_events(
+        self, limit: int = 200, since_s: "float | None" = None,
+        worker_id: "str | None" = None,
+    ) -> list:
+        """Recent-first salvage recovery history from the shared ledger. Shape
+        matches the ring-buffer event dicts (ts/worker_id) so the admin
+        recovery subtab can render durable + live rows through one path."""
+        clauses: list = []
+        params: list = []
+        if since_s is not None:
+            from datetime import datetime, timezone
+            cutoff = datetime.fromtimestamp(float(since_s), timezone.utc)
+            clauses.append("created_at >= %s")
+            params.append(cutoff)
+        if worker_id:
+            clauses.append("worker_id = %s")
+            params.append(worker_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        out: list = []
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT worker_id, hub_id, ip, method, result, detail, "
+                    "created_at FROM recovery_events" + where +
+                    " ORDER BY created_at DESC LIMIT %s",
+                    tuple(params),
+                )
+                for row in await cur.fetchall():
+                    out.append({
+                        "worker_id": row[0],
+                        "hub_id": row[1],
+                        "ip": row[2],
+                        "method": row[3],
+                        "result": row[4],
+                        "detail": row[5],
+                        "ts": row[6].timestamp() if row[6] else None,
+                    })
+        return out
+
+    async def get_workers_meta(self) -> dict:
+        """worker_id -> recovery/status meta for the admin Workers tab.
+        Cross-hub via the shared MariaDB ledger (段階1b: /workers exposes this)."""
+        out: dict = {}
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT worker_id, recovery_count, last_recovery_at, "
+                    "last_recovery_result, last_status, last_error, ip, "
+                    "last_seen_at "
+                    "FROM workers"
+                )
+                for row in await cur.fetchall():
+                    out[row[0]] = {
+                        "recovery_count": int(row[1] or 0),
+                        "last_recovery_at": row[2].isoformat() if row[2] else None,
+                        # epoch forms for the salvage loop (ghost age + cooldown)
+                        "last_recovery_epoch": row[2].timestamp() if row[2] else None,
+                        "last_recovery_result": row[3],
+                        "last_status": row[4],
+                        "last_error": row[5],
+                        "ledger_ip": row[6],
+                        "last_seen_epoch": row[7].timestamp() if row[7] else None,
+                    }
+        return out
+
     async def get_job_info(self, job_id: str) -> Any:
         from server.protocol import JobInfo, JobOptions, JobProgress
 

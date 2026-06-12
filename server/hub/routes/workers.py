@@ -582,6 +582,159 @@ async def delete_worker(worker_id: str, request: Request) -> dict:
     return {"worker_id": worker_id, "deleted": True}
 
 
+async def _fetch_peer_events(
+    owner_hub: str, *, limit: int, kinds: str, since_s: float, timeout: float = 4.0,
+) -> list[dict]:
+    """GET a peer hub's LOCAL recovery events for the fleet-wide merge. The
+    existing ``_FWD_MARK`` header makes the peer skip its own fan-out, so
+    there's no recursion -- same pattern as sessions._fetch_peer_sessions.
+    Best-effort: any failure yields [] so one slow peer never breaks merge."""
+    try:
+        import httpx
+        from server.hub.routes.sessions._base import _FWD_MARK, _hub_internal_url
+        headers = {_FWD_MARK: config.hub_id or "1"}
+        if getattr(config, "worker_secret", None):
+            headers["X-Paprika-Worker-Secret"] = config.worker_secret
+        async with httpx.AsyncClient(timeout=timeout) as cli:
+            r = await cli.get(
+                _hub_internal_url(owner_hub, "/workers/events"),
+                params={"limit": limit, "kinds": kinds, "since_s": since_s},
+                headers=headers,
+            )
+            if r.status_code == 200:
+                return (r.json() or {}).get("events") or []
+    except Exception:
+        pass
+    return []
+
+
+@router.get("/workers/recovery-events")
+async def get_recovery_events_route(
+    limit: int = 200,
+    since_s: float = 0.0,
+    worker_id: str = "",
+) -> dict:
+    """Durable, fleet-wide salvage recovery history (段階4 永続化). Backed by
+    the shared MariaDB ``recovery_events`` ledger, so unlike GET
+    /workers/events (in-memory ring buffer, per-hub) this survives hub
+    restarts and reads identically on every hub -- no peer fan-out needed.
+    Returns ``durable: false`` + empty when the store is in-memory (no
+    MariaDB configured). Each event: ``{worker_id, hub_id, ip, method,
+    result, detail, ts}``, recent-first."""
+    store = getattr(state, "store", None)
+    fn = getattr(store, "get_recovery_events", None)
+    if fn is None:
+        return {"count": 0, "events": [], "durable": False}
+    try:
+        evs = await fn(
+            limit=max(1, min(int(limit), 1000)),
+            since_s=(float(since_s) if since_s else None),
+            worker_id=(worker_id or None),
+        )
+    except Exception:
+        return {"count": 0, "events": [], "durable": True, "error": "query failed"}
+    return {"count": len(evs), "events": evs, "durable": True}
+
+
+@router.get("/workers/events")
+async def get_worker_events(
+    request: Request,
+    limit: int = 200,
+    kinds: str = "lifecycle,warn,error",
+    since_s: float = 3600.0,
+) -> dict:
+    """Fleet-wide recent recovery/lifecycle events, aggregated across every
+    worker on this hub.
+
+    Backed by the same per-worker ring buffer ``GET /workers/{id}/logs``
+    surfaces (server/scheduler.py log_event). Each entry is shaped:
+    ``{"ts": <unix>, "kind": str, "line": str, "worker_id": str}``.
+
+    Filters:
+      * ``kinds``    — csv of ``info``/``job``/``warn``/``error``/``lifecycle``
+                       (default = lifecycle+warn+error: "recovery interesting").
+      * ``since_s``  — only events within this many seconds ago.
+      * ``limit``    — cap on returned rows (after kind + since filter).
+
+    Multi-hub note: ring buffers are in-memory on the hub that owns the
+    worker's WS; under nginx round-robin a single GET sees only this hub's
+    workers. The admin UI scopes to whichever hub it hit; for a true
+    fleet-wide view the operator can switch hubs (rare for recovery audit).
+    """
+    if state.registry is None:
+        raise HTTPException(503, "registry not ready")
+    import time as _time
+    allowed = {k.strip() for k in (kinds or "").split(",") if k.strip()}
+    cutoff = _time.time() - max(0.0, float(since_s)) if since_s else 0.0
+    out: list[dict] = []
+    # Iterate the registry's per-worker buffers directly; get_logs() returns
+    # a list copy per worker which would O(N*M) us up to 60w * 200 entries.
+    try:
+        logs_map = getattr(state.registry, "_worker_logs", {}) or {}
+    except Exception:
+        logs_map = {}
+    for wid, buf in logs_map.items():
+        if not wid or buf is None:
+            continue
+        for ev in list(buf):
+            if not isinstance(ev, dict):
+                continue
+            k = ev.get("kind") or "info"
+            ts = float(ev.get("ts") or 0.0)
+            if allowed and k not in allowed:
+                continue
+            if cutoff and ts < cutoff:
+                continue
+            out.append({
+                "worker_id": wid,
+                "ts": ts,
+                "kind": k,
+                "line": ev.get("line") or "",
+            })
+    # Fleet-wide fan-out: unless this call is already a forwarded hop (the
+    # peer's recursion guard), query every live peer hub for its local-buffer
+    # slice and merge. Same pattern as sessions.list_sessions; the _FWD_MARK
+    # header keeps peers from re-fanning. Best-effort: a slow peer just
+    # contributes nothing.
+    try:
+        from server.hub.routes.sessions._base import _FWD_MARK
+        _is_forwarded = bool(request.headers.get(_FWD_MARK))
+    except Exception:
+        _is_forwarded = False
+    if not _is_forwarded and state.hubs is not None:
+        import asyncio as _asyncio
+        try:
+            hubs = await state.hubs.list_all()
+        except Exception:
+            hubs = []
+        peers = [
+            h.get("hub_id")
+            for h in hubs
+            if h.get("alive") and h.get("hub_id") and h.get("hub_id") != config.hub_id
+        ]
+        if peers:
+            results = await _asyncio.gather(
+                *[
+                    _fetch_peer_events(hid, limit=limit, kinds=kinds, since_s=since_s)
+                    for hid in peers
+                ],
+                return_exceptions=True,
+            )
+            seen_keys = {(e.get("worker_id"), e.get("ts"), e.get("line")) for e in out}
+            for res in results:
+                if not isinstance(res, list):
+                    continue
+                for ev in res:
+                    k = (ev.get("worker_id"), ev.get("ts"), ev.get("line"))
+                    if k not in seen_keys:
+                        seen_keys.add(k)
+                        out.append(ev)
+    out.sort(key=lambda e: (e.get("ts") or 0.0), reverse=True)
+    if limit > 0:
+        out = out[:limit]
+    return {"count": len(out), "events": out, "kinds": sorted(allowed)}
+
+
 @router.get("/workers/{worker_id}/logs")
 async def get_worker_logs(worker_id: str, request: Request, limit: int = 200) -> dict:
     """Recent hub-side activity log for one worker.

@@ -1047,15 +1047,18 @@ asyncio.run(main())"
 </div>
 
 <div class="panel" data-panel="workers">
-  <section>
     <!-- Workers panel sub-tabs: Worker / Hub / Feature.
          * Workers — the per-worker control-plane table (existing UI)
          * Hubs    — multi-hub presence (Redis-backed heartbeat,
                      populated by HubRegistry; offline hubs stay
                      visible with last_seen)
          * 機能    — admin operations that used to live in deploy.sh
-                     (currently: self-restart this hub). -->
-    <div id="workersSubtabs" class="ai-subtabs" role="tablist" style="margin-bottom:10px;">
+                     (currently: self-restart this hub).
+         Note: no outer ``<section>`` wrapper here -- it would draw a
+         white card AROUND the sub-tabs (gives them an unwanted box
+         frame). Same shape as #submit: tabs render flush against the
+         panel, and each ``.workers-subpane`` is the white card. -->
+    <div id="workersSubtabs" class="ai-subtabs" role="tablist" style="margin-bottom:0;">
       <button type="button" class="ai-subtab active" data-workers-subtab="workers" role="tab" aria-selected="true">
         <iconify-icon icon="lucide:cpu"></iconify-icon>
         <span data-i18n="workers.subtab.workers">ワーカー</span>
@@ -1065,6 +1068,11 @@ asyncio.run(main())"
         <iconify-icon icon="lucide:server"></iconify-icon>
         <span data-i18n="workers.subtab.hubs">ハブ</span>
         <span class="count" id="workersSubtabCntHubs">0</span>
+      </button>
+      <button type="button" class="ai-subtab" data-workers-subtab="recovery" role="tab" aria-selected="false">
+        <iconify-icon icon="lucide:life-buoy"></iconify-icon>
+        <span data-i18n="workers.subtab.recovery">リカバリー</span>
+        <span class="count" id="workersSubtabCntRecovery">0</span>
       </button>
       <button type="button" class="ai-subtab" data-workers-subtab="features" role="tab" aria-selected="false">
         <iconify-icon icon="lucide:settings-2"></iconify-icon>
@@ -1120,6 +1128,83 @@ asyncio.run(main())"
       </thead><tbody><tr><td colspan=6 class="empty" data-i18n="hubs.empty">no hubs registered</td></tr></tbody></table>
     </div>
 
+    <!-- Recovery sub-pane: fleet-wide recovery/lifecycle events.
+         Aggregates the per-worker ring buffer (server/scheduler.py
+         log_event) into a single recent-first table so the operator
+         can see "what just recovered" without opening individual
+         workers' "..." menus. Backed by GET /workers/events. -->
+    <div class="workers-subpane" data-workers-subpane="recovery" style="display:none;">
+      <h2 style="margin-top:0;"><iconify-icon icon="lucide:life-buoy"></iconify-icon> <span data-i18n="recovery.heading">リカバリー</span></h2>
+
+      <!-- 永続: サルベージ復旧履歴 (MariaDB recovery_events・全ハブ共通・段階4) -->
+      <h3 style="margin:6px 0 6px; font-size:1em; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <iconify-icon icon="lucide:wrench"></iconify-icon> サルベージ復旧履歴
+        <span style="font-size:.72em; color:#888; font-weight:normal;">自動復旧の永続ログ（MariaDB・全ハブ共通・ハブ再起動でも残る）</span>
+        <span id="salvageHistoryCount" class="count" style="margin-left:6px;">0</span>
+        <span id="salvageHistoryStatus" style="font-size:.72em; color:#aaa; font-weight:normal;"></span>
+      </h3>
+      <div style="overflow:auto; max-height:240px; border:1px solid #e0ddd8; border-radius:6px; margin-bottom:18px;">
+        <table id="salvageHistoryTable" style="width:100%; border-collapse:collapse; font-size:.86em;">
+          <thead style="position:sticky; top:0; background:#f5f5f5; z-index:1;">
+            <tr>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0; white-space:nowrap;">時刻</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0; white-space:nowrap;">ワーカー</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0; white-space:nowrap;">方法</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0; white-space:nowrap;">結果</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0; white-space:nowrap;">ハブ</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0;">詳細</th>
+            </tr>
+          </thead>
+          <tbody><tr><td colspan="6" class="empty" style="padding:14px; text-align:center; color:#888;">—</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- ライブ: per-hub ring-buffer events -->
+      <h3 style="margin:0 0 6px; font-size:1em; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <iconify-icon icon="lucide:activity"></iconify-icon> 最近のイベント（ライブ）
+        <span style="font-size:.72em; color:#888; font-weight:normal;">lifecycle / warn / error を横断表示（このハブが知る範囲・10秒ごと自動更新）</span>
+      </h3>
+      <div style="display:flex; align-items:center; gap:10px; margin:6px 0 10px; flex-wrap:wrap; font-size:.88em;">
+        <label style="display:flex; align-items:center; gap:4px;">
+          種別:
+          <select id="recoveryKindFilter" style="padding:3px 6px;">
+            <option value="lifecycle,warn,error">lifecycle + warn + error</option>
+            <option value="lifecycle">lifecycle のみ</option>
+            <option value="warn,error">warn + error のみ</option>
+            <option value="info,job,lifecycle,warn,error">すべて</option>
+          </select>
+        </label>
+        <label style="display:flex; align-items:center; gap:4px;">
+          時間範囲:
+          <select id="recoverySinceFilter" style="padding:3px 6px;">
+            <option value="600">過去 10分</option>
+            <option value="3600" selected>過去 1時間</option>
+            <option value="21600">過去 6時間</option>
+            <option value="86400">過去 24時間</option>
+          </select>
+        </label>
+        <label style="display:flex; align-items:center; gap:4px;">
+          ワーカー:
+          <input type="text" id="recoveryWorkerFilter" placeholder="worker_id を絞り込み (空 = 全部)" style="padding:3px 6px; width:200px;">
+        </label>
+        <button id="recoveryRefreshBtn" class="pill" style="--la-bg:#f5f5fa; --la-bd:#bbc; --la-fg:#444; font-size:.82em;"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> 再取得</button>
+        <span id="recoveryStatus" style="color:#888;"></span>
+      </div>
+      <div style="overflow:auto; max-height:calc(100vh - 360px);">
+        <table id="recoveryTable" style="width:100%; border-collapse:collapse; font-size:.88em;">
+          <thead style="position:sticky; top:0; background:#f5f5f5; z-index:1;">
+            <tr>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0; white-space:nowrap;">時刻</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0; white-space:nowrap;">種別</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0; white-space:nowrap;">ワーカー</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #d0d0d0;">内容</th>
+            </tr>
+          </thead>
+          <tbody><tr><td colspan="4" class="empty" style="padding:20px; text-align:center; color:#888;">loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Feature sub-pane: GUI for admin operations that used to need
          SSH + deploy.sh. Currently: self-restart the running hub
          (process exits 42, docker restart policy brings it back up
@@ -1151,28 +1236,20 @@ asyncio.run(main())"
         </div>
       </div>
     </div>
-  </section>
 </div>
 
 <div class="panel" data-panel="jobs">
-  <section>
-    <h2><span data-i18n="tab.jobs">Recent jobs</span>
-      <span class="hctrl flat-actions">
-        <span class="menu-wrap" style="display:inline-block; position:relative;">
-          <button id="jobsColsBtn" class="pill" style="--la-bg:#eef0ff; --la-bd:#6a8ec7; --la-fg:#3a5ca8;" title="表示する列を選ぶ"><iconify-icon icon="lucide:columns-3"></iconify-icon> <span data-i18n="jobs.cols">columns</span> <span class="caret">▾</span></button>
-          <div id="jobsColsMenu" class="menu" style="min-width:180px;"></div>
-        </span>
-        <button id="bulkCleanup" class="pill" style="--la-bg:#fff5e6; --la-bd:#e0a060; --la-fg:#7a4500;" title="Delete old completed jobs (kept last 10 always)"><iconify-icon icon="lucide:eraser"></iconify-icon> <span data-i18n="jobs.cleanup">cleanup old…</span></button>
-        <button id="bulkDelete" class="pill" style="--la-bg:#fee; --la-bd:#c88; --la-fg:#933;"><iconify-icon icon="lucide:trash-2"></iconify-icon> <span data-i18n="jobs.deleteall">delete all</span></button>
-      </span>
-    </h2>
     <!-- W: Status filter tabs (全部 / 成功 / エラー / 実行中).
          Designed to match the Submit form's ai-subtabs visual language.
          Filter is client-side: refresh() always loads the full job list
          (the API doesn't need a status query because the list is small
          and operator wants instant tab switching). State persists across
-         refreshes via _jobsStatusFilter module var; reset = "all". -->
-    <div id="jobsStatusTabs" class="ai-subtabs" role="tablist" style="margin-bottom:10px;">
+         refreshes via _jobsStatusFilter module var; reset = "all".
+         No outer ``<section>`` wrapper here -- the section's white-card
+         shadow framed the sub-tabs in an unwanted outer box (same fix
+         as the Workers panel). The ``.jobs-subpane`` below provides the
+         single white card the tabs visually merge into. -->
+    <div id="jobsStatusTabs" class="ai-subtabs" role="tablist" style="margin-bottom:0;">
       <button type="button" class="ai-subtab active" data-jobs-status="all" role="tab" aria-selected="true">
         <iconify-icon icon="lucide:list"></iconify-icon>
         <span data-i18n="jobs.tab.all">全部</span>
@@ -1200,15 +1277,26 @@ asyncio.run(main())"
         <span class="count" id="jobsCntReview">0</span>
       </button>
     </div>
+    <div class="jobs-subpane">
+    <h2 style="margin-top:0;"><span data-i18n="tab.jobs">Recent jobs</span>
+      <span class="hctrl flat-actions">
+        <span class="menu-wrap" style="display:inline-block; position:relative;">
+          <button id="jobsColsBtn" class="pill" style="--la-bg:#eef0ff; --la-bd:#6a8ec7; --la-fg:#3a5ca8;" title="表示する列を選ぶ"><iconify-icon icon="lucide:columns-3"></iconify-icon> <span data-i18n="jobs.cols">columns</span> <span class="caret">▾</span></button>
+          <div id="jobsColsMenu" class="menu" style="min-width:180px;"></div>
+        </span>
+        <button id="bulkCleanup" class="pill" style="--la-bg:#fff5e6; --la-bd:#e0a060; --la-fg:#7a4500;" title="Delete old completed jobs (kept last 10 always)"><iconify-icon icon="lucide:eraser"></iconify-icon> <span data-i18n="jobs.cleanup">cleanup old…</span></button>
+        <button id="bulkDelete" class="pill" style="--la-bg:#fee; --la-bd:#c88; --la-fg:#933;"><iconify-icon icon="lucide:trash-2"></iconify-icon> <span data-i18n="jobs.deleteall">delete all</span></button>
+      </span>
+    </h2>
     <table id="jobsTable"><thead>
-      <tr><th data-col="id" data-i18n="jobs.th.id">id</th><th data-col="mode" data-i18n="jobs.th.mode">mode</th><th data-col="status" data-i18n="jobs.th.status">status</th><th data-col="url">URL</th><th data-col="worker" data-i18n="jobs.th.worker">worker/lane</th><th data-col="started" data-i18n="jobs.th.started">started</th><th data-col="ended" data-i18n="jobs.th.ended">ended</th><th data-col="duration" data-i18n="jobs.th.duration">duration</th><th data-col="actions" data-i18n="jobs.th.actions">actions</th></tr>
+      <tr><th data-col="id" data-i18n="jobs.th.id">id</th><th data-col="mode" data-i18n="jobs.th.mode">mode</th><th data-col="status" data-i18n="jobs.th.status">status</th><th data-col="url">URL</th><th data-col="role" title="URL 構造とホスト統計から推定したページ種別 (詳細 / 一覧 / トップ / エラー / 不明)">種類</th><th data-col="worker" data-i18n="jobs.th.worker">worker/lane</th><th data-col="started" data-i18n="jobs.th.started">started</th><th data-col="ended" data-i18n="jobs.th.ended">ended</th><th data-col="duration" data-i18n="jobs.th.duration">duration</th><th data-col="actions" data-i18n="jobs.th.actions">actions</th></tr>
     </thead><tbody><tr><td colspan=9 class="empty loading-row" data-i18n="jobs.loading">Loading…</td></tr></tbody></table>
     <!-- Recent-jobs client-side pager. Rebuilt by admin.js after each
          refresh() tick so total / range / button-enabled state track
          the live data. Page size is operator-set via the select on
          the right, persisted in localStorage. -->
     <div id="jobsPager" style="margin-top:10px; display:flex; gap:8px; align-items:center; font-size:.88em;"></div>
-  </section>
+    </div>
 </div>
 
 <div class="panel" data-panel="sessions">
@@ -2107,42 +2195,6 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
      ============================================================ -->
 <!-- AI self-improvement loop (skills / conventions / …) -->
 <div class="panel" data-panel="ai">
-  <section style="padding-top:4px;">
-    <h2 style="margin:0 0 10px;"><iconify-icon icon="lucide:sparkles"></iconify-icon> AI 学習ループ
-      <span style="font-size:0.58em; color:#888; font-weight:normal; margin-left:8px;">
-        codegen-loop が学習した横断パターン。<code>success_rate = success / use</code> ＝ 実ジョブでの成功寄与（選別シグナル）。
-      </span>
-    </h2>
-    <!-- Live R1 / distiller activity ribbon. Polls /host_knowledge every
-         15s, surfaces the 5 most recent provenance.last_updated_at
-         entries written by distiller-r1 (the "brain") so the operator
-         sees what the AI just learned without having to dig into the
-         table. Updates are color-coded by recency (fresh = green pulse).
-         -->
-    <div id="aiTicker" class="ai-ticker" style="margin:6px 0 12px;">
-      <div class="ai-ticker-label">
-        <iconify-icon icon="lucide:radio-tower" style="vertical-align:middle;"></iconify-icon>
-        <span style="margin-left:6px;" data-i18n="ai.ticker.label">最新の 推論 AI 学習</span>
-        <!-- GPU gauge: ぱっぷす環境では Qwen-VL 自前 GPU (RTX 6000) が
-             24 ライン共有のボトルネック。active/peak がリアルタイムで
-             見えると sampling rate を絞るべきかが分かる。 -->
-        <span class="ai-gpu-gauge" id="aiGpuGauge" data-i18n-title="ai.gpu.title" title="hub-side ビジョン LLM の同時推論数 / ピーク / 累計" style="margin-left:14px; font-size:0.85em; color:#888;">
-          <iconify-icon icon="lucide:cpu" style="vertical-align:middle;"></iconify-icon>
-          <span id="aiGpuGaugeText">GPU: idle</span>
-        </span>
-        <!-- Reasoning AI badge: PAPRIKA_R1_DISTILLER_ENGINE が実際に
-             どのエンジン (deepseek-r1 / chatgpt51 / claude …) を指している
-             かを表示。「R1」が固有名詞ではなくバックエンドの slug を
-             指していることが operator に分かる。 -->
-        <span class="ai-reasoning-chip" id="aiReasoningChip" data-i18n-title="ai.reason.title" title="現在の推論 AI バックエンド (PAPRIKA_R1_DISTILLER_ENGINE)" style="margin-left:10px; font-size:0.85em; color:#888;">
-          <iconify-icon icon="lucide:brain-circuit" style="vertical-align:middle;"></iconify-icon>
-          <span id="aiReasoningChipText" data-i18n="ai.reason.loading">推論 AI: 読込中…</span>
-        </span>
-      </div>
-      <div class="ai-ticker-rail" id="aiTickerRail">
-        <span class="ai-ticker-empty" data-i18n="ai.ticker.loading">読み込み中…</span>
-      </div>
-    </div>
     <div class="ai-subtabs" role="tablist">
       <button type="button" class="ai-subtab active" data-ai-subtab="live" role="tab" aria-selected="true"><iconify-icon icon="lucide:activity"></iconify-icon> <span data-i18n="ai.subtab.live">稼働中</span></button>
       <button type="button" class="ai-subtab" data-ai-subtab="roles" role="tab" aria-selected="false"><iconify-icon icon="lucide:sliders-horizontal"></iconify-icon> <span data-i18n="ai.subtab.roles">役割</span></button>
@@ -2349,7 +2401,6 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
       </table>
       <div class="ai-pager" id="pager-oracle"></div>
     </div>
-  </section>
 </div>
 
 <!-- HostKnowledge detail modal -->
@@ -2406,6 +2457,14 @@ table.aitbl code { font-size:0.95em; }
 .aibtn:hover { background:#eef4fa; }
 .aibtn.del { color:#933; border-color:#e8b4b0; }
 .aibtn.del:hover { background:#fdecea; }
+/* /jobs テーブル「種類」列のバッジ (URL 構造ベースの page_role) */
+.role-pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:0.78em; font-weight:600; border:1px solid; line-height:1.5; white-space:nowrap; }
+.role-pill.role-detail   { background:#e0f5ed; color:#147a5a; border-color:#7cc4a8; }
+.role-pill.role-listing  { background:#ece6f8; color:#5b3aa6; border-color:#b6a3df; }
+.role-pill.role-top      { background:#e1eaf4; color:#1a5a8a; border-color:#90b6d8; }
+.role-pill.role-error    { background:#fff3f0; color:#a23c2a; border-color:#e0a99a; }
+.role-pill.role-unknown  { background:#f0f0f3; color:#778;    border-color:#cdd; font-weight:500; }
+.role-pill.role-muted    { opacity:0.55; font-style:italic; }
 /* 役割パネル: custom-arrow の select + iOS風 segmented toggle (premium) */
 .ro-sel { -webkit-appearance:none; appearance:none; padding:4px 26px 4px 12px; height:28px; border:1px solid #dcdfe6; border-radius:8px; background:#fff url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2.5 4L5 6.5L7.5 4' stroke='%237a8292' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 9px center; font-size:0.82em; font-weight:500; color:#2c3340; cursor:pointer; line-height:1.4; box-shadow:0 1px 0 rgba(15,20,28,.02); transition:border-color .15s ease, box-shadow .15s ease, background-color .15s ease; }
 .ro-sel:hover { border-color:#b2b9c5; background-color:#fbfcfe; }
@@ -3006,6 +3065,37 @@ table.aitbl code { font-size:0.95em; }
       </div>
     </div>
     </div><!-- /.settings-card S3 -->
+
+    <!-- B9. Worker salvage: SSH fallback (server/hub/_salvage.py) -->
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:life-buoy"></iconify-icon> ワーカー自動復旧 SSH (サルベージ用)
+      <small>ゴーストワーカーを SSH で再起動するための接続情報</small>
+    </h3>
+    <p style="margin:4px 0 8px; color:#666; font-size:.88em;">
+      各ハブが応答しないワーカー (ゴースト) を検出したとき、まず HTTP self-restart を試み、
+      ダメなら以下の SSH 情報で <code>docker restart</code> します。鍵パスは<strong>ハブコンテナ内</strong>のパスです。
+      鍵未設定なら SSH フォールバックは無効 (HTTP self-restart のみ)。
+      <code>PAPRIKA_WORKER_SSH_*</code> 環境変数があればそれを既定値に使用。
+      自動復旧ループ自体の有効化は <code>PAPRIKA_SALVAGE_ENABLE=1</code> (既定 OFF)。
+    </p>
+
+    <div style="display:grid; grid-template-columns: 200px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
+      <label for="setWorkerSshUser" title="SSH ログインユーザー">SSH ユーザー:</label>
+      <div><input type="text" id="setWorkerSshUser" placeholder="root" style="width:240px; padding:4px 8px;" autocomplete="off"></div>
+
+      <label for="setWorkerSshPort" title="SSH ポート (既定 22)">SSH ポート:</label>
+      <div><input type="number" id="setWorkerSshPort" placeholder="22" min="1" max="65535" style="width:120px; padding:4px 8px;"></div>
+
+      <label for="setWorkerSshKeyPath" title="ハブコンテナ内の秘密鍵パス。空ならSSHフォールバック無効">秘密鍵パス:</label>
+      <div><input type="text" id="setWorkerSshKeyPath" placeholder="例: /run/secrets/worker_salvage_key" style="width:320px; padding:4px 8px;" autocomplete="off"></div>
+
+      <div></div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+        <button id="setSaveWorkerSshBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> SSH 設定を保存</button>
+        <span id="setWorkerSshStatus" style="font-size:.9em; margin-left:4px;"></span>
+      </div>
+    </div>
+    </div><!-- /.settings-card Worker SSH -->
 
     </div><!-- /.settings-subpane storage -->
 

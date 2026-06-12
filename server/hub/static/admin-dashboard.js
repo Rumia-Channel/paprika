@@ -515,6 +515,13 @@ async function refresh() {
     let jobList = [];
     if (jobsTabActive) {
       jobList = Array.isArray(jobs) ? jobs : (jobs.jobs || []);
+      // Merge URL-based page-role (detail / listing / top / error / unknown)
+      // from the /jobs envelope's `page_roles` map onto each row so the
+      // table renderer can show a 種類 badge without an extra request.
+      const _pr = (jobs && jobs.page_roles) || {};
+      jobList.forEach(j => {
+        if (j && j.job_id && _pr[j.job_id]) j.page_role = _pr[j.job_id];
+      });
     } else if (_tab === 'screens') {
       try {
         const rj = await _refreshJson('/jobs?status=running&limit=1000', { jobs: [] });
@@ -602,7 +609,7 @@ async function refresh() {
           didStructuralUpdate = true;
         }
       } else if (_jobsLastSig !== '__empty__') {
-        jtbody.innerHTML = '<tr><td colspan=10 class="empty" data-i18n="jobs.empty">'
+        jtbody.innerHTML = '<tr><td colspan=11 class="empty" data-i18n="jobs.empty">'
           + _tr('jobs.empty', 'no jobs yet') + '</td></tr>';
         _jobsLastSig = '__empty__';
         didStructuralUpdate = true;
@@ -672,6 +679,7 @@ async function refresh() {
           <td data-col="mode"><span class="badge">${modeLabel}</span></td>
           <td data-col="status"><span class="badge ${esc(j.status)}"${j.status === 'review' ? ` title="${esc((j.progress && j.progress.last_log) || '課題: ログイン/年齢確認/同意などの全面オーバーレイでコンテンツが取得できていない可能性')}"` : ''}>${esc(_JOB_STATUS_LABEL[j.status] || j.status)}</span>${j.status === 'review' ? `<button class="pill" style="margin-left:6px; padding:1px 8px; font-size:.78em; --la-bg:#fff3f0; --la-bd:#e0a99a; --la-fg:#a23c2a;" onclick="excludeHostAndResolve('${jid}','${encodeURIComponent(j.url||'')}',this)" title="このサイト(host)を対象外に登録し、このジョブを課題から外して completed にします（cookie 保持）"><iconify-icon icon="lucide:ban"></iconify-icon> 対象外</button>` : ''}</td>
           <td data-col="url" class="url" title="${esc(j.url)}"><a href="${esc(j.url)}" target="_blank">${esc(j.url)}</a></td>
+          <td data-col="role">${_jobRoleBadge(j.page_role)}</td>
           <td data-col="worker">${j.worker_id ? `<code>${esc(j.worker_id)}</code>${canAttach ? ` <small>#${laneIdx}</small>` : ''}` : '<span class="empty">—</span>'}</td>
           <td data-col="started">${startedCell}</td>
           <td data-col="ended">${endedCell}</td>
@@ -757,6 +765,21 @@ let _jobsStatusFilter = 'all';
 // Status badge labels. Most statuses show their raw value; ``review`` shows
 // the friendlier 課題 (its CSS class stays `review`, see .badge.review).
 const _JOB_STATUS_LABEL = { review: '課題' };
+
+// Page-role badge for the /jobs table 種類 column. Renders the URL-based
+// classification (server/hub/_page_role.role_for_url -> `/jobs` envelope's
+// page_roles map). Low-confidence (< 0.5) results render muted so a guess
+// reads visibly weaker than a confirmed `detail (video evidence)`.
+const _JOB_ROLE_LABEL = { detail: '詳細', listing: '一覧', top: 'トップ', error: 'エラー', unknown: '不明' };
+function _jobRoleBadge(role) {
+  if (!role || !role.value) return '<span class="role-pill role-unknown" title="未分類">—</span>';
+  const v = role.value;
+  const conf = +role.confidence || 0;
+  const lbl = _JOB_ROLE_LABEL[v] || v;
+  const muted = conf < 0.5 ? ' role-muted' : '';
+  const title = `${v} · conf ${conf.toFixed(2)} · ${esc(role.reason || '')}`;
+  return `<span class="role-pill role-${esc(v)}${muted}" title="${esc(title)}">${esc(lbl)}</span>`;
+}
 
 // 課題(review) 行の「対象外」ボタン: そのジョブの host を 対象外(excluded) に
 // 登録し (将来の fetch は 課題判定も AI エスカレーションもスキップ)、さらに

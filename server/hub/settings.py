@@ -233,6 +233,16 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # を使わない設計 (Xvfb 仮想 display + lane VNC で見るので) なの
     # で、この knob は実質 Windows portable 専用。
     "worker_chrome_headless": (False, "bool"),
+    # ---- Worker salvage: SSH fallback -----------------------------------
+    # Per-hub auto-salvage (server/hub/_salvage.py) restarts a ghost worker
+    # via its HTTP self-restart endpoint, falling back to SSH + `docker
+    # restart`. These define the SSH login used for that fallback
+    # (key_path is a path inside the hub container, e.g. /run/secrets/...).
+    # Empty key_path = SSH fallback off (HTTP self-restart only). Each
+    # falls back to the matching PAPRIKA_WORKER_SSH_* env var.
+    "worker_ssh_user": ("root", "str"),
+    "worker_ssh_port": (22, "int"),
+    "worker_ssh_key_path": ("", "str"),
 }
 
 
@@ -275,6 +285,10 @@ def _env_default(key: str, fallback: Any) -> Any:
         "s3_access_key": ("PAPRIKA_S3_ACCESS_KEY", "str"),
         "s3_secret_key": ("PAPRIKA_S3_SECRET_KEY", "str"),
         "s3_region": ("PAPRIKA_S3_REGION", "str"),
+        # Worker salvage SSH: settings.json -> env vars -> static default.
+        "worker_ssh_user": ("PAPRIKA_WORKER_SSH_USER", "str"),
+        "worker_ssh_port": ("PAPRIKA_WORKER_SSH_PORT", "int"),
+        "worker_ssh_key_path": ("PAPRIKA_WORKER_SSH_KEY", "str"),
     }
     info = env_map.get(key)
     if not info:
