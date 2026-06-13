@@ -93,6 +93,40 @@ def _materialize_key(pem: str) -> str:
         return ""
 
 
+_ssh_client_ready: "bool | None" = None
+
+
+async def _ensure_ssh_client() -> bool:
+    """Ensure an `ssh` binary exists in the hub container. The hub image ships
+    WITHOUT one (debian base, but apt-get IS present), so install openssh-client
+    on first SSH-salvage need -- no Dockerfile rebuild required, and it re-runs
+    automatically after a hub restart (image has no ssh until first arm+SSH).
+    Cached: attempts the apt install at most once per process. Returns True iff
+    ssh is available afterwards."""
+    global _ssh_client_ready
+    import shutil
+    if shutil.which("ssh"):
+        _ssh_client_ready = True
+        return True
+    if _ssh_client_ready is False:
+        return False  # already tried + failed this process; don't re-spam apt
+    try:
+        log.info("salvage: ssh client missing -- installing openssh-client (one-time)")
+        proc = await asyncio.create_subprocess_exec(
+            "sh", "-c",
+            "apt-get update -qq && DEBIAN_FRONTEND=noninteractive "
+            "apt-get install -y -qq openssh-client",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=180)
+    except Exception:
+        log.warning("salvage: openssh-client auto-install failed", exc_info=True)
+    ok = shutil.which("ssh") is not None
+    _ssh_client_ready = ok
+    log.info("salvage: ssh client %s", "ready" if ok else "UNAVAILABLE (SSH salvage disabled)")
+    return ok
+
+
 def _ssh_conf() -> tuple[str, str, str]:
     """(user, port, key_path): settings (設定タブ) first, then .env, then default."""
     def g(skey: str, env: str, dflt: str) -> str:
@@ -135,6 +169,10 @@ async def _ssh_restart(ip: str, user: str, port: str, key: str) -> bool:
     """SSH ``docker restart paprika-worker-1``. Needs an ssh client + key on the
     hub (operator infra). Returns True iff rc 0; no-op (False) without a key."""
     if not key:
+        return False
+    # Hub image has no ssh client by default -- auto-install on first use so SSH
+    # salvage works without a Dockerfile rebuild.
+    if not await _ensure_ssh_client():
         return False
     cmd = [
         "ssh", "-i", key, "-p", str(port),
