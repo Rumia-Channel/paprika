@@ -170,10 +170,16 @@ async function loadSettingsPanel() {
       _updateS3StatusBanner(d.s3_status || {});
 
       // ---- Worker salvage SSH ----
+      const _slvEn = document.getElementById('setSalvageEnabled');
+      if (_slvEn) _slvEn.checked = !!hub.salvage_enabled;
       _setVal('setWorkerSshUser', hub.worker_ssh_user || 'root');
       const _wsPort = document.getElementById('setWorkerSshPort');
       if (_wsPort) _wsPort.value = hub.worker_ssh_port || 22;
       _setVal('setWorkerSshKeyPath', hub.worker_ssh_key_path);
+      const _wsKeyState = document.getElementById('setWorkerSshKeyState');
+      if (_wsKeyState) _wsKeyState.textContent = _secretsSet.worker_ssh_key_pem
+        ? '✓ 鍵アップロード済み（変更時のみ再アップロード）'
+        : '（未アップロード）';
 
       const sys = d.system || {};
       const tbody = document.getElementById('setSystemInfoBody');
@@ -229,6 +235,7 @@ async function saveSettingsWorkerSsh() {
   const stEl = document.getElementById('setWorkerSshStatus');
   if (stEl) { stEl.textContent = ''; stEl.style.color = ''; }
   const body = {
+    salvage_enabled: !!document.getElementById('setSalvageEnabled')?.checked,
     worker_ssh_user: (document.getElementById('setWorkerSshUser').value || '').trim() || 'root',
     worker_ssh_port: parseInt(document.getElementById('setWorkerSshPort').value, 10) || 22,
     worker_ssh_key_path: (document.getElementById('setWorkerSshKeyPath').value || '').trim(),
@@ -248,6 +255,44 @@ async function saveSettingsWorkerSsh() {
     flashSavedHint();
   } catch (e) {
     if (stEl) { stEl.textContent = '保存失敗: ' + (e.message || e); stEl.style.color = '#c0392b'; }
+  }
+}
+
+// Upload an SSH private key PEM and store it (secret) in settings ->
+// worker_ssh_key_pem. Shared cross-hub via settings write-through; each hub
+// materialises it to a local 0600 file (server/hub/_salvage._materialize_key)
+// so SSH salvage works fleet-wide from a single upload.
+async function uploadWorkerSshKey(file) {
+  const stEl = document.getElementById('setWorkerSshStatus');
+  const keyStateEl = document.getElementById('setWorkerSshKeyState');
+  if (!file) return;
+  let pem;
+  try {
+    pem = await file.text();
+  } catch (e) {
+    if (stEl) { stEl.textContent = '鍵読込失敗: ' + (e.message || e); stEl.style.color = '#c0392b'; }
+    return;
+  }
+  if (!pem || pem.indexOf('PRIVATE KEY') === -1) {
+    if (stEl) { stEl.textContent = '鍵が PEM 形式ではないようです（PRIVATE KEY が見つからない）'; stEl.style.color = '#c0392b'; }
+    return;
+  }
+  try {
+    const r = await fetch(SETTINGS_URL, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ worker_ssh_key_pem: pem }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      if (stEl) { stEl.textContent = '鍵アップロード失敗: ' + t.slice(0, 120); stEl.style.color = '#c0392b'; }
+      return;
+    }
+    if (stEl) { stEl.textContent = '✓ 鍵をアップロード（全ハブへ伝播）'; stEl.style.color = '#196b2c'; }
+    if (keyStateEl) keyStateEl.textContent = '✓ 鍵アップロード済み（変更時のみ再アップロード）';
+    flashSavedHint();
+  } catch (e) {
+    if (stEl) { stEl.textContent = '鍵アップロード失敗: ' + (e.message || e); stEl.style.color = '#c0392b'; }
   }
 }
 
@@ -772,6 +817,11 @@ async function mdbRefreshTableCounts() {
   // Worker salvage SSH (サルベージ用)
   const saveWSsh = document.getElementById('setSaveWorkerSshBtn');
   if (saveWSsh) saveWSsh.addEventListener('click', saveSettingsWorkerSsh);
+  const wsKeyFile = document.getElementById('setWorkerSshKeyFile');
+  if (wsKeyFile) wsKeyFile.addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) uploadWorkerSshKey(f);
+  });
   const s3SecToggle = document.getElementById('setS3SecretToggle');
   if (s3SecToggle) s3SecToggle.addEventListener('click', () => {
     const sk = document.getElementById('setS3SecretKey');

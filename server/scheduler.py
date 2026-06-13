@@ -1153,30 +1153,41 @@ class WorkerRegistry:
         # Defensive ceiling: _fetch_known_workers is now pipelined (~1 RTT),
         # but if redis itself stalls we must NOT hang the /overview admin poll
         # (called every ~2s). Cap the wait at 1.5s.
-        try:
-            extra = await asyncio.wait_for(
-                self._fetch_known_workers(seen), timeout=1.5
-            )
-            # Fresh aggregation succeeded -> remember it as the fallback.
-            self._last_known_extra = extra
-            self._last_known_extra_at = time.time()
-        except Exception:
-            # Redis stalled / timed out. Do NOT collapse to local-hub-only --
-            # that's what made the Workers tab row count flap (37 -> 30/7/0)
-            # as nginx round-robined the poll across hubs. Reuse the most recent
-            # GOOD aggregation if it's still fresh; only then fall back to empty.
-            extra = []
+        def _fresh_cache() -> list:
+            # Reuse the most recent GOOD (non-empty) aggregation if still fresh,
+            # dropping any id that is now a live local connection (already in
+            # ``snap`` with fresher data) to avoid duplicate rows.
             if (
                 self._last_known_extra is not None
                 and (time.time() - self._last_known_extra_at)
                 <= _KNOWN_WORKERS_CACHE_TTL_S
             ):
-                # Drop any cached id that is now a live local connection (it's
-                # already in ``snap`` with fresher data) to avoid duplicate rows.
-                extra = [
+                return [
                     w for w in self._last_known_extra
                     if w.get("worker_id") not in seen
                 ]
+            return []
+        try:
+            extra = await asyncio.wait_for(
+                self._fetch_known_workers(seen), timeout=1.5
+            )
+            # Only a NON-EMPTY aggregation is trusted as the GOOD fallback.
+            # _fetch_known_workers swallows redis pipeline/zrange hiccups and
+            # returns [] (NOT an exception), so an empty result here is
+            # AMBIGUOUS: either the fleet genuinely has no peer workers, or
+            # redis blipped this once. Overwriting the cache with [] made ONE
+            # HUB AT A TIME collapse to local-only and flap the Workers count
+            # (2 <-> 20) as nginx round-robined the poll. Treat empty as "no
+            # fresh data": keep + reuse the last GOOD cache instead of poisoning
+            # it. (A genuine empty fleet just shows the stale cache for <=TTL.)
+            if extra:
+                self._last_known_extra = extra
+                self._last_known_extra_at = time.time()
+            else:
+                extra = _fresh_cache()
+        except Exception:
+            # Redis stalled / timed out -- reuse the most recent GOOD cache.
+            extra = _fresh_cache()
         snap["workers"].extend(extra)
         snap["count"] = len(snap["workers"])
         return snap

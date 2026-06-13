@@ -3080,18 +3080,28 @@ table.aitbl code { font-size:0.95em; }
     </p>
 
     <div style="display:grid; grid-template-columns: 200px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
+      <label for="setSalvageEnabled" title="自動復旧ループの ON/OFF（全ハブ共通・即反映）">自動復旧:</label>
+      <div><label style="font-weight:normal;"><input type="checkbox" id="setSalvageEnabled"> 有効化（ゴーストを定期検出して自動 restart）</label></div>
+
       <label for="setWorkerSshUser" title="SSH ログインユーザー">SSH ユーザー:</label>
       <div><input type="text" id="setWorkerSshUser" placeholder="root" style="width:240px; padding:4px 8px;" autocomplete="off"></div>
 
       <label for="setWorkerSshPort" title="SSH ポート (既定 22)">SSH ポート:</label>
       <div><input type="number" id="setWorkerSshPort" placeholder="22" min="1" max="65535" style="width:120px; padding:4px 8px;"></div>
 
-      <label for="setWorkerSshKeyPath" title="ハブコンテナ内の秘密鍵パス。空ならSSHフォールバック無効">秘密鍵パス:</label>
-      <div><input type="text" id="setWorkerSshKeyPath" placeholder="例: /run/secrets/worker_salvage_key" style="width:320px; padding:4px 8px;" autocomplete="off"></div>
+      <label for="setWorkerSshKeyPath" title="ハブコンテナ内の秘密鍵パス。空なら下のアップロード鍵を自動使用">秘密鍵パス:</label>
+      <div><input type="text" id="setWorkerSshKeyPath" placeholder="(空でOK — 下で鍵をアップロードすれば自動)" style="width:320px; padding:4px 8px;" autocomplete="off"></div>
+
+      <label for="setWorkerSshKeyFile" title="秘密鍵ファイル(PEM)をアップロード。全ハブへ配布されます">秘密鍵アップロード:</label>
+      <div>
+        <input type="file" id="setWorkerSshKeyFile" accept=".pem,.key" style="font-size:.85em;">
+        <span id="setWorkerSshKeyState" style="font-size:.82em; color:#888; margin-left:6px;"></span>
+        <div style="font-size:.78em; color:#999; margin-top:2px;">アップロードした鍵は MariaDB 経由で全ハブに共有され、各ハブが 0600 で展開して使用します（各ハブへの手配置 不要）。秘密鍵は GET では伏字になります。</div>
+      </div>
 
       <div></div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
-        <button id="setSaveWorkerSshBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> SSH 設定を保存</button>
+        <button id="setSaveWorkerSshBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> 設定を保存</button>
         <span id="setWorkerSshStatus" style="font-size:.9em; margin-left:4px;"></span>
       </div>
     </div>

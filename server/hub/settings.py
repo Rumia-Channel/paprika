@@ -243,6 +243,16 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     "worker_ssh_user": ("root", "str"),
     "worker_ssh_port": (22, "int"),
     "worker_ssh_key_path": ("", "str"),
+    # SSH private key PEM uploaded via the admin UI (secret; redacted from GET).
+    # Stored in settings -> MariaDB write-through -> shared to every hub, so the
+    # operator uploads ONCE and all hubs can SSH-salvage. Each hub materialises
+    # it to a local 0600 file on use; worker_ssh_key_path (above) takes
+    # precedence when set.
+    "worker_ssh_key_pem": ("", "str"),
+    # Master ON/OFF for the salvage loop, alongside the PAPRIKA_SALVAGE_ENABLE
+    # env. Lets the operator arm/disarm from the Settings UI with no hub restart
+    # (re-evaluated every pass, cross-hub via settings).
+    "salvage_enabled": (False, "bool"),
 }
 
 
@@ -289,6 +299,7 @@ def _env_default(key: str, fallback: Any) -> Any:
         "worker_ssh_user": ("PAPRIKA_WORKER_SSH_USER", "str"),
         "worker_ssh_port": ("PAPRIKA_WORKER_SSH_PORT", "int"),
         "worker_ssh_key_path": ("PAPRIKA_WORKER_SSH_KEY", "str"),
+        "salvage_enabled": ("PAPRIKA_SALVAGE_ENABLE", "bool"),
     }
     info = env_map.get(key)
     if not info:

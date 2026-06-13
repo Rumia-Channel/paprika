@@ -57,6 +57,42 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _salvage_armed() -> bool:
+    """Salvage ON if the Settings toggle (salvage_enabled, shared cross-hub via
+    settings) OR the env flag is set. Checked EVERY pass so the operator can
+    arm/disarm from the admin UI with no hub restart."""
+    if state.settings is not None:
+        try:
+            if bool(state.settings.get("salvage_enabled")):
+                return True
+        except Exception:
+            pass
+    return _flag("PAPRIKA_SALVAGE_ENABLE", False)
+
+
+_KEY_MATERIAL_PATH = "/tmp/paprika-worker-ssh-key"
+
+
+def _materialize_key(pem: str) -> str:
+    """Write an uploaded SSH key PEM (settings worker_ssh_key_pem, shared to
+    every hub) to a local 0600 file so ssh can use it. Idempotent: only
+    rewrites when the content changed. Returns the path, or '' on failure."""
+    try:
+        try:
+            with open(_KEY_MATERIAL_PATH, "r", encoding="utf-8") as f:
+                if f.read() == pem:
+                    return _KEY_MATERIAL_PATH
+        except FileNotFoundError:
+            pass
+        with open(_KEY_MATERIAL_PATH, "w", encoding="utf-8") as f:
+            f.write(pem)
+        os.chmod(_KEY_MATERIAL_PATH, 0o600)
+        return _KEY_MATERIAL_PATH
+    except Exception:
+        log.warning("salvage: failed to materialize uploaded SSH key", exc_info=True)
+        return ""
+
+
 def _ssh_conf() -> tuple[str, str, str]:
     """(user, port, key_path): settings (設定タブ) first, then .env, then default."""
     def g(skey: str, env: str, dflt: str) -> str:
@@ -67,11 +103,19 @@ def _ssh_conf() -> tuple[str, str, str]:
             except Exception:
                 v = None
         return str(v or os.environ.get(env) or dflt)
-    return (
-        g("worker_ssh_user", "PAPRIKA_WORKER_SSH_USER", "root"),
-        g("worker_ssh_port", "PAPRIKA_WORKER_SSH_PORT", "22"),
-        g("worker_ssh_key_path", "PAPRIKA_WORKER_SSH_KEY", ""),
-    )
+    user = g("worker_ssh_user", "PAPRIKA_WORKER_SSH_USER", "root")
+    port = g("worker_ssh_port", "PAPRIKA_WORKER_SSH_PORT", "22")
+    key_path = g("worker_ssh_key_path", "PAPRIKA_WORKER_SSH_KEY", "")
+    # No explicit path? Fall back to a UI-uploaded key PEM (settings, shared to
+    # every hub), materialised to a local 0600 file on this hub.
+    if not key_path and state.settings is not None:
+        try:
+            pem = state.settings.get("worker_ssh_key_pem") or ""
+        except Exception:
+            pem = ""
+        if pem:
+            key_path = _materialize_key(pem)
+    return (user, port, key_path)
 
 
 async def _http_self_restart(ip: str, secret: str, port: int) -> bool:
@@ -211,15 +255,20 @@ async def _salvage_pass() -> int:
 async def _salvage_loop() -> None:
     """Periodic ghost-salvage. OFF by default; arm with PAPRIKA_SALVAGE_ENABLE=1
     once the infra (worker :9099 exposed and/or hub ssh client+key) is ready."""
-    if not _flag("PAPRIKA_SALVAGE_ENABLE", False):
-        log.info("salvage: disabled (set PAPRIKA_SALVAGE_ENABLE=1 to arm)")
-        return
     interval = _int("PAPRIKA_SALVAGE_INTERVAL_S", 60)
-    log.info("salvage: armed (interval=%ds)", interval)
+    log.info(
+        "salvage: loop started (interval=%ds, armed=%s) -- arm/disarm live via "
+        "Settings salvage_enabled or PAPRIKA_SALVAGE_ENABLE (no restart needed)",
+        interval, _salvage_armed(),
+    )
     first = True
     while True:
         await asyncio.sleep(5 if first else interval)
         first = False
+        # Re-evaluate EVERY pass so the Settings toggle takes effect without a
+        # hub restart (salvage_enabled is shared cross-hub via settings).
+        if not _salvage_armed():
+            continue
         try:
             await _salvage_pass()
         except Exception:
