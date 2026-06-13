@@ -199,6 +199,16 @@ def _run_hub_only(args) -> int:
         # 20s/20s which trip on a single multi-minute HLS download.
         ws_ping_interval=30.0,
         ws_ping_timeout=120.0,
+        # Bound graceful shutdown so a hub restart doesn't hang forever waiting
+        # for long-lived worker control WebSockets to close on their own. With
+        # no bound (the default) uvicorn waits indefinitely -> docker's
+        # `restart -t 8` SIGKILLs mid-shutdown -> the worker WS is torn down
+        # uncleanly and nginx keeps the dead upstream, ghosting the worker
+        # ([[worker-ghost-proxied-ws]]). A bounded period makes uvicorn actively
+        # close the WS so the worker reconnects to a live hub instead of
+        # ghosting. Kept under docker's -t 8 stop-grace so shutdown finishes
+        # before SIGKILL. (Root cause of the recurring 60->57 ghost drift.)
+        timeout_graceful_shutdown=5,
     )
     return 0
 

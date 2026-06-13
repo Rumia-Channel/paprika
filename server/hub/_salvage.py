@@ -261,7 +261,13 @@ async def _salvage_pass() -> int:
         return 0
     now = time.time()
     min_age = _int("PAPRIKA_SALVAGE_GHOST_MIN_AGE_S", 300)
-    max_age = _int("PAPRIKA_SALVAGE_GHOST_MAX_AGE_S", 3600)
+    # 24h default (was 1h): a ghost whose VM is still alive (answers HTTP/SSH)
+    # is worth salvaging regardless of how long it's been ghosted. The old 1h
+    # cap silently skipped any ghost older than an hour -- which, combined with
+    # last_seen not being refreshed on heartbeat, meant the window caught zero
+    # ghosts. A genuinely dead VM just fails HTTP+SSH and is left alone anyway,
+    # so a wide cap is safe; it only widens "which ghosts we TRY".
+    max_age = _int("PAPRIKA_SALVAGE_GHOST_MAX_AGE_S", 86400)
     cooldown = _int("PAPRIKA_SALVAGE_COOLDOWN_S", 600)
     ghosts: list[tuple[str, str]] = []
     for wid, m in meta.items():
