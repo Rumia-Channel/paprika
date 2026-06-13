@@ -40,11 +40,26 @@ _TOK_CODE = re.compile(r"^[A-Za-z]{2,6}[-_]?\d{2,6}[A-Za-z]?$")
 
 # Static listing keywords. A non-variable segment matching one of these means
 # the path is a category / tag / search / archive page.
+# Category-segment keywords: a path like /category/foo or /genre/bar is a
+# CATEGORY page (a specific category's listing). Stronger semantic than the
+# generic 'listing' label so operators / fetch_recipes can target it.
+_STATIC_CATEGORY = frozenset({
+    "category", "categories", "cat", "genre", "genres", "section", "sections",
+    "channel", "channels", "department",
+})
+
+# Tag-segment keywords: a path like /tag/foo or /tags/bar is a TAG page
+# (a specific tag's listing). Distinguished from category so the operator
+# can see at a glance whether something is broad-topic vs narrow-keyword.
+_STATIC_TAG = frozenset({
+    "tag", "tags", "topic", "topics", "kw", "keyword", "keywords",
+    "hashtag", "hashtags",
+})
+
 _STATIC_LISTING = frozenset({
-    "tag", "tags", "category", "categories", "genre", "genres",
     "cast", "actress", "actresses", "maker", "label", "studio", "series",
     "model", "models", "star", "stars", "actor", "actors", "director",
-    "search", "kw", "keyword", "page", "paged",
+    "search", "page", "paged",
     # NOTE: 'archive(s)' is intentionally NOT in this set -- many CMSs use it
     # as the parent path for detail items (/archives/{int}/), so it's only a
     # listing in combination with pagination, which the page-co-occurrence
@@ -175,10 +190,10 @@ class HostPageRoles:
     def role_for_url(self, url: str) -> tuple[str, float, str]:
         """Return ``(role, confidence, reason)`` for ``url``.
 
-        ``role`` is one of ``detail`` / ``listing`` / ``top`` / ``error`` /
-        ``unknown``. ``confidence`` in [0, 1]; the caller should compare it
-        against ``ROLE_TRUST_THRESHOLD`` before acting (low confidence ==
-        treat as unknown, let normal escalation run).
+        ``role`` is one of ``detail`` / ``listing`` / ``category`` / ``tag`` /
+        ``top`` / ``error`` / ``unknown``. ``confidence`` in [0, 1]; the caller
+        should compare it against ``ROLE_TRUST_THRESHOLD`` before acting
+        (low confidence == treat as unknown, let normal escalation run).
         """
         tpl = templatize(url)
         if not tpl:
@@ -191,10 +206,15 @@ class HostPageRoles:
         # 1) static error keyword
         if any(s in _STATIC_ERROR for s in statics):
             return "error", 0.95, "static error keyword"
-        # 2) explicit pagination OR pagination co-occurrence (strongest listing)
+        # 2) static category / tag keyword (more specific than 'listing')
+        if any(s in _STATIC_CATEGORY for s in statics):
+            return "category", 0.9, "category keyword"
+        if any(s in _STATIC_TAG for s in statics):
+            return "tag", 0.9, "tag keyword"
+        # 3) explicit pagination OR pagination co-occurrence (strongest listing)
         if self._page_co_occurs(tpl):
             return "listing", 0.95, "pagination"
-        # 3) static listing keyword
+        # 4) static listing keyword
         if any(s in _STATIC_LISTING for s in statics):
             return "listing", 0.85, "listing keyword"
         # 4) host-observed video evidence on this template -> detail (strong)
@@ -329,9 +349,60 @@ def record_url(url: str, *, has_video_evidence: bool = False) -> None:
 
 
 async def role_for_url(url: str) -> tuple[str, float, str]:
-    """Convenience: classify ``url`` using its host's role table."""
+    """Convenience: classify ``url`` using its host's role table.
+
+    Operator-set per-host-template overrides (table
+    ``host_url_role_overrides``) win over the URL heuristic: a single edit
+    in the Live job panel / host edit modal corrects EVERY future job whose
+    URL templates to the same value. Best-effort: a transient DB hiccup
+    falls through to the heuristic.
+    """
     h = host_from_url(url)
     if not h:
         return "unknown", 0.0, "no host"
+    tpl = templatize(url)
+    try:
+        ov = await _host_overrides_cached(h)
+        if ov and tpl in ov:
+            return ov[tpl], 1.0, "operator override"
+    except Exception:
+        pass
     roles = await get_host_roles(h)
     return roles.role_for_url(url)
+
+
+# Per-host override cache (MariaDB read), TTL'd so a fresh override visible
+# within ~30s. Bust manually via ``invalidate_host_overrides(host)`` when an
+# operator change just landed.
+_OV_TTL_S = 30.0
+_ov_cache: dict[str, tuple[float, dict]] = {}
+
+
+def invalidate_host_overrides(host: str) -> None:
+    """Drop the per-host override cache entry so the next ``role_for_url``
+    call refetches from MariaDB. Called by the PUT/DELETE override routes."""
+    try:
+        _ov_cache.pop(_normalise_host_str(host), None)
+    except Exception:
+        pass
+
+
+async def _host_overrides_cached(host: str) -> dict:
+    h = _normalise_host_str(host)
+    import time as _t
+    now = _t.time()
+    cached = _ov_cache.get(h)
+    if cached is not None and (now - cached[0]) < _OV_TTL_S:
+        return cached[1]
+    try:
+        from server.hub._state import state
+        pool = getattr(state, "mariadb_pool", None)
+        if pool is None:
+            _ov_cache[h] = (now, {})
+            return {}
+        from server.hub.mariadb import host_url_role_overrides_get
+        ov = await host_url_role_overrides_get(pool, h)
+    except Exception:
+        ov = {}
+    _ov_cache[h] = (now, ov)
+    return ov

@@ -252,6 +252,23 @@
     if (sec < 86400) return Math.round(sec / 3600) + 'h';
     return Math.round(sec / 86400) + 'd';
   }
+  // Format an ISO8601 UTC timestamp string as "Ns/Nm/Nh/Nd" — past by default,
+  // future (e.g. next-run-at) when ``future`` is true (returns "Ns 後").
+  function _aiAgoUtc(iso, future) {
+    if (!iso) return '—';
+    try {
+      const ms = Date.parse(iso);
+      if (isNaN(ms)) return '—';
+      const now = Date.now();
+      const delta = future ? (ms - now) : (now - ms);
+      const sec = Math.max(0, Math.floor(delta / 1000));
+      const out = sec < 60 ? sec + 's'
+        : sec < 3600 ? Math.floor(sec / 60) + 'm'
+        : sec < 86400 ? Math.floor(sec / 3600) + 'h'
+        : Math.floor(sec / 86400) + 'd';
+      return future ? (out + ' 後') : out;
+    } catch (_e) { return '—'; }
+  }
 
   function _aiCard(icon, label, active, sub, color) {
     const hot = (active || 0) > 0;
@@ -414,6 +431,7 @@
     { key: 'vision', setting: 'vision_engine_order', icon: 'lucide:eye', name: '視覚', code: 'perception', desc: 'ページを画像で見る（画像対応エンジンのみ）', vis: true },
     { key: 'judge', setting: 'judge_engine_order', icon: 'lucide:scale', name: '判定', code: 'judge', desc: 'codegen がゴール達成か採点', mode: 'reasoning_judge_mode', modes: ['off', 'on', 'shadow'] },
     { key: 'distiller', setting: 'distiller_engine_order', icon: 'lucide:brain', name: '推論蒸留', code: 'distiller', desc: '失敗から壁・ホスト知識を学習', mode: 'reasoning_distiller_mode', modes: ['off', 'on', 'new'] },
+    { key: 'translate', setting: 'translate_engine_order', icon: 'lucide:languages', name: '翻訳', code: 'POST /translate', desc: '#ai 作法モーダルの「翻訳」用。空ならチャット既定にフォールバック' },
   ];
   const _ROLE_BY_KEY = {}; _ROLE_DEFS.forEach(d => { _ROLE_BY_KEY[d.key] = d; });
 
@@ -530,8 +548,13 @@
       : '<button class="aibtn" data-act="promote" data-kind="' + kind + '" data-slug="' + slug + '">promote</button>';
     const delBtn = '<button class="aibtn del" data-act="delete" data-kind="' + kind + '" data-slug="' + slug + '">delete</button>';
     // Skills ARE code -- give each one a button to view its code_template.
+    // Conventions ARE prose advice + good/bad examples -- give each one a
+    // matching button so the operator can read the distilled content and
+    // judge whether it's worth promoting / keeping.
     const codeBtn = kind === 'skills'
       ? '<button class="aibtn" data-act="code" data-kind="skills" data-slug="' + slug + '" title="このスキルのコード(code_template)を表示"><iconify-icon icon="lucide:code-2"></iconify-icon> コード</button>'
+      : kind === 'conventions'
+      ? '<button class="aibtn" data-act="detail" data-kind="conventions" data-slug="' + slug + '" title="この作法の蒸留内容 (advice / good/bad example / 由来) を表示"><iconify-icon icon="lucide:scroll-text"></iconify-icon> 内容</button>'
       : '';
     return '<tr title="' + desc + '"><td><code>' + slug + '</code></td><td>' + tierBadge + '</td>' +
       '<td class="num">' + (x.use_count || 0) + '</td><td class="num">' + (x.success_count || 0) + '</td>' +
@@ -540,6 +563,7 @@
 
   async function aiAction(kind, slug, act) {
     if (act === 'code') { openSkillCode(slug); return; }
+    if (act === 'detail') { openConventionDetail(slug); return; }
     if (act === 'delete' && !confirm('Delete ' + kind + ' "' + slug + '"?')) return;
     const enc = encodeURIComponent(slug);
     const method = act === 'delete' ? 'DELETE' : 'POST';
@@ -588,6 +612,126 @@
       if (prov.length) $('skillCodeProv').textContent = '由来ジョブ (' + prov.length + '): ' + prov.slice(0, 8).map(_esc).join(', ') + (prov.length > 8 ? ' …' : '');
     } catch (e) {
       $('skillCodeBody').textContent = '取得失敗: ' + (e && e.message ? e.message : e);
+    }
+  }
+
+  // ---- Convention detail viewer (operator-readable distillation) ----------
+  // Conventions are prose advice + bad/good code snippets distilled by the
+  // codegen-loop. Surfacing them in a modal lets the operator actually read
+  // and rate them (same goal as openSkillCode for skills).
+  let _convTranslated = false;  // toggle state for the current modal session
+  async function openConventionDetail(slug) {
+    const modal = document.getElementById('convDetailModal');
+    if (!modal) return;
+    const $ = (id) => document.getElementById(id);
+    // Reset translation toggle state when re-opening on a different row.
+    _convTranslated = false;
+    _convResetTranslateBtn();
+    $('convDetailTitle').textContent = slug;
+    $('convDetailMeta').textContent = '';
+    $('convDetailAdvice').textContent = '読み込み中…';
+    $('convDetailRationale').textContent = '';
+    $('convDetailWhen').innerHTML = '';
+    $('convDetailBad').textContent = '';
+    $('convDetailGood').textContent = '';
+    $('convDetailTags').innerHTML = '';
+    $('convDetailProv').textContent = '';
+    modal.style.display = 'flex';
+    try {
+      const r = await fetch('/conventions/' + encodeURIComponent(slug));
+      if (!r.ok) { $('convDetailAdvice').textContent = '取得失敗 (HTTP ' + r.status + ')'; return; }
+      const c = await r.json();
+      $('convDetailTitle').textContent = c.name || c.slug || slug;
+      const p = c.success_rate == null ? '—' : Math.round(c.success_rate * 100) + '%';
+      $('convDetailMeta').textContent = (c.tier || 'auto') + ' · fitness ' + p +
+        ' (' + (c.success_count || 0) + '/' + (c.use_count || 0) + ')';
+      $('convDetailAdvice').textContent = c.advice || '(advice なし)';
+      $('convDetailRationale').textContent = c.rationale || '(rationale なし)';
+      const when = c.applicable_when || [];
+      $('convDetailWhen').innerHTML = when.length
+        ? when.map(function (w) { return '<span class="aibadge tier-auto" style="margin:2px 4px 2px 0;">' + _esc(w) + '</span>'; }).join('')
+        : '<span style="color:#999;">—</span>';
+      $('convDetailBad').textContent = c.bad_example || '(bad_example なし)';
+      $('convDetailGood').textContent = c.good_example || '(good_example なし)';
+      const tags = c.tags || [];
+      if (tags.length) $('convDetailTags').innerHTML = '<b style="color:#666;">tags:</b> ' +
+        tags.map(function (t) { return '<span class="aibadge tier-auto" style="margin:0 4px;">' + _esc(t) + '</span>'; }).join('');
+      const prov = c.extracted_from || [];
+      if (prov.length) $('convDetailProv').textContent = '由来ジョブ (' + prov.length + '): ' + prov.slice(0, 8).map(_esc).join(', ') + (prov.length > 8 ? ' …' : '');
+    } catch (e) {
+      $('convDetailAdvice').textContent = '取得失敗: ' + (e && e.message ? e.message : e);
+    }
+  }
+
+  // ---- Convention 翻訳 (hub-side LLM + cross-hub MariaDB cache) -----------
+  // Translates advice / rationale / applicable_when via POST /translate
+  // (chat Promoted engine, thermal/stop failover, sha256(text)+lang cache).
+  // Bad/good_example stay verbatim — they're Python code; identifier
+  // translation would break the example. Re-opens hit the cache instantly.
+  function _convResetTranslateBtn() {
+    const lbl = document.getElementById('convDetailTranslateLabel');
+    if (lbl) lbl.textContent = '翻訳';
+  }
+  function _convTargetLang() {
+    try {
+      const il = window.i18next && window.i18next.language;
+      if (il) return String(il).split('-')[0];
+    } catch (_) {}
+    return (navigator.language || 'en').split('-')[0];
+  }
+  async function _convTranslateModal() {
+    const $ = (id) => document.getElementById(id);
+    const lblEl = $('convDetailTranslateLabel');
+    const adv = $('convDetailAdvice');
+    const rat = $('convDetailRationale');
+    const whn = $('convDetailWhen');
+    if (!adv || !rat || !whn) return;
+    // Toggle back to the originals -- they were stashed on first translate.
+    if (_convTranslated) {
+      if (adv.dataset.orig != null) adv.textContent = adv.dataset.orig;
+      if (rat.dataset.orig != null) rat.textContent = rat.dataset.orig;
+      if (whn.dataset.orig != null) whn.innerHTML = whn.dataset.orig;
+      _convTranslated = false;
+      if (lblEl) lblEl.textContent = '翻訳';
+      return;
+    }
+    const tgt = _convTargetLang();
+    if (tgt === 'en') { alert('表示言語が英語のため、翻訳は不要です。'); return; }
+    if (lblEl) lblEl.textContent = '翻訳中…';
+    // Stash originals so the toggle can restore them.
+    adv.dataset.orig = adv.textContent;
+    rat.dataset.orig = rat.textContent;
+    whn.dataset.orig = whn.innerHTML;
+    const badges = Array.from(whn.querySelectorAll('.aibadge'));
+    const badgeTexts = badges.map(b => b.textContent || '');
+    const texts = [adv.textContent, rat.textContent, ...badgeTexts];
+    try {
+      const r = await fetch('/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texts, target_lang: tgt }),
+      });
+      if (!r.ok) {
+        const msg = r.status === 503 ? '翻訳機能が無効か、利用可能な chat エンジンがありません (HTTP 503)' : '翻訳に失敗 (HTTP ' + r.status + ')';
+        throw new Error(msg);
+      }
+      const d = await r.json();
+      const out = d.translated || [];
+      adv.textContent = out[0] || adv.textContent;
+      rat.textContent = out[1] || rat.textContent;
+      badges.forEach((b, i) => { b.textContent = out[2 + i] || badgeTexts[i]; });
+      _convTranslated = true;
+      if (lblEl) lblEl.textContent = '原文に戻す';
+      // Soft hint when most cells came from cache (re-open).
+      const hits = (d.cache_hits || []).filter(Boolean).length;
+      if (hits === texts.length && lblEl) lblEl.title = 'cache hit · 0 LLM call';
+    } catch (e) {
+      // Roll back the originals so the operator isn't left with empty cells.
+      if (adv.dataset.orig != null) adv.textContent = adv.dataset.orig;
+      if (rat.dataset.orig != null) rat.textContent = rat.dataset.orig;
+      if (whn.dataset.orig != null) whn.innerHTML = whn.dataset.orig;
+      if (lblEl) lblEl.textContent = '翻訳';
+      alert('翻訳に失敗しました: ' + (e && e.message ? e.message : e));
     }
   }
 
@@ -644,25 +788,44 @@
   try { window.aiOpenEntity = aiOpenEntity; } catch (_e) {}
 
   // ---- Grooming sub-tab: retire + dedup candidates + auto toggles ----
+  // Open the kind-appropriate detail modal so the operator can see the
+  // distilled content (skill code or convention prose) before deciding
+  // whether to keep/delete/merge a grooming candidate.
+  function _aiOpenItemDetail(kind, slug) {
+    if (!slug) return;
+    if (kind === 'skills' || kind === 'skill') { openSkillCode(slug); return; }
+    if (kind === 'conventions' || kind === 'convention') { openConventionDetail(slug); return; }
+  }
+  function _groomDetailBtn(kind, slug) {
+    const label = (kind === 'skills' || kind === 'skill') ? 'コード' : '内容';
+    const icon = (kind === 'skills' || kind === 'skill') ? 'lucide:code-2' : 'lucide:scroll-text';
+    return '<button class="aibtn gr-view" data-act="view" data-kind="' + _esc(kind) + '" data-slug="' + _esc(slug) +
+      '" title="この ' + label + ' の蒸留結果を表示"><iconify-icon icon="' + icon + '"></iconify-icon> ' + label + '</button>';
+  }
+  function _groomSlugLink(kind, slug) {
+    return '<code class="gr-slug" data-kind="' + _esc(kind) + '" data-slug="' + _esc(slug) +
+      '" style="cursor:pointer; text-decoration:underline dotted;" title="蒸留結果を表示">' + _esc(slug) + '</code>';
+  }
+
   function _groomRetireRow(x) {
     const slug = _esc(x.slug);
     const auto = (x.tier === 'auto');
     const tierBadge = '<span class="aibadge ' + (auto ? 'tier-auto' : 'tier-cur') + '">' + _esc(x.tier) + '</span>';
-    const act = auto
+    const viewBtn = _groomDetailBtn(x.kind, x.slug);
+    const delOrLock = auto
       ? '<button class="aibtn del" data-act="delete" data-kind="' + _esc(x.kind) + '" data-slug="' + slug + '">delete</button>'
       : '<span style="color:#999; font-size:.82em;">curated — 手動</span>';
-    return '<tr><td>' + _esc(x.kind) + '</td><td><code>' + slug + '</code></td><td>' + tierBadge + '</td>' +
-      '<td>' + _esc(x.reason) + '</td><td class="num">' + (x.use_count || 0) + '</td>' +
-      '<td class="num">' + (x.success_count || 0) + '</td><td>' + act + '</td></tr>';
+    return '<tr><td>' + _esc(x.kind) + '</td><td>' + _groomSlugLink(x.kind, x.slug) + '</td><td>' + tierBadge + '</td>' +
+      '<td class="gr-reason-cell">' + _esc(x.reason) + '</td><td class="num">' + (x.use_count || 0) + '</td>' +
+      '<td class="num">' + (x.success_count || 0) + '</td><td style="white-space:nowrap;">' + viewBtn + ' ' + delOrLock + '</td></tr>';
   }
 
   function _groomDedupRow(x) {
-    const keep = _esc(x.keep);
-    const drops = (x.drops || []).map(_esc).join(', ');
+    const dropLinks = (x.drops || []).map(d => _groomSlugLink(x.kind, d)).join(', ');
     const act = '<button class="aibtn" data-act="merge" data-kind="' + _esc(x.kind) +
-      '" data-keep="' + keep + '" data-drops="' + _esc((x.drops || []).join(',')) + '">merge</button>';
-    return '<tr><td>' + _esc(x.kind) + '</td><td><code>' + keep + '</code></td>' +
-      '<td><code style="color:#933;">' + drops + '</code></td><td>' + act + '</td></tr>';
+      '" data-keep="' + _esc(x.keep) + '" data-drops="' + _esc((x.drops || []).join(',')) + '">merge</button>';
+    return '<tr><td>' + _esc(x.kind) + '</td><td>' + _groomSlugLink(x.kind, x.keep) + '</td>' +
+      '<td style="color:#933;">' + dropLinks + '</td><td>' + act + '</td></tr>';
   }
 
   async function loadGrooming() {
@@ -679,6 +842,50 @@
     _aiState['groom-retire'].items = retire; _aiState['groom-retire'].page = 0; _renderAiPage('groom-retire');
     _aiState['groom-dedup'].items = dedup;   _aiState['groom-dedup'].page = 0;   _renderAiPage('groom-dedup');
     const gc = document.getElementById('cntGroom'); if (gc) gc.textContent = retire.length + dedup.length;
+    // Surface a 1-line state so the operator can tell at-a-glance the panel
+    // IS live + the reaper IS scanning.
+    // Build a rich state line so the operator can SEE the reaper is alive,
+    // when it last ran, when it'll run next, and (importantly) why the
+    // candidate list might be 0 even though everything is healthy.
+    try {
+      const gs = document.getElementById('groomState');
+      if (gs) {
+        let st = null;
+        try { st = await (await fetch('/ai/grooming-status')).json(); } catch (_e) { st = null; }
+        const lines = [];
+        // Line 1: liveness.
+        const livePart = (st && st.last_run_at)
+          ? '<span title="' + _esc(st.last_run_at) + '"><iconify-icon icon="lucide:radio-tower" style="color:#196b2c; vertical-align:-2px;"></iconify-icon> reaper 稼働中 · 最終 ' + _aiAgoUtc(st.last_run_at) + '前</span>'
+          : '<span style="color:#a06000;"><iconify-icon icon="lucide:loader-circle" style="vertical-align:-2px;"></iconify-icon> 起動直後 — 最初のスキャン待ち</span>';
+        let nextPart = '';
+        if (st && st.next_run_at) nextPart = ' · 次回 ' + _aiAgoUtc(st.next_run_at, true);
+        const autoR = st && st.auto_retire_enabled ? '<b style="color:#196b2c;">ON</b>' : '<b style="color:#933;">OFF</b>';
+        const autoD = st && st.auto_dedup_enabled  ? '<b style="color:#196b2c;">ON</b>' : '<b style="color:#933;">OFF</b>';
+        lines.push(livePart + nextPart + ' · auto-retire ' + autoR + ' · auto-dedup ' + autoD);
+        // Line 2: candidate counts.
+        lines.push('retire 候補 <b>' + retire.length + '</b> · dedup 候補 <b>' + dedup.length + '</b>');
+        // Line 3: explain WHY the count might be 0.
+        if (st && st.last_pass && st.last_pass.by_kind) {
+          const sk = st.last_pass.by_kind.skill || {};
+          const cv = st.last_pass.by_kind.convention || {};
+          const guards = [];
+          if (sk.cold_start_skip_reason) guards.push('skill: ' + sk.cold_start_skip_reason);
+          if (cv.cold_start_skip_reason) guards.push('convention: ' + cv.cold_start_skip_reason);
+          if (retire.length === 0 && dedup.length === 0 && guards.length) {
+            lines.push('<span style="color:#a06000;"><iconify-icon icon="lucide:shield-alert" style="vertical-align:-2px;"></iconify-icon> 候補ゼロの理由: ' + guards.map(_esc).join(' / ') + '</span>');
+          }
+          // Always show what the last pass scanned (records / dud-allow).
+          const scan = (sk.records != null) ? 'skill ' + sk.records + ' 件 (累計成功 ' + (sk.total_success || 0) + ', dud判定=' + (sk.allow_dud ? 'ON' : 'OFF') + ')' : '';
+          const scan2 = (cv.records != null) ? ' / convention ' + cv.records + ' 件 (累計成功 ' + (cv.total_success || 0) + ', dud判定=' + (cv.allow_dud ? 'ON' : 'OFF') + ')' : '';
+          if (scan || scan2) lines.push('<span style="color:#666;">前回スキャン対象: ' + scan + scan2 + '</span>');
+        }
+        gs.innerHTML = lines.join('<br>');
+        gs.style.display = 'block';
+        gs.style.width = '100%';
+        gs.style.marginTop = '6px';
+        gs.style.lineHeight = '1.6';
+      }
+    } catch (_e) {}
     // Reflect the auto-* toggles from hub settings.
     try {
       const s = await (await fetch('/settings')).json();
@@ -728,16 +935,64 @@
     const jid = _esc(x.job_id || '');
     const short = jid.slice(0, 8);
     const name = _esc(x.name || '');
+    const reason = _esc(x.reason || '');
     return '<tr>' +
-      '<td><a href="#live/' + jid + '" style="font-family:monospace;font-size:.83em;" title="' + jid + '">' + short + '…</a></td>' +
-      '<td style="font-size:.83em;font-family:monospace;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + name + '">' + name + '</td>' +
+      '<td><a href="#live/' + jid + '" style="font-family:monospace;font-size:.83em;" title="このジョブの Live パネル (Log+noVNC+Code+Gallery) を開く  job_id=' + jid + '">' + short + '…</a></td>' +
+      '<td style="font-size:.83em;font-family:monospace;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + name + ' — クリックで /jobs/' + jid + '/result.json (アセット+raw 蒸留結果) を新タブで開く">' +
+        '<a href="/jobs/' + jid + '/result" target="_blank" style="color:inherit;text-decoration:none;">' + name + '</a></td>' +
       '<td style="text-align:center;">' + validMark + '</td>' +
       '<td class="num">' + dur + '</td>' +
       '<td>' + _esc(x.codec || '—') + '</td>' +
       '<td class="num">' + dims + '</td>' +
       '<td class="num">' + _humanBytes(x.bytes) + '</td>' +
-      '<td style="font-size:.82em;color:' + (ok ? '#196b2c' : '#933') + ';">' + _esc(x.reason) + '</td>' +
+      '<td class="orc-reason-cell" style="font-size:.82em;color:' + (ok ? '#196b2c' : '#933') + ';" title="' + reason + '">' + reason + '</td>' +
       '</tr>';
+  }
+
+  // Common: translate every cell matching ``selector`` via /translate, stash
+  // the original on ``dataset.orig`` so a second click can restore. Used by
+  // both grooming (reason col) and oracle (reason col).
+  async function _translateTableCells(rootSelector, btnId, targetLang) {
+    const cells = Array.from(document.querySelectorAll(rootSelector));
+    if (!cells.length) return;
+    const btn = document.getElementById(btnId);
+    const lblEl = btn ? btn.querySelector('span') : null;
+    // Toggle back to originals.
+    const allHaveOrig = cells.every(c => c.dataset.orig != null);
+    const anyTranslated = cells.some(c => c.dataset.translated === '1');
+    if (anyTranslated && allHaveOrig) {
+      cells.forEach(c => {
+        c.textContent = c.dataset.orig;
+        c.removeAttribute('data-translated');
+      });
+      if (btn) btn.title = btn.dataset.titleOrig || btn.title;
+      return;
+    }
+    const texts = cells.map(c => c.textContent || '');
+    if (btn) { btn.disabled = true; if (lblEl) lblEl.textContent = '翻訳中…'; }
+    try {
+      const r = await fetch('/translate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texts, target_lang: targetLang || _convTargetLang() }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      const out = d.translated || [];
+      cells.forEach((c, i) => {
+        if (c.dataset.orig == null) c.dataset.orig = c.textContent;
+        c.textContent = out[i] || c.textContent;
+        c.dataset.translated = '1';
+      });
+      if (btn) {
+        btn.dataset.titleOrig = btn.title || '';
+        const hits = (d.cache_hits || []).filter(Boolean).length;
+        btn.title = '翻訳済み (' + hits + '/' + texts.length + ' cache hit) — engine: ' + (d.engine_slug || '?');
+      }
+    } catch (e) {
+      alert('翻訳に失敗: ' + (e && e.message ? e.message : e));
+    } finally {
+      if (btn) { btn.disabled = false; if (lblEl) lblEl.textContent = '翻訳'; }
+    }
   }
 
   let _oracleLoading = false;
@@ -772,6 +1027,23 @@
       _aiState['oracle'].items = j.files || [];
       _aiState['oracle'].page  = 0;
       _renderAiPage('oracle');
+      try {
+        const os = document.getElementById('oracleState');
+        if (os) {
+          const total = j.total || 0, valid = j.valid || 0, invalid = j.invalid || 0;
+          const pct = j.valid_pct != null ? Math.round(j.valid_pct * 100) : null;
+          const ico = invalid === 0
+            ? '<iconify-icon icon="lucide:shield-check" style="color:#196b2c; vertical-align:-2px;"></iconify-icon>'
+            : '<iconify-icon icon="lucide:alert-triangle" style="color:#b35900; vertical-align:-2px;"></iconify-icon>';
+          const healthMsg = invalid === 0 && total > 0
+            ? '<span style="color:#196b2c;">健全 (invalid 0/' + total + ')</span>'
+            : (total === 0
+                ? '<span style="color:#a06000;">直近に動画アセット無し</span>'
+                : '<span style="color:#b35900;">invalid ' + invalid + '/' + total + ' を検出 (要調査)</span>');
+          os.innerHTML = ico + ' ffprobe 稼働中 · 最終スキャン ' + new Date().toLocaleTimeString()
+            + ' · ' + healthMsg + (pct != null ? ' · valid ' + pct + '%' : '');
+        }
+      } catch (_e) {}
     } catch (e) {
       if (tbody) tbody.innerHTML = '<tr><td colspan=8 class="empty">error: ' + _esc('' + e) + '</td></tr>';
     } finally {
@@ -1035,6 +1307,15 @@
     };
     if (_scClose && _scm) _scClose.addEventListener('click', _scHide);
     if (_scm) _scm.addEventListener('click', (e) => { if (e.target === _scm) _scHide(); });
+    // Convention detail modal: same close behaviour as the skill modal.
+    const _cdm = document.getElementById('convDetailModal');
+    const _cdClose = document.getElementById('convDetailClose');
+    const _cdHide = () => { if (_cdm) _cdm.style.display = 'none'; };
+    if (_cdClose && _cdm) _cdClose.addEventListener('click', _cdHide);
+    if (_cdm) _cdm.addEventListener('click', (e) => { if (e.target === _cdm) _cdHide(); });
+    // Built-in translator button.
+    const _cdTr = document.getElementById('convDetailTranslate');
+    if (_cdTr) _cdTr.addEventListener('click', _convTranslateModal);
     if (_scCopy) _scCopy.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(_skillCodeCurrent || '');
@@ -1071,13 +1352,24 @@
       });
     });
     // Grooming: retire-table delete, dedup-table merge, refresh, toggles.
+    // Translate buttons on grooming / oracle: shared helper.
+    const _gT = document.getElementById('groomTranslateBtn');
+    if (_gT) _gT.addEventListener('click', () => _translateTableCells('#grTable .gr-reason-cell', 'groomTranslateBtn'));
+    const _oT = document.getElementById('oracleTranslateBtn');
+    if (_oT) _oT.addEventListener('click', () => _translateTableCells('#oracleTable .orc-reason-cell', 'oracleTranslateBtn'));
     const grT = document.getElementById('grTable');
     if (grT) grT.addEventListener('click', (ev) => {
+      const sl = ev.target.closest('code.gr-slug');
+      if (sl) { _aiOpenItemDetail(sl.dataset.kind, sl.dataset.slug); return; }
+      const v = ev.target.closest('button.gr-view');
+      if (v) { _aiOpenItemDetail(v.dataset.kind, v.dataset.slug); return; }
       const b = ev.target.closest('button.aibtn');
       if (b && b.dataset.act === 'delete') aiAction(b.dataset.kind, b.dataset.slug, 'delete').then(loadGrooming);
     });
     const gdT = document.getElementById('gdTable');
     if (gdT) gdT.addEventListener('click', (ev) => {
+      const sl = ev.target.closest('code.gr-slug');
+      if (sl) { _aiOpenItemDetail(sl.dataset.kind, sl.dataset.slug); return; }
       const b = ev.target.closest('button.aibtn');
       if (b && b.dataset.act === 'merge') _groomMerge(b.dataset.kind, b.dataset.keep, b.dataset.drops);
     });
@@ -1210,3 +1502,114 @@
     wire();
   }
 })();
+
+// ---- i18n: merge this session's new Japanese strings into the existing
+// JP2EN dictionary (admin-core.js applies it at language=en). Kept OUTSIDE
+// the IIFE + at file end so the assignment runs AFTER admin-core.js declares
+// JP2EN (script tags are loaded in order with `defer`). Guard with typeof
+// so the merge silently no-ops if admin-core hasn't loaded.
+try {
+  if (typeof JP2EN !== 'undefined' && JP2EN) {
+    Object.assign(JP2EN, {
+      // --- 役割 (roles) panel labels ---
+      "チャット": "Chat",
+      "コード生成": "Code generation",
+      "自律エージェント": "Autonomous agent",
+      "視覚": "Vision",
+      "判定": "Judge",
+      "推論蒸留": "Reasoning distiller",
+      "翻訳": "Translate",
+      "第一": "primary",
+      "編集": "Edit",
+      "完了": "Done",
+      "＋ 追加…": "+ Add…",
+      "なし（無効）": "none (disabled)",
+      "(env 既定)": "(env default)",
+      "(既定)": "(default)",
+      "▲▼ で優先順、× で除外、＋ で追加。上から試し、過熱/停止のエンジンは飛ばして次へ。空欄は従来の既定（promoted / env / 単一設定）にフォールバック。": "▲▼ to reorder, × to exclude, + to add. Tried top-down; thermal-throttled or stopped engines are skipped. Empty falls back to the legacy default (promoted / env / single setting).",
+      "指定なし(auto)でページを読む・質問": "Read / ask a page with no engine specified (auto)",
+      "スクリプト自動生成（Submit で上書き可）": "Auto-generate scripts (overridable in Submit)",
+      "空なら page.agent は無効": "page.agent is disabled when empty",
+      "ページを画像で見る（画像対応エンジンのみ）": "View pages as images (vision-capable engines only)",
+      "codegen がゴール達成か採点": "Score whether codegen reached the goal",
+      "失敗から壁・ホスト知識を学習": "Learn barriers and host knowledge from failures",
+      "#ai 作法モーダルの「翻訳」用。空ならチャット既定にフォールバック": "For the #ai conventions modal Translate button. Falls back to chat default when empty.",
+      // --- engines table on #ai / #engines ---
+      "状態": "Status",
+      "操作": "Actions",
+      "本日トークン": "Today's tokens",
+      "停止": "Stop",
+      "再開": "Resume",
+      "停止中": "Stopped",
+      "有効": "Enabled",
+      "稼働中": "Running",
+      "接続中": "Connected",
+      "サーマル停止": "Thermal stop",
+      "▶ 再開": "▶ Resume",
+      "■ 停止": "■ Stop",
+      "● 停止中": "● Stopped",
+      "● 有効": "● Enabled",
+      // --- page-role badges on #jobs ---
+      "詳細": "Detail",
+      "一覧": "Listing",
+      "カテゴリ": "Category",
+      "タグ": "Tag",
+      "トップ": "Top",
+      "エラー": "Error",
+      "不明": "Unknown",
+      "未分類": "unclassified",
+      "種類": "Type",
+      // --- settings sub-tabs ---
+      "ジョブ既定": "Job defaults",
+      "AI 学習動作": "AI learning",
+      "Asset / Proxy": "Asset / Proxy",
+      "ストレージ / DB": "Storage / DB",
+      "システム情報": "System info",
+      // --- convention detail modal ---
+      "なぜ": "Why",
+      "適用条件": "Applicable when",
+      "悪い例": "Bad example",
+      "良い例": "Good example",
+      "(advice なし)": "(no advice)",
+      "(rationale なし)": "(no rationale)",
+      "(bad_example なし)": "(no bad_example)",
+      "(good_example なし)": "(no good_example)",
+      "由来ジョブ": "Source jobs",
+      "原文に戻す": "Show original",
+      "翻訳中…": "Translating…",
+      // --- grooming / oracle status lines ---
+      "reaper 稼働中": "reaper running",
+      "ffprobe 稼働中": "ffprobe running",
+      "最終": "last",
+      "次回": "next",
+      "前": "ago",
+      "後": "from now",
+      "retire 候補": "retire candidates",
+      "dedup 候補": "dedup candidates",
+      "起動直後 — 最初のスキャン待ち": "just started — waiting for first scan",
+      "候補ゼロの理由": "Why zero candidates",
+      "前回スキャン対象": "Last scan scope",
+      "最終取得": "last fetched",
+      "最終スキャン": "last scan",
+      "取得": "fetched",
+      "件": "items",
+      "健全": "healthy",
+      "直近に動画アセット無し": "no recent video assets",
+      "要調査": "needs investigation",
+      "を検出": "detected",
+      "dud 判定は cold-start で skip 中 (skill 全体の success=0)": "dud check skipped (cold-start guard: total skill success=0)",
+      "skill 全体の success=0 のため dud 判定を skip 中 (zombie 判定は常時有効)": "skill total success=0 → dud check skipped (zombie check is always on)",
+      "convention は use rate が per-rule signal でないため dud 判定 無効 (zombie のみ)": "for conventions the use rate is not a per-rule signal → dud check disabled (zombie only)",
+      // --- grooming / oracle action buttons ---
+      "内容": "Details",
+      "コード": "Code",
+      "再読込": "Refresh",
+      "蒸留結果を表示": "Show distilled result",
+      // --- misc ---
+      "翻訳に失敗": "translation failed",
+      "ハブ側 LLM (chat Promoted エンジン) で advice / rationale / 適用条件 を現在の表示言語へ翻訳。MariaDB に sha256(text)+lang でキャッシュされるので 2 回目以降は瞬時。コードブロック (bad/good example) はそのまま。": "Translate advice / rationale / applicable_when into the current display language via the hub's chat Promoted engine. Cached in MariaDB by sha256(text)+lang so subsequent opens are instant. Code blocks (bad/good example) are left as-is.",
+      "reason 列を表示言語に翻訳 (ハブ側 LLM)": "Translate the reason column into the display language (hub-side LLM)",
+      "URL 構造とホスト統計から推定したページ種別 (詳細 / 一覧 / トップ / エラー / 不明)": "Page kind estimated from URL structure + per-host template stats (Detail / Listing / Top / Error / Unknown)",
+    });
+  }
+} catch (_e) {}

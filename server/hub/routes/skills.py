@@ -317,6 +317,28 @@ async def ai_oracle_stats(limit: int = 200) -> dict:
     }
 
 
+@router.get("/ai/grooming-status")
+async def ai_grooming_status() -> dict:
+    """Liveness + last-pass snapshot of the skill/convention reaper. Lets
+    the admin UI surface "the reaper IS running, and here's WHY the
+    candidate list is empty" (most often: cold-start dud guard).
+
+    Pure module-read; ``last_run_at`` is None until the first pass
+    completes (~2 min after hub startup)."""
+    try:
+        from server.hub._reaper import get_skill_convention_reaper_status
+        st = get_skill_convention_reaper_status()
+    except Exception as e:
+        st = {"error": f"{type(e).__name__}: {e}"}
+    try:
+        v = (state.settings.all() if state.settings else {}) or {}
+        st["auto_retire_enabled"] = bool(v.get("auto_retire_enabled", False))
+        st["auto_dedup_enabled"] = bool(v.get("auto_dedup_enabled", False))
+    except Exception:
+        pass
+    return st
+
+
 @router.get("/ai/groom-candidates")
 async def ai_groom_candidates() -> dict:
     """Retire (dud/zombie) + dedup (near-duplicate) candidates for the

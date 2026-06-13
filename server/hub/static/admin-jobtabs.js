@@ -1411,6 +1411,9 @@ function ljpAttach(jobId) {
   // Polling the attempts/code list at a similar cadence -- new
   // attempts only appear every 10s+ in practice so 4s is fine.
   LJP.codeTimer = setInterval(ljpRefreshCode, 4000);
+  // Show + load the page-role pill (種類 badge + 訂正 button). Defined in
+  // admin-livepanel.js. Wrapped in typeof for load-order safety.
+  try { if (typeof ljpLoadPageRole === 'function') ljpLoadPageRole(jobId); } catch (_e) {}
   // Intentionally NOT scrolling the panel into view: that pushed the
   // Submit form off-screen on shorter viewports and felt like a
   // "transition to the log screen". The panel sits inline below the

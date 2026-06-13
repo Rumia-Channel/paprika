@@ -1011,3 +1011,123 @@ async def _ensure_host_login(host: str, *, force: bool = False) -> dict:
                 await close_session(sid)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Page-role overrides + visualization (per-host-template)
+# ---------------------------------------------------------------------------
+
+_PAGE_ROLE_VALUES = {"detail", "listing", "category", "tag", "top", "error", "unknown"}
+
+
+@router.get("/hosts/{host}/url-roles")
+async def get_host_url_roles(host: str) -> dict:
+    """Visualisation for the host edit modal + Live job panel: every
+    URL template observed on ``host`` along with its auto-assigned role
+    + the operator override (if any)."""
+    from server.hub._page_role import (
+        _STATIC_CATEGORY, _STATIC_TAG, _STATIC_LISTING, _STATIC_ERROR,
+        get_host_roles, _normalise_host_str,
+    )
+    h = _normalise_host_str(host)
+    if not h:
+        raise HTTPException(400, "host cannot be empty")
+    try:
+        roles = await get_host_roles(h)
+    except Exception:
+        roles = None
+    tpls: list = []
+    if roles is not None:
+        try:
+            for tpl in sorted((roles.templates or {}).keys()):
+                v, c, why = roles.role_for_url("https://" + h + tpl)
+                tpls.append({
+                    "url_template": tpl,
+                    "auto": {"value": v, "confidence": round(float(c), 3), "reason": why},
+                    "override": "", "set_by": "", "set_at": "",
+                })
+        except Exception:
+            pass
+    ov_map: dict = {}
+    ov_meta: dict = {}
+    try:
+        from server.hub.mariadb import host_url_role_overrides_list
+        pool = getattr(state, "mariadb_pool", None)
+        if pool is not None:
+            for row in await host_url_role_overrides_list(pool, h):
+                tpl = row.get("url_template") or ""
+                ov_map[tpl] = row.get("role") or ""
+                ov_meta[tpl] = {"set_by": row.get("set_by") or "", "set_at": row.get("set_at") or ""}
+    except Exception:
+        pass
+    seen = {t["url_template"] for t in tpls}
+    for tpl, ovrole in ov_map.items():
+        if tpl in seen:
+            for t in tpls:
+                if t["url_template"] == tpl:
+                    t["override"] = ovrole
+                    t["set_by"] = ov_meta[tpl]["set_by"]
+                    t["set_at"] = ov_meta[tpl]["set_at"]
+                    break
+        else:
+            tpls.append({
+                "url_template": tpl,
+                "auto": {"value": "unknown", "confidence": 0.0, "reason": "no observations"},
+                "override": ovrole, "set_by": ov_meta[tpl]["set_by"], "set_at": ov_meta[tpl]["set_at"],
+            })
+    auto_rules = [
+        {"role": "category", "keywords": sorted(_STATIC_CATEGORY)},
+        {"role": "tag",      "keywords": sorted(_STATIC_TAG)},
+        {"role": "listing",  "keywords": sorted(_STATIC_LISTING)},
+        {"role": "error",    "keywords": sorted(_STATIC_ERROR)},
+        {"role": "top",      "keywords": ["/"]},
+    ]
+    return {"host": h, "auto_rules": auto_rules, "templates": tpls}
+
+
+@router.put("/hosts/{host}/url-role-overrides")
+async def put_host_url_role_override(host: str, body: dict) -> dict:
+    """Pin a role for one URL template on a host. Effective immediately for
+    every job whose URL templates to the same value. ``role: ""`` clears."""
+    body = body or {}
+    from server.hub._page_role import _normalise_host_str, invalidate_host_overrides
+    h = _normalise_host_str(host)
+    if not h:
+        raise HTTPException(400, "host cannot be empty")
+    tpl = (body.get("url_template") or "").strip()
+    if not tpl:
+        raise HTTPException(400, "url_template is required")
+    role = (body.get("role") or "").strip()
+    if role and role not in _PAGE_ROLE_VALUES:
+        raise HTTPException(400, f"role must be one of: {sorted(_PAGE_ROLE_VALUES)}")
+    pool = getattr(state, "mariadb_pool", None)
+    if pool is None:
+        raise HTTPException(503, "no MariaDB pool configured")
+    try:
+        if role:
+            from server.hub.mariadb import host_url_role_override_upsert
+            await host_url_role_override_upsert(pool, h, tpl, role, set_by="operator")
+        else:
+            from server.hub.mariadb import host_url_role_override_delete
+            await host_url_role_override_delete(pool, h, tpl)
+    except Exception as e:
+        raise HTTPException(500, f"override write failed: {e}")
+    invalidate_host_overrides(h)
+    return {"host": h, "url_template": tpl, "role": role, "cleared": (not role)}
+
+
+@router.delete("/hosts/{host}/url-role-overrides")
+async def delete_host_url_role_override(host: str, url_template: str) -> dict:
+    """Delete one override. ``url_template`` comes as a query param."""
+    from server.hub._page_role import _normalise_host_str, invalidate_host_overrides
+    h = _normalise_host_str(host)
+    tpl = (url_template or "").strip()
+    if not h or not tpl:
+        raise HTTPException(400, "host and url_template are required")
+    pool = getattr(state, "mariadb_pool", None)
+    if pool is None:
+        raise HTTPException(503, "no MariaDB pool configured")
+    from server.hub.mariadb import host_url_role_override_delete
+    deleted = await host_url_role_override_delete(pool, h, tpl)
+    invalidate_host_overrides(h)
+    return {"host": h, "url_template": tpl, "deleted": int(deleted)}

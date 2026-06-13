@@ -77,6 +77,79 @@ _JOBS_LIST_CACHE_TTL_S = float(os.environ.get("PAPRIKA_JOBS_LIST_CACHE_TTL_S") o
 _JOBS_LIST_CACHE_MAX = 64
 
 
+async def _fetch_job_role_overrides(job_ids: list) -> dict:
+    """Bulk-fetch per-job role overrides from MariaDB. ``{job_id: role}``."""
+    if not job_ids:
+        return {}
+    try:
+        pool = getattr(state, "mariadb_pool", None)
+        if pool is None:
+            return {}
+        from server.hub.mariadb import job_role_overrides_get_many
+        return await job_role_overrides_get_many(pool, job_ids)
+    except Exception:
+        return {}
+
+
+async def _build_page_roles_map(page) -> dict:
+    """Compute URL-based per-job page role (`detail` / `listing` / `top` /
+    `error` / `unknown` + confidence + reason) for every job on a page.
+
+    Pure URL structure + per-host template stats (server/hub/_page_role.py)
+    — no LLM, ~ms. The roles are returned as a separate envelope field
+    ``page_roles: {job_id: {value, confidence, reason}}`` so the JobInfo
+    Pydantic model stays unchanged. Best-effort: any failure (transient
+    MariaDB hiccup, kill-switched off) yields {} so the jobs list never
+    breaks on classification.
+    """
+    import os as _os
+    if (_os.environ.get("PAPRIKA_JOBS_PAGE_ROLE", "1") or "1").strip().lower() in ("0", "false", "no", "off"):
+        return {}
+    try:
+        from server.hub._page_role import role_for_url
+    except Exception:
+        return {}
+    urls = [(getattr(p, "job_id", "") or "", getattr(p, "url", "") or "") for p in page]
+    try:
+        results = await asyncio.gather(
+            *[role_for_url(u) for _, u in urls],
+            return_exceptions=True,
+        )
+    except Exception:
+        return {}
+    out: dict = {}
+    for (jid, _u), r in zip(urls, results):
+        if not jid:
+            continue
+        if isinstance(r, tuple) and len(r) == 3:
+            try:
+                val, conf, reason = r
+                out[jid] = {
+                    "value": str(val or "unknown"),
+                    "confidence": float(conf or 0.0),
+                    "reason": str(reason or ""),
+                }
+            except Exception:
+                pass
+    # Per-job overrides take precedence over the URL heuristic + per-host-
+    # template overrides (the latter are already baked into role_for_url's
+    # return value above, so what's left is the per-job pin).
+    try:
+        per_job = await _fetch_job_role_overrides([jid for jid, _u in urls])
+        for jid, role in per_job.items():
+            cur = out.get(jid) or {}
+            out[jid] = {
+                "value": str(role),
+                "confidence": 1.0,
+                "reason": "operator override (per-job)",
+                "auto_value": cur.get("value", ""),
+                "auto_reason": cur.get("reason", ""),
+            }
+    except Exception:
+        pass
+    return out
+
+
 @router.get("/jobs")
 async def list_jobs(
     request: Request,
@@ -175,6 +248,7 @@ async def list_jobs(
             "offset": off,
             "limit": lim,
             "jobs": page,
+            "page_roles": await _build_page_roles_map(page),
         }
 
     # ------------------------------------------------------------------
@@ -238,6 +312,7 @@ async def list_jobs(
         "offset": off,
         "limit": lim,
         "jobs": page,
+        "page_roles": await _build_page_roles_map(page),
     }
 
 
@@ -513,6 +588,114 @@ async def cancel_job(job_id: str, request: Request) -> dict:
             except Exception:
                 pass
     return {"job_id": job_id, "cancelled": True, "task_was_running": cancelled_task}
+
+
+@router.get("/jobs/{job_id}/page-role")
+async def get_job_page_role(job_id: str) -> dict:
+    """Single-job version of the /jobs envelope's page_roles map. Returns
+    ``{value, confidence, reason, override, override_value}`` for the
+    Live job panel to render the 種類 badge + correction dropdown."""
+    info = await state.store.get_job_info(job_id)
+    if info is None:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    url = getattr(info, "url", "") or ""
+    from server.hub._page_role import role_for_url, host_from_url, templatize
+    out: dict = {
+        "job_id": job_id,
+        "url": url,
+        "host": host_from_url(url) or "",
+        "url_template": templatize(url) or "",
+    }
+    if url:
+        try:
+            val, conf, reason = await role_for_url(url)
+            out["value"] = val
+            out["confidence"] = round(float(conf), 3)
+            out["reason"] = reason
+        except Exception as e:
+            out["value"] = "unknown"
+            out["confidence"] = 0.0
+            out["reason"] = f"error: {e}"
+    else:
+        out["value"] = "unknown"
+        out["confidence"] = 0.0
+        out["reason"] = "no url"
+    # Surface per-job override + host-template override separately so the UI
+    # can show "currently pinned to category, but heuristic says listing".
+    try:
+        pool = getattr(state, "mariadb_pool", None)
+        if pool is not None:
+            from server.hub.mariadb import job_role_override_get, host_url_role_overrides_get
+            pj = await job_role_override_get(pool, job_id)
+            out["job_override"] = pj
+            host = out["host"]
+            if host:
+                hm = await host_url_role_overrides_get(pool, host)
+                out["host_override"] = hm.get(out["url_template"], "")
+            else:
+                out["host_override"] = ""
+        else:
+            out["job_override"] = ""
+            out["host_override"] = ""
+    except Exception:
+        out["job_override"] = ""
+        out["host_override"] = ""
+    return out
+
+
+@router.put("/jobs/{job_id}/page-role-override")
+async def put_job_page_role_override(job_id: str, body: dict) -> dict:
+    """Operator pins a corrected page-role for this single job. With
+    ``apply_to_host: true`` the same override is also registered on the
+    host's URL template so every future job whose URL templates to the
+    same value gets the corrected role automatically.
+
+    Body: ``{"value": "detail|listing|category|tag|top|error|unknown",
+             "apply_to_host": bool}``. ``value: ""`` clears."""
+    body = body or {}
+    role = (body.get("value") or "").strip()
+    _VALID = {"detail", "listing", "category", "tag", "top", "error", "unknown"}
+    if role and role not in _VALID:
+        raise HTTPException(400, f"value must be one of: {sorted(_VALID)} or '' to clear")
+    pool = getattr(state, "mariadb_pool", None)
+    if pool is None:
+        raise HTTPException(503, "no MariaDB pool configured")
+    # Resolve the job's URL so we can also pin the host template.
+    info = await state.store.get_job_info(job_id)
+    if info is None:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    url = getattr(info, "url", "") or ""
+    try:
+        from server.hub.mariadb import (
+            job_role_override_upsert, job_role_override_delete,
+            host_url_role_override_upsert,
+        )
+        if role:
+            await job_role_override_upsert(pool, job_id, role, set_by="operator")
+        else:
+            await job_role_override_delete(pool, job_id)
+        if bool(body.get("apply_to_host")) and role and url:
+            from server.hub._page_role import (
+                host_from_url, templatize, invalidate_host_overrides,
+            )
+            h = host_from_url(url)
+            tpl = templatize(url)
+            if h and tpl:
+                await host_url_role_override_upsert(pool, h, tpl, role, set_by="operator")
+                invalidate_host_overrides(h)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"override write failed: {e}")
+    # Bust the /jobs response cache so the next list reflects the change.
+    try:
+        _JOBS_LIST_CACHE.clear()
+    except Exception:
+        pass
+    return {
+        "job_id": job_id, "value": role, "applied_to_host": bool(body.get("apply_to_host")) and bool(role),
+        "cleared": (not role),
+    }
 
 
 @router.post("/jobs/{job_id}/resolve-review")

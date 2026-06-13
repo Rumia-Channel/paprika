@@ -770,7 +770,7 @@ const _JOB_STATUS_LABEL = { review: '課題' };
 // classification (server/hub/_page_role.role_for_url -> `/jobs` envelope's
 // page_roles map). Low-confidence (< 0.5) results render muted so a guess
 // reads visibly weaker than a confirmed `detail (video evidence)`.
-const _JOB_ROLE_LABEL = { detail: '詳細', listing: '一覧', top: 'トップ', error: 'エラー', unknown: '不明' };
+const _JOB_ROLE_LABEL = { detail: '詳細', listing: '一覧', category: 'カテゴリ', tag: 'タグ', top: 'トップ', error: 'エラー', unknown: '不明' };
 function _jobRoleBadge(role) {
   if (!role || !role.value) return '<span class="role-pill role-unknown" title="未分類">—</span>';
   const v = role.value;

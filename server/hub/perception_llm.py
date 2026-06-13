@@ -648,6 +648,24 @@ async def save_perception_for_job(
     except Exception:
         pass
 
+    # C: Vision -> URL-role feedback. When the vision LLM confidently says
+    # this is a video page (which the fetcher's video_detection / yt-dlp
+    # signals may have missed -- blob/MSE players, lazy iframes, paywalled
+    # previews), record it as video evidence into the per-host URL-role
+    # table. Next time the same URL template is fetched, role_for_url()
+    # returns ``detail`` at 0.95 conf even without re-running perception,
+    # so the escalation gate + future routing decisions get smarter. Pure
+    # in-process / fire-and-forget; env kill-switch.
+    try:
+        import os as _os
+        if (_os.environ.get("PAPRIKA_PERCEPTION_TO_URL_FEEDBACK", "1") or "1").strip().lower() not in ("0", "false", "no", "off"):
+            pk = getattr(result, "page_kind", None)
+            if pk is not None and getattr(pk, "value", "") == "video_page" and float(getattr(pk, "confidence", 0.0) or 0.0) >= 0.7:
+                from server.hub._page_role import record_url as _record_url
+                _record_url(url, has_video_evidence=True)
+    except Exception:
+        pass
+
     # Surface a one-line summary in the job log if a logger was provided.
     if callable(log):
         try:

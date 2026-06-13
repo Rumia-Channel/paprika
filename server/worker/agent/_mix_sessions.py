@@ -1510,6 +1510,45 @@ class _SessionsMixin:
                 f"[session {sid}] links snapshot POST failed: {type(e).__name__}: {e}",
             )
 
+        # ---- end-of-session screenshot (final.jpg) ------------------------
+        # Worker-level capture-before-close so EVERY job mode (fetch,
+        # codegen-loop, vision-agent, manual session) ends with a usable
+        # snapshot in the parent's workdir. The fetcher path already writes
+        # its own final.jpg earlier in the success flow; THIS capture
+        # OVERWRITES it with the literal close-time frame the operator
+        # asked for ("the moment just before the session ends" -- useful
+        # for audit + perception even on jobs that early-failed before the
+        # fetcher reached its own capture). Bounded by timeout so a
+        # nodriver hang can't stall lane release. Skipped on env opt-out
+        # ``PAPRIKA_END_SESSION_SCREENSHOT=0``. Best-effort + never raises.
+        if tab is not None and (os.environ.get(
+            "PAPRIKA_END_SESSION_SCREENSHOT", "1"
+        ) or "1").strip().lower() not in ("0", "false", "no", "off"):
+            try:
+                import base64 as _b64
+                import nodriver.cdp as cdp  # type: ignore[import-not-found]
+                _b64shot = await asyncio.wait_for(
+                    tab.send(cdp.page.capture_screenshot(format_="jpeg", quality=50)),
+                    timeout=5.0,
+                )
+                if _b64shot:
+                    _bytes = _b64.b64decode(_b64shot)
+                    _files = {"file": ("final.jpg", _bytes, "image/jpeg")}
+                    _data: dict = {}
+                    if self.worker_secret:
+                        _data["secret"] = self.worker_secret
+                    await self._http.post(
+                        f"{base}/files/final.jpg",
+                        files=_files,
+                        data=_data,
+                        timeout=10.0,
+                    )
+            except Exception as e:
+                _logger.info(
+                    f"[session {sid}] end-of-session screenshot failed: "
+                    f"{type(e).__name__}: {e}",
+                )
+
     async def _force_end_all_sessions(self, reason: str) -> int:
         """Tear down every session currently held by this worker and
         return their lanes to the pool. Called from the WS-reconnect

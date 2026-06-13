@@ -355,6 +355,9 @@ const I18N_RESOURCES = {
     "knowledge.badge.r1.title":     "推論 AI が直近更新",
     "knowledge.pager.size":         "表示件数",
     // AI tab common (sub-tabs, ticker, GPU gauge)
+    "ai.subtab.live":               "稼働中",
+    "ai.subtab.roles":              "役割",
+    "ai.subtab.engines":            "エンジン",
     "ai.subtab.knowledge":          "ホスト知識",
     "ai.subtab.skills":             "スキル",
     "ai.subtab.conventions":        "作法",
@@ -797,6 +800,9 @@ const I18N_RESOURCES = {
     "knowledge.badge.r1.title":     "Reasoning AI updated this most recently",
     "knowledge.pager.size":         "rows per page",
     // AI tab common
+    "ai.subtab.live":               "Live",
+    "ai.subtab.roles":              "Roles",
+    "ai.subtab.engines":            "Engines",
     "ai.subtab.knowledge":          "Host Knowledge",
     "ai.subtab.skills":             "Skills",
     "ai.subtab.conventions":        "Conventions",

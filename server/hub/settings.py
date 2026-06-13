@@ -64,6 +64,10 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # Cross-hub + restart-safe via the settings table (no engines DB column).
     # Toggled by POST /engines/{slug}/stop|resume.
     "engines_disabled": ("", "str"),
+    # POST /translate kill-switch. When False, the UI 翻訳 button gets 503
+    # so it can fall back gracefully. Default ON. env override:
+    # PAPRIKA_TRANSLATE_ENABLE (0/1).
+    "translate_enabled": (True, "bool"),
     # 役割(Roles) パネル: 各 AI の仕事に「優先順のエンジン列」を割り当てる
     # (csv, 上から試し、過熱/停止なら次へ = thermal.first_accepting)。空なら
     # 従来の既定にフォールバック: チャット=promoted(kind=chat) / コード生成=
@@ -76,6 +80,11 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     "vision_engine_order": ("", "str"),
     "judge_engine_order": ("", "str"),
     "distiller_engine_order": ("", "str"),
+    # 翻訳役割 (#ai 作法モーダルの翻訳ボタン用)。空なら chat 役割の
+    # Promoted へフォールバック。deepseek-r1 などのバイリンガル
+    # モデルが目的言語に他言語を混入させるのを避けたい時に、ここで
+    # 翻訳に強いエンジンを優先指定する。
+    "translate_engine_order": ("", "str"),
     # 課題(review) auto-classification: when a `fetch` job COMPLETES but its
     # content was blocked by a full-screen login / age / consent / paywall
     # overlay (detected structurally by the worker's live-DOM occlusion probe),

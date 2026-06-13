@@ -639,6 +639,10 @@ asyncio.run(main())"
         <code id="ljpJobId"></code>
         <span id="ljpStatus" class="ljp-status-pill status-queued">…</span>
         <span id="ljpAssetCount" class="ljp-asset-pill" style="display:none;">0 assets</span>
+        <span id="ljpRoleWrap" style="display:none; margin-left:6px;" title="URL 構造とホスト統計から推定したページ種別。クリックで訂正・ホスト全体への学習も可能。">
+          <span class="role-pill role-unknown" id="ljpRolePill">—</span>
+          <button type="button" id="ljpRoleEdit" class="aibtn" style="font-size:0.78em; margin-left:4px;"><iconify-icon icon="lucide:pencil"></iconify-icon> 訂正</button>
+        </span>
       </span>
       <span class="ljp-actions-group">
         <button id="ljpStop" class="pill" disabled data-i18n-title="ljp.pause.title" title="ジョブを一時停止する" style="--la-bg:#fde6e6; --la-bd:#d68080; --la-fg:#8a1d1d;"><iconify-icon icon="lucide:pause"></iconify-icon> <span data-i18n="ljp.pause">pause</span></button>
@@ -1289,7 +1293,7 @@ asyncio.run(main())"
       </span>
     </h2>
     <table id="jobsTable"><thead>
-      <tr><th data-col="id" data-i18n="jobs.th.id">id</th><th data-col="mode" data-i18n="jobs.th.mode">mode</th><th data-col="status" data-i18n="jobs.th.status">status</th><th data-col="url">URL</th><th data-col="role" title="URL 構造とホスト統計から推定したページ種別 (詳細 / 一覧 / トップ / エラー / 不明)">種類</th><th data-col="worker" data-i18n="jobs.th.worker">worker/lane</th><th data-col="started" data-i18n="jobs.th.started">started</th><th data-col="ended" data-i18n="jobs.th.ended">ended</th><th data-col="duration" data-i18n="jobs.th.duration">duration</th><th data-col="actions" data-i18n="jobs.th.actions">actions</th></tr>
+      <tr><th data-col="id" data-i18n="jobs.th.id">id</th><th data-col="mode" data-i18n="jobs.th.mode">mode</th><th data-col="status" data-i18n="jobs.th.status">status</th><th data-col="url">URL</th><th data-col="role" title="URL 構造とホスト統計から推定したページ種別 (詳細 / 一覧 / カテゴリ / タグ / トップ / エラー / 不明)">種類</th><th data-col="worker" data-i18n="jobs.th.worker">worker/lane</th><th data-col="started" data-i18n="jobs.th.started">started</th><th data-col="ended" data-i18n="jobs.th.ended">ended</th><th data-col="duration" data-i18n="jobs.th.duration">duration</th><th data-col="actions" data-i18n="jobs.th.actions">actions</th></tr>
     </thead><tbody><tr><td colspan=9 class="empty loading-row" data-i18n="jobs.loading">Loading…</td></tr></tbody></table>
     <!-- Recent-jobs client-side pager. Rebuilt by admin.js after each
          refresh() tick so total / range / button-enabled state track
@@ -1442,6 +1446,75 @@ asyncio.run(main())"
       <div style="font-weight:600; font-size:.86em; color:#444; margin:12px 0 4px;">llm_instructions <span style="font-weight:normal; color:#999;">— プロンプト用の指示文（散文）</span></div>
       <pre id="skillCodeInstr" style="background:#f6f8fa; border:1px solid #eaecef; padding:10px 12px; border-radius:6px; white-space:pre-wrap; word-break:break-word; font-size:13px; line-height:1.5; margin:0;"></pre>
       <div id="skillCodeProv" style="font-size:.8em; color:#999; margin-top:10px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ページ種別 訂正モーダル: Live ジョブパネル / #jobs から呼び出される。
+     ジョブ単発の訂正 (job_role_overrides) と、同テンプレ全ジョブへの学習
+     (host_url_role_overrides) を1つの UI でまとめて行える。 -->
+<div id="pageRoleEditModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:1100; align-items:center; justify-content:center; padding:20px;">
+  <div style="background:#fff; max-width:560px; width:100%; max-height:90vh; border-radius:10px; overflow:hidden; display:flex; flex-direction:column;">
+    <div style="display:flex; align-items:center; gap:10px; padding:11px 15px; border-bottom:1px solid #eee; background:#fafafa;">
+      <iconify-icon icon="lucide:pencil" style="color:#5b3aa6;"></iconify-icon>
+      <strong>ページ種別を訂正</strong>
+      <button id="pageRoleEditClose" style="margin-left:auto; background:transparent; border:none; cursor:pointer; font-size:1.3em; color:#666; padding:0 4px;" title="close">&#10005;</button>
+    </div>
+    <div style="padding:14px 16px;">
+      <div style="font-size:.9em; color:#444; line-height:1.5; margin-bottom:8px;">
+        URL: <code id="pageRoleEditUrl" style="font-size:.85em; color:#1a5a8a;"></code>
+      </div>
+      <div style="font-size:.9em; margin-bottom:10px;">
+        <span style="color:#666;">現在の自動判定:</span> <span id="pageRoleEditAuto"></span>
+      </div>
+      <div style="font-size:.9em; margin-bottom:6px;"><strong>新しい役割:</strong></div>
+      <div id="pageRoleEditChoices" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px;"></div>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-size:.88em; color:#333; line-height:1.45;">
+        <input type="checkbox" id="pageRoleEditApplyHost" checked style="margin-top:2px;">
+        <span>
+          <strong>同テンプレ全ジョブへ反映する</strong>（推奨）<br>
+          <span style="color:#777; font-size:.92em;">ホスト+URL テンプレ (<code id="pageRoleEditTplPreview"></code>) に override が保存され、同じパターンの今後のジョブも自動でこの役割になります。チェックを外すとこの 1 ジョブだけの訂正になります。</span>
+        </span>
+      </label>
+      <div style="display:flex; gap:8px; margin-top:16px; justify-content:flex-end;">
+        <button id="pageRoleEditClear" class="aibtn">訂正を解除</button>
+        <button id="pageRoleEditSave" class="aibtn" style="background:#196b2c; color:#fff; border-color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> 保存</button>
+      </div>
+      <div id="pageRoleEditMsg" style="margin-top:10px; font-size:.85em; min-height:18px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Convention 詳細モーダル: skills の openSkillCode と同じ目的 (蒸留結果を
+     見て評価できる)。advice / rationale / good_example / bad_example /
+     applicable_when / extracted_from を一画面に集約。 -->
+<div id="convDetailModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1002; align-items:center; justify-content:center; padding:20px;">
+  <div style="background:#fff; max-width:980px; width:100%; max-height:90vh; border-radius:9px; overflow:hidden; display:flex; flex-direction:column;">
+    <div style="display:flex; align-items:center; gap:10px; padding:11px 15px; border-bottom:1px solid #eee; background:#fafafa;">
+      <iconify-icon icon="lucide:scroll-text" style="color:#5b3aa6;"></iconify-icon>
+      <strong id="convDetailTitle" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">convention</strong>
+      <span id="convDetailMeta" style="font-size:.82em; color:#777; white-space:nowrap;"></span>
+      <button id="convDetailTranslate" class="pill" style="--la-bg:#eef8ff; --la-bd:#9bf; --la-fg:#16608f; font-size:.82em;" title="ハブ側 LLM (chat Promoted エンジン) で advice / rationale / 適用条件 を現在の表示言語へ翻訳。MariaDB に sha256(text)+lang でキャッシュされるので 2 回目以降は瞬時。コードブロック (bad/good example) はそのまま。"><iconify-icon icon="lucide:languages"></iconify-icon> <span id="convDetailTranslateLabel">翻訳</span></button>
+      <button id="convDetailClose" style="background:transparent; border:none; cursor:pointer; font-size:1.3em; color:#666; padding:0 4px;" title="close">&#10005;</button>
+    </div>
+    <div style="overflow:auto; padding:14px 16px;">
+      <div id="convDetailAdvice" style="background:#f0f7ff; border-left:3px solid #2c6e8e; padding:10px 14px; border-radius:0 6px 6px 0; font-size:.95em; line-height:1.55; margin-bottom:10px;"></div>
+      <div style="font-weight:600; font-size:.86em; color:#444; margin:8px 0 4px;">なぜ <span style="font-weight:normal; color:#999;">— rationale (背景・根拠)</span></div>
+      <div id="convDetailRationale" style="background:#fafafa; border:1px solid #eaecef; padding:8px 12px; border-radius:6px; font-size:.92em; line-height:1.55; white-space:pre-wrap; word-break:break-word;"></div>
+      <div style="font-weight:600; font-size:.86em; color:#444; margin:12px 0 4px;">適用条件 <span style="font-weight:normal; color:#999;">— applicable_when</span></div>
+      <div id="convDetailWhen" style="font-size:.9em;"></div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+        <div>
+          <div style="font-weight:600; font-size:.86em; color:#933; margin-bottom:4px;"><iconify-icon icon="lucide:x-circle"></iconify-icon> 悪い例 <span style="font-weight:normal; color:#999;">— bad_example</span></div>
+          <pre id="convDetailBad" style="background:#fff5f3; border:1px solid #f0c8c0; color:#3a1e1a; padding:9px 11px; border-radius:6px; overflow:auto; font-family:ui-monospace,Consolas,monospace; font-size:11.5px; line-height:1.5; white-space:pre; max-height:30vh; margin:0;"></pre>
+        </div>
+        <div>
+          <div style="font-weight:600; font-size:.86em; color:#196b2c; margin-bottom:4px;"><iconify-icon icon="lucide:check-circle"></iconify-icon> 良い例 <span style="font-weight:normal; color:#999;">— good_example</span></div>
+          <pre id="convDetailGood" style="background:#f3faf5; border:1px solid #c8e0c8; color:#1a3a20; padding:9px 11px; border-radius:6px; overflow:auto; font-family:ui-monospace,Consolas,monospace; font-size:11.5px; line-height:1.5; white-space:pre; max-height:30vh; margin:0;"></pre>
+        </div>
+      </div>
+      <div id="convDetailTags" style="margin-top:10px; font-size:.85em;"></div>
+      <div id="convDetailProv" style="font-size:.8em; color:#999; margin-top:10px;"></div>
     </div>
   </div>
 </div>
@@ -2356,7 +2429,9 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
         <label style="display:inline-flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" id="tglAutoRetire"> auto retire</label>
         <label style="display:inline-flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" id="tglAutoDedup"> auto dedup</label>
         <span style="color:#888; font-size:.82em;">※ 既定 OFF（候補表示のみ）。ON で auto-tier を自動処理（curated は対象外・手動のみ）。</span>
-        <button id="groomRefreshBtn" class="aibtn" style="margin-left:auto;"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> 再読込</button>
+        <span id="groomState" style="color:#777; font-size:.85em;">— 未取得</span>
+        <button id="groomTranslateBtn" class="aibtn" title="reason 列を表示言語に翻訳 (ハブ側 LLM)"><iconify-icon icon="lucide:languages"></iconify-icon> 翻訳</button>
+        <button id="groomRefreshBtn" class="aibtn"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> 再読込</button>
       </div>
       <div style="font-weight:600; margin:10px 0 4px;"><iconify-icon icon="lucide:trash-2"></iconify-icon> Retire 候補 <span class="count" id="cntGroomRetire">0</span> <span style="font-size:.8em; color:#999; font-weight:normal;">（dud=高use低成功率 / zombie=未使用かつ古い・auto のみ削除可）</span></div>
       <table id="grTable" class="aitbl" style="width:100%;">
@@ -2389,11 +2464,13 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
           <div class="ai-tile-label">Valid %</div>
           <div class="ai-tile-value" id="oracleValidPct">—</div>
         </div>
-        <button id="oracleRefreshBtn" class="aibtn" style="margin-left:auto; align-self:center;"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> 再読込</button>
+        <button id="oracleTranslateBtn" class="aibtn" style="margin-left:auto; align-self:center;" title="reason 列を表示言語に翻訳 (ハブ側 LLM)"><iconify-icon icon="lucide:languages"></iconify-icon> 翻訳</button>
+        <button id="oracleRefreshBtn" class="aibtn" style="align-self:center;"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> 再読込</button>
       </div>
       <div style="font-size:.82em; color:#888; margin-bottom:8px;">
         ※ L1 oracle（hub 側 ffprobe で再検証）。直近 200 件の動画アセットを走査。
         <span id="oracleByReason" style="margin-left:8px; color:#666;"></span>
+        <span id="oracleState" style="margin-left:8px; color:#777;"></span>
       </div>
       <table id="oracleTable" class="aitbl" style="width:100%;">
         <thead><tr><th>job</th><th>file</th><th style="width:46px; text-align:center;">L1</th><th class="num">duration</th><th>codec</th><th class="num">dims</th><th class="num">size</th><th>reason</th></tr></thead>
@@ -2461,6 +2538,8 @@ table.aitbl code { font-size:0.95em; }
 .role-pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:0.78em; font-weight:600; border:1px solid; line-height:1.5; white-space:nowrap; }
 .role-pill.role-detail   { background:#e0f5ed; color:#147a5a; border-color:#7cc4a8; }
 .role-pill.role-listing  { background:#ece6f8; color:#5b3aa6; border-color:#b6a3df; }
+.role-pill.role-category { background:#e6f0fa; color:#1a4f8a; border-color:#8eb6dc; }
+.role-pill.role-tag      { background:#fdeef5; color:#a8326b; border-color:#e0a3c0; }
 .role-pill.role-top      { background:#e1eaf4; color:#1a5a8a; border-color:#90b6d8; }
 .role-pill.role-error    { background:#fff3f0; color:#a23c2a; border-color:#e0a99a; }
 .role-pill.role-unknown  { background:#f0f0f3; color:#778;    border-color:#cdd; font-weight:500; }

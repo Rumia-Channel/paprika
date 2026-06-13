@@ -527,6 +527,36 @@ _RETIRE_MAX_RATE = 0.15
 # never groomed; safe to drop.
 _RETIRE_IDLE_DAYS = 30
 
+# Snapshot of the most recent _skill_convention_reaper_loop pass so the admin
+# UI can answer "is this thing alive and what did it just do?" without
+# tailing logs. Updated at the END of every pass (so a long-running pass is
+# only reflected when it finishes; that's fine, passes take ~ms).
+_last_skill_conv_reaper_run_at: datetime | None = None
+_last_skill_conv_reaper_pass: dict = {}
+
+
+def get_skill_convention_reaper_status() -> dict:
+    """Snapshot for routes/skills.py:/ai/grooming-status. Pure read; never
+    raises. Returns the last-pass stats + interval so the UI can compute
+    "next run at" and explain WHY the candidate list is empty (most often:
+    cold-start dud guard, see ``allow_dud_*`` flags)."""
+    nxt_iso = None
+    try:
+        from datetime import timedelta as _td
+        if _last_skill_conv_reaper_run_at is not None:
+            nxt_iso = (_last_skill_conv_reaper_run_at + _td(seconds=_RETIRE_INTERVAL_S)).isoformat() + "Z"
+    except Exception:
+        pass
+    return {
+        "last_run_at": (_last_skill_conv_reaper_run_at.isoformat() + "Z") if _last_skill_conv_reaper_run_at else None,
+        "next_run_at": nxt_iso,
+        "interval_s": _RETIRE_INTERVAL_S,
+        "min_use_for_dud": _RETIRE_MIN_USE,
+        "max_rate_for_dud": _RETIRE_MAX_RATE,
+        "zombie_idle_days": _RETIRE_IDLE_DAYS,
+        "last_pass": dict(_last_skill_conv_reaper_pass or {}),
+    }
+
 
 # Token-Jaccard threshold for calling two AUTO records near-duplicates.
 # High on purpose -- a false merge silently loses a distinct skill, so we
@@ -657,6 +687,10 @@ async def _skill_convention_reaper_loop():
                 enabled = bool(state.settings.get("auto_retire_enabled", False))
         except Exception:
             enabled = False
+        # Snapshot accumulators -- updated under both branches (dry-run + act)
+        # and written into the module-level state at the end of the pass.
+        global _last_skill_conv_reaper_run_at, _last_skill_conv_reaper_pass
+        _pass_stats: dict = {"by_kind": {}}
         for kind, reg in (("skill", state.skills), ("convention", state.conventions)):
             if reg is None:
                 continue
@@ -673,10 +707,27 @@ async def _skill_convention_reaper_loop():
             # zombie verdict applies to them.
             total_success = sum(getattr(r, "success_count", 0) or 0 for r in records)
             allow_dud = kind == "skill" and total_success > 0
+            _ks: dict = {
+                "records": len(records),
+                "total_success": int(total_success),
+                "allow_dud": bool(allow_dud),
+                "retire_candidates": 0,
+                "retire_acted": 0,
+                "dedup_candidates": 0,
+                "dedup_acted": 0,
+                "cold_start_skip_reason": (
+                    "skill 全体の success=0 のため dud 判定を skip 中 (zombie 判定は常時有効)"
+                    if kind == "skill" and not allow_dud else
+                    "convention は use rate が per-rule signal でないため dud 判定 無効 (zombie のみ)"
+                    if kind == "convention" else ""
+                ),
+            }
+            _pass_stats["by_kind"][kind] = _ks
             for rec in records:
                 reason = _retire_reason(rec, allow_dud=allow_dud)
                 if not reason:
                     continue
+                _ks["retire_candidates"] += 1
                 tier = getattr(rec, "tier", "auto")
                 slug = getattr(rec, "slug", "?")
                 if tier != "auto":
@@ -695,6 +746,7 @@ async def _skill_convention_reaper_loop():
                     continue
                 try:
                     reg.delete(slug, tier="auto")
+                    _ks["retire_acted"] += 1
                     log.info("retire: deleted auto %s %r -- %s", kind, slug, reason)
                 except Exception:
                     log.warning(
@@ -715,6 +767,7 @@ async def _skill_convention_reaper_loop():
             for cluster in clusters:
                 keep, drops = _dedup_pick(cluster)
                 drop_slugs = [d.slug for d in drops]
+                _ks["dedup_candidates"] += 1
                 if not dedup_enabled:
                     log.info(
                         "dedup(dry-run): would merge auto %s %r <- %r "
@@ -724,11 +777,18 @@ async def _skill_convention_reaper_loop():
                     continue
                 try:
                     reg.merge(keep.slug, drop_slugs)
+                    _ks["dedup_acted"] += 1
                     log.info("dedup: merged auto %s %r <- %r", kind, keep.slug, drop_slugs)
                 except Exception:
                     log.warning(
                         "dedup: merge failed %s %r", kind, keep.slug, exc_info=True
                     )
+        # End of pass: commit the snapshot so the admin UI can read it.
+        _last_skill_conv_reaper_run_at = datetime.utcnow()
+        _pass_stats["ran_at"] = _last_skill_conv_reaper_run_at.isoformat() + "Z"
+        _pass_stats["auto_retire_enabled"] = bool(enabled)
+        _pass_stats["auto_dedup_enabled"] = bool(dedup_enabled)
+        _last_skill_conv_reaper_pass = _pass_stats
 
 
 # ----------------------------------------------------------------------------

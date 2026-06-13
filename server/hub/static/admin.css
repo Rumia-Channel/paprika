@@ -912,6 +912,24 @@
     padding: 16px 18px; border-radius: 0 0 8px 8px;
     min-height: calc(100vh - 320px); box-sizing: border-box;
   }
+  /* Workers panel sub-pane: same white-card look as .submit-subpane /
+     .ai-subpane (kept as a separate class so workers JS wiring stays
+     local). The outer <section> wrapper that used to supply this card
+     was removed -- it was also wrapping the sub-tabs and gave them an
+     unwanted box frame. */
+  .workers-subpane {
+    background: #fff; border: 1px solid #d4cfca; border-top: none;
+    padding: 16px 18px; border-radius: 0 0 8px 8px;
+    min-height: calc(100vh - 320px); box-sizing: border-box;
+  }
+  /* Jobs panel sub-pane: same white-card look (same outer <section>
+     removal as the Workers panel; the status filter tabs now visually
+     merge into THIS card, not an outer one). */
+  .jobs-subpane {
+    background: #fff; border: 1px solid #d4cfca; border-top: none;
+    padding: 16px 18px; border-radius: 0 0 8px 8px;
+    min-height: calc(100vh - 320px); box-sizing: border-box;
+  }
   /* Generic pager (reused by each AI feature). */
   .ai-pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: .88em; }
   .ai-pager:empty { display: none; }

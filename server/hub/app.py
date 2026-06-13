@@ -1022,6 +1022,10 @@ from server.hub.routes.llm import router as _llm_router
 
 app.include_router(_llm_router)
 
+from server.hub.routes.translate import router as _translate_router
+
+app.include_router(_translate_router)
+
 
 # ---- CDP-Screencast live viewer (Windows portable noVNC replacement) -------
 # Worker_id with chrome_attach_port set (= Windows portable's single
