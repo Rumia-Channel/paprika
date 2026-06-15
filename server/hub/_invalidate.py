@@ -173,7 +173,19 @@ def _apply_event(evt: dict) -> None:
             and action == "update"
             and isinstance(evt.get("values"), dict)
         ):
-            reg.update(evt["values"])
+            values = evt["values"]
+            reg.update(values)
+            # Mirror the PUT /settings local-side behaviour: if any S3 knob
+            # changed, drop the cached boto3 client so the next object-store
+            # call rebuilds it from the new endpoint / credentials. Without
+            # this the receiving hub keeps writing to the OLD endpoint until
+            # restart (caught 2026-06-15 during the .16 -> .8 cutover).
+            if any(str(k).startswith("s3_") for k in values):
+                try:
+                    from server.hub import objstore
+                    objstore.reset_client()
+                except Exception:
+                    pass
         return
     reg = _registry(kind)
     if reg is None:

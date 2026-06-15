@@ -50,6 +50,10 @@ _TABLES: list[tuple[str, str]] = [
             completed_at  DATETIME(3),
             error         TEXT,
             progress      JSON,
+            -- Persisted page-role classification (value/confidence/reason).
+            -- Computed once from the URL (role_for_url) and read back on the
+            -- /jobs list so it isn't recomputed for every job on every request.
+            page_role     JSON,
             INDEX idx_status         (status),
             INDEX idx_created_at     (created_at),
             INDEX idx_worker_id      (worker_id),
@@ -289,6 +293,25 @@ _TABLES: list[tuple[str, str]] = [
         """,
     ),
     (
+        "storage_capacity_samples",
+        """
+        CREATE TABLE IF NOT EXISTS storage_capacity_samples (
+            ts                  DATETIME(0)   NOT NULL,
+            source              VARCHAR(64)   NOT NULL DEFAULT 'minio',
+            total_bytes         BIGINT        NOT NULL DEFAULT 0,
+            used_bytes          BIGINT        NOT NULL DEFAULT 0,
+            free_bytes          BIGINT        NOT NULL DEFAULT 0,
+            bucket_usage_bytes  BIGINT        NOT NULL DEFAULT 0,
+            bucket_object_count BIGINT        NOT NULL DEFAULT 0,
+            hub_id              VARCHAR(64)   NOT NULL DEFAULT '',
+            healthy             TINYINT(1)    NOT NULL DEFAULT 1,
+            note                VARCHAR(255)  NOT NULL DEFAULT '',
+            PRIMARY KEY (ts, source),
+            INDEX ix_storage_capacity_ts (ts)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
+    (
         "translations",
         """
         CREATE TABLE IF NOT EXISTS translations (
@@ -412,6 +435,27 @@ _TABLES: list[tuple[str, str]] = [
             created_at  DATETIME(3)  NOT NULL,
             INDEX idx_recovery_created (created_at),
             INDEX idx_recovery_worker (worker_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ),
+    # Per-host STATE digest (one-page "what we know, what worked, what
+    # to try next"). Distinct from the structured HostKnowledge / skills
+    # / conventions / recipes — this is the FREE-FORM synthesis the
+    # operator can read at a glance and the distiller reads as VISION.md-
+    # style context at the start of every escalation.
+    #
+    # Writers: operator (admin UI PUT), nightly_review (daily auto-roll-up).
+    # Readers: distiller_r1 (start of distill), admin UI (host modal subtab).
+    (
+        "host_strategy",
+        """
+        CREATE TABLE IF NOT EXISTS host_strategy (
+            host          VARCHAR(255) NOT NULL PRIMARY KEY,
+            summary_md    TEXT         NOT NULL,
+            updated_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+            updated_by    VARCHAR(64)  NOT NULL DEFAULT '',
+            revision      INT          NOT NULL DEFAULT 1,
+            INDEX idx_host_updated (updated_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
     ),
@@ -607,6 +651,9 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     ("hosts", "shared", "TINYINT(1) NOT NULL DEFAULT 1"),
     ("hosts", "excluded", "TINYINT(1) NOT NULL DEFAULT 0"),
     ("hosts", "download_video", "TINYINT(1) NOT NULL DEFAULT 0"),
+    # Persisted page-role (compute role_for_url once, read back on the /jobs
+    # list instead of recomputing for every job on every request).
+    ("jobs", "page_role", "JSON"),
 ]
 
 
@@ -1460,6 +1507,61 @@ async def fetch_host_url_history(
                 (host, int(limit)),
             )
             return list(await cur.fetchall())
+
+
+# ---------------------------------------------------------------------------
+# host_strategy: per-host STATE digest (VISION.md-style synthesis).
+# ---------------------------------------------------------------------------
+
+async def host_strategy_get(pool: Any, host: str) -> dict | None:
+    """Read the strategy digest for ``host``. Returns ``None`` when no
+    digest exists yet. Caller uses an empty fallback when None."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT host, summary_md, updated_at, updated_by, revision "
+                "FROM host_strategy WHERE host=%s",
+                (host,),
+            )
+            row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "host": row[0],
+        "summary_md": row[1] or "",
+        "updated_at": row[2].isoformat() if row[2] else None,
+        "updated_by": row[3] or "",
+        "revision": int(row[4] or 1),
+    }
+
+
+async def host_strategy_upsert(
+    pool: Any, host: str, summary_md: str, updated_by: str
+) -> None:
+    """Write the strategy digest for ``host``. ``updated_by`` is a free
+    string used to track provenance: ``'operator'``, ``'nightly_review'``,
+    a job_id, etc. Revision auto-increments on each write."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """INSERT INTO host_strategy (host, summary_md, updated_by, revision)
+                   VALUES (%s, %s, %s, 1)
+                   ON DUPLICATE KEY UPDATE
+                     summary_md = VALUES(summary_md),
+                     updated_by = VALUES(updated_by),
+                     revision   = revision + 1""",
+                (host, summary_md or "", updated_by or ""),
+            )
+
+
+async def host_strategy_delete(pool: Any, host: str) -> int:
+    """Drop the strategy digest for ``host``. Returns rowcount (0 or 1)."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM host_strategy WHERE host=%s", (host,)
+            )
+            return cur.rowcount or 0
 
 
 async def restore_visited_urls(pool: Any, visited_registry: Any) -> int:
@@ -2318,6 +2420,148 @@ async def load_engine_usage(pool: Any, days: int = 14) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# storage_capacity_samples: periodic snapshots of the asset-store back-end
+# (MinIO at .16). Sampled by ONE hub at a time (Redis SET NX EX gate) and
+# read by the admin UI for the depletion-trend chart.
+
+_STORAGE_CAPACITY_DDL = (
+    "CREATE TABLE IF NOT EXISTS storage_capacity_samples ("
+    "ts DATETIME(0) NOT NULL,"
+    "source VARCHAR(64) NOT NULL DEFAULT 'minio',"
+    "total_bytes BIGINT NOT NULL DEFAULT 0,"
+    "used_bytes BIGINT NOT NULL DEFAULT 0,"
+    "free_bytes BIGINT NOT NULL DEFAULT 0,"
+    "bucket_usage_bytes BIGINT NOT NULL DEFAULT 0,"
+    "bucket_object_count BIGINT NOT NULL DEFAULT 0,"
+    "hub_id VARCHAR(64) NOT NULL DEFAULT '',"
+    "healthy TINYINT(1) NOT NULL DEFAULT 1,"
+    "note VARCHAR(255) NOT NULL DEFAULT '',"
+    "PRIMARY KEY (ts, source),"
+    "INDEX ix_storage_capacity_ts (ts)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+)
+
+
+async def storage_capacity_record(
+    pool: Any,
+    ts: str,
+    source: str,
+    total_bytes: int,
+    used_bytes: int,
+    free_bytes: int,
+    bucket_usage_bytes: int,
+    bucket_object_count: int,
+    hub_id: str,
+    healthy: bool,
+    note: str = "",
+) -> None:
+    """Insert one capacity sample. INSERT IGNORE on PK collision so a rare
+    multi-hub race at the same second silently keeps the first writer's row."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_STORAGE_CAPACITY_DDL)
+            await cur.execute(
+                "INSERT IGNORE INTO storage_capacity_samples "
+                "(ts, source, total_bytes, used_bytes, free_bytes, "
+                "bucket_usage_bytes, bucket_object_count, hub_id, healthy, note) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    str(ts),
+                    str(source or "minio")[:64],
+                    max(0, int(total_bytes or 0)),
+                    max(0, int(used_bytes or 0)),
+                    max(0, int(free_bytes or 0)),
+                    max(0, int(bucket_usage_bytes or 0)),
+                    max(0, int(bucket_object_count or 0)),
+                    str(hub_id or "")[:64],
+                    1 if healthy else 0,
+                    str(note or "")[:255],
+                ),
+            )
+
+
+async def load_storage_capacity(
+    pool: Any, days: int = 7, source: str = "minio", limit: int = 4000
+) -> list:
+    """Return capacity samples for the last ``days`` days as a chronologically
+    ordered list of dicts. Caller can downsample for display."""
+    out: list = []
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_STORAGE_CAPACITY_DDL)
+            await cur.execute(
+                "SELECT ts, total_bytes, used_bytes, free_bytes, "
+                "bucket_usage_bytes, bucket_object_count, hub_id, healthy, note "
+                "FROM storage_capacity_samples "
+                "WHERE source = %s AND ts >= (UTC_TIMESTAMP() - INTERVAL %s DAY) "
+                "ORDER BY ts ASC "
+                "LIMIT %s",
+                (str(source or "minio"), max(1, int(days)), max(1, int(limit))),
+            )
+            for row in await cur.fetchall():
+                ts = row[0]
+                ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                out.append(
+                    {
+                        "ts": ts_iso,
+                        "total_bytes": int(row[1] or 0),
+                        "used_bytes": int(row[2] or 0),
+                        "free_bytes": int(row[3] or 0),
+                        "bucket_usage_bytes": int(row[4] or 0),
+                        "bucket_object_count": int(row[5] or 0),
+                        "hub_id": str(row[6] or ""),
+                        "healthy": bool(row[7]),
+                        "note": str(row[8] or ""),
+                    }
+                )
+    return out
+
+
+async def latest_storage_capacity(pool: Any, source: str = "minio") -> dict | None:
+    """Most recent single sample, or None if table is empty."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_STORAGE_CAPACITY_DDL)
+            await cur.execute(
+                "SELECT ts, total_bytes, used_bytes, free_bytes, "
+                "bucket_usage_bytes, bucket_object_count, hub_id, healthy, note "
+                "FROM storage_capacity_samples "
+                "WHERE source = %s "
+                "ORDER BY ts DESC LIMIT 1",
+                (str(source or "minio"),),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            ts = row[0]
+            ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            return {
+                "ts": ts_iso,
+                "total_bytes": int(row[1] or 0),
+                "used_bytes": int(row[2] or 0),
+                "free_bytes": int(row[3] or 0),
+                "bucket_usage_bytes": int(row[4] or 0),
+                "bucket_object_count": int(row[5] or 0),
+                "hub_id": str(row[6] or ""),
+                "healthy": bool(row[7]),
+                "note": str(row[8] or ""),
+            }
+
+
+async def prune_storage_capacity(pool: Any, keep_days: int = 60) -> int:
+    """Drop samples older than ``keep_days`` to keep the table bounded."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_STORAGE_CAPACITY_DDL)
+            await cur.execute(
+                "DELETE FROM storage_capacity_samples "
+                "WHERE ts < (UTC_TIMESTAMP() - INTERVAL %s DAY)",
+                (max(1, int(keep_days)),),
+            )
+            return int(getattr(cur, "rowcount", 0) or 0)
+
+
+# ---------------------------------------------------------------------------
 # Translation cache: hash(text) + target_lang -> translated. Translations are
 # generated by the chat Promoted engine on operator request (UI 翻訳 button on
 # conventions) and persisted here so a re-open / a different operator / a
@@ -2951,6 +3195,31 @@ _JOB_ROLE_OVERRIDES_DDL = (
     "set_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
 )
+
+
+async def host_urls_by_template_get(
+    pool: Any, host: str, template: str, limit: int = 3
+) -> list:
+    """Return up to ``limit`` real observed URLs whose templatize() result
+    equals ``template`` for ``host``. Used by the host-edit modal to show
+    "what concrete URLs got collapsed into this template" — makes the
+    templatization rules tangible. Best-effort: errors return []."""
+    if not host or not template:
+        return []
+    out: list = []
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT url FROM host_url_history "
+                    "WHERE host=%s AND template=%s "
+                    "ORDER BY last_seen_at DESC LIMIT %s",
+                    (str(host), str(template), int(max(1, min(limit, 20)))),
+                )
+                out = [str(u) for (u,) in await cur.fetchall()]
+    except Exception:
+        out = []
+    return out
 
 
 async def host_url_role_overrides_get(pool: Any, host: str) -> dict:

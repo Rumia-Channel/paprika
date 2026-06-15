@@ -746,17 +746,28 @@ async def find_vision_capable_target() -> LLMTarget | None:
     """Resolve a vision-capable engine target for perception, preferring one
     that is thermally ACCEPTING.
 
-    Enumerates every registered engine whose model name looks vision-capable
-    (so the new ``qwen3-vl-4b`` boxes are found, not just hard-coded slugs),
-    promoted first, then fails over to the first thermally-accepting one --
-    so the two Qwen3-VL boxes share load by temperature and this returns None
-    when they are ALL throttled. Caller may fall back to text-only perception
-    (env default) on None.
+    Two-stage selection:
+
+      1. **Operator tiers** (Settings ``vision_engine_order``, parsed by
+         :func:`server.hub._roles.role_order_tiers` -- ``|`` = same-tier
+         load-balanced, ``,`` = ranked fallback). For each tier in order:
+         round-robin the engines (per-hub counter, so two co-equal Qwen3-VL
+         boxes alternate instead of always hitting the alphabetically-first
+         one), then thermally fail over within the rotation.
+
+      2. **Legacy fallback** (no setting / no tier accepts): any unlisted
+         vision-capable engine, ordered local-GPU-first / cloud-last /
+         promoted-first / slug. Single-engine tier == no rotation; the
+         operator opts into load-balancing by grouping engines with ``|``.
+
+    Returns ``None`` when EVERY vision engine is throttled or disabled --
+    the caller falls back to text-only perception (env default).
     """
     try:
         from server.hub._state import state as _st
         from server.hub.codegen import resolve_engine_target
         from server.hub import thermal
+        from server.hub._roles import role_order_tiers, rr_rotate
     except Exception:
         return None
     if _st.engines is None:
@@ -768,36 +779,45 @@ async def find_vision_capable_target() -> LLMTarget | None:
     vis = [r for r in recs if _model_is_vision_capable(getattr(r, "model", "") or "")]
     if not vis:
         return None
-    # Order: LOCAL GPU vision engines first (thermal-managed -- a gpu_temp_url
-    # or a gpu_temp_stop_c is set), CLOUD engines LAST (no thermal window,
-    # e.g. OpenAI gpt-4o-mini). So a cloud engine is only a FALLBACK, used
-    # when every local vision GPU is throttled / down. Within each group:
-    # promoted first, then slug (stable order so all hubs pick the same one).
+
+    by_slug = {getattr(r, "slug", "") or "": r for r in vis}
+
+    # Stage 1: operator tiers (round-robin within each tier).
+    tiers = role_order_tiers("vision")
+    listed_slugs: set[str] = set()
+    for tier_idx, tier_slugs in enumerate(tiers):
+        listed_slugs.update(tier_slugs)
+        rr_key = f"vision#{tier_idx}#{','.join(sorted(tier_slugs))}"
+        rotated = rr_rotate(tier_slugs, rr_key)
+        tier_recs = [by_slug[s] for s in rotated if s in by_slug]
+        if not tier_recs:
+            continue
+        chosen = await thermal.first_accepting(tier_recs)
+        if chosen is not None:
+            try:
+                return resolve_engine_target(getattr(chosen, "slug", "") or "", _st.engines)
+            except Exception:
+                return None
+
+    # Stage 2: legacy fallback for unlisted vision engines (local-first,
+    # cloud-last, promoted-first, slug). Not round-robined -- operator
+    # opts into load-balancing by listing engines in the role panel.
     def _vis_is_cloud(r):
         return not (
             str(getattr(r, "gpu_temp_url", "") or "").strip()
             or float(getattr(r, "gpu_temp_stop_c", 0) or 0) > 0
         )
-    # Operator's explicit priority from the 役割(Roles) panel -- Settings
-    # ``vision_engine_order`` (csv of slugs). Listed engines come FIRST in
-    # that exact order; anything unlisted falls back to the default
-    # local-GPU-first / cloud-last heuristic.
-    _order = []
-    try:
-        if _st.settings is not None:
-            _order = [s.strip() for s in (_st.settings.get("vision_engine_order", "") or "").split(",") if s.strip()]
-    except Exception:
-        _order = []
-    _rank = {s: i for i, s in enumerate(_order)}
-    vis.sort(key=lambda r: (
-        _rank.get(getattr(r, "slug", ""), len(_order)),
+    unlisted = [r for r in vis if (getattr(r, "slug", "") or "") not in listed_slugs]
+    unlisted.sort(key=lambda r: (
         _vis_is_cloud(r),
         not getattr(r, "promoted", False),
         getattr(r, "slug", ""),
     ))
-    chosen = await thermal.first_accepting(vis)
+    if not unlisted:
+        return None
+    chosen = await thermal.first_accepting(unlisted)
     if chosen is None:
-        return None  # every vision engine is thermally throttled
+        return None
     try:
         return resolve_engine_target(getattr(chosen, "slug", "") or "", _st.engines)
     except Exception:

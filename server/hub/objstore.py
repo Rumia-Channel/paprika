@@ -512,6 +512,88 @@ async def list_tree(job_id: str, subdir: str = "assets") -> list[dict]:
         return []
 
 
+async def delete_prefix(job_id: str, *, dry_run: bool = False) -> dict:
+    """Delete EVERY object under a job's dir in the bucket
+    (``{prefix}/{job_id}/...``). Returns ``{"objects", "bytes", "deleted"}``.
+    ``dry_run=True`` counts only (no delete).
+
+    DESTRUCTIVE + permanent: the bucket is the durable store, so a job's assets
+    are gone for good. Used by the job-cleanup / orphan-sweep path so deleting a
+    job actually reclaims its storage instead of orphaning it. Returns
+    ``objects=0`` when disabled / boto3 missing / nothing there."""
+    if not enabled() or not job_id:
+        return {"objects": 0, "bytes": 0, "deleted": False}
+    prefix = _job_prefix(job_id)
+
+    def _delete() -> dict:
+        client = _get_client()
+        if client is None:
+            return {"objects": 0, "bytes": 0, "deleted": False}
+        bucket = _bucket()
+        n = 0
+        total = 0
+        batch: list[dict] = []
+        try:
+            paginator = client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                for o in page.get("Contents", []):
+                    n += 1
+                    total += int(o.get("Size", 0))
+                    if not dry_run:
+                        batch.append({"Key": o["Key"]})
+                        if len(batch) >= 1000:  # S3 delete_objects caps at 1000
+                            client.delete_objects(
+                                Bucket=bucket,
+                                Delete={"Objects": batch, "Quiet": True},
+                            )
+                            batch = []
+            if not dry_run and batch:
+                client.delete_objects(
+                    Bucket=bucket, Delete={"Objects": batch, "Quiet": True}
+                )
+        except Exception:
+            return {"objects": n, "bytes": total, "deleted": False}
+        return {"objects": n, "bytes": total, "deleted": not dry_run}
+
+    try:
+        return await asyncio.to_thread(_delete)
+    except Exception:
+        return {"objects": 0, "bytes": 0, "deleted": False}
+
+
+async def list_job_prefixes() -> list[str]:
+    """Every top-level job-id prefix present in the bucket (one per job dir).
+    A delimited top-level listing (not a full object walk). Used by the orphan
+    sweep to find bucket data whose DB job row is gone. ``[]`` when disabled."""
+    if not enabled():
+        return []
+    p = _prefix()
+    base = (p + "/") if p else ""
+
+    def _list() -> list[str]:
+        client = _get_client()
+        if client is None:
+            return []
+        out: list[str] = []
+        try:
+            paginator = client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(
+                Bucket=_bucket(), Prefix=base, Delimiter="/"
+            ):
+                for cp in page.get("CommonPrefixes", []):
+                    jid = cp["Prefix"][len(base):].rstrip("/")
+                    if jid:
+                        out.append(jid)
+        except Exception:
+            return out
+        return out
+
+    try:
+        return await asyncio.to_thread(_list)
+    except Exception:
+        return []
+
+
 async def prefix_exists(job_id: str, subdir: str = "") -> bool:
     """True when the bucket holds at least one object under the job's dir
     (or ``{subdir}`` within it). Lets the soft-resolve gate accept a job

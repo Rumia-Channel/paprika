@@ -76,6 +76,37 @@ _STATIC_ERROR = frozenset({
     "register", "cart", "checkout",
 })
 
+# Query-key keywords. Many CMSes (especially WordPress) route navigation
+# through query parameters instead of clean URL segments. Without these,
+# `/?category=foo&page=2` looks like the top page (path is just `/`) and
+# gets misclassified as `top` with high confidence.
+# Role precedence mirrors the path-side: category > tag > listing > detail.
+_QUERY_CATEGORY = frozenset({
+    "category", "category_name", "categories", "cat", "cat_id",
+    "genre", "section", "channel", "department",
+})
+_QUERY_TAG = frozenset({
+    "tag", "tag_name", "tags", "topic", "topics", "hashtag",
+    "keyword", "keywords", "kw",
+})
+_QUERY_LISTING = frozenset({
+    "page", "paged", "pg", "author", "author_name", "user_id",
+    "s", "q", "query", "search", "k",
+})
+_QUERY_DETAIL = frozenset({
+    # WordPress-style ?p=123 / ?post=123 detail keys. Only treated as
+    # detail when the path is at or near the root (a deeper path with
+    # ?post=... is usually a listing carrying a referrer).
+    "p", "post", "post_id", "post_name", "item", "item_id",
+})
+
+# Keys that templatize() folds into the template signature. Excludes
+# opaque/tracking keys (utm_*, ref, fbclid, gclid, ...) that would
+# explode the template space without helping classification.
+_NAV_QUERY_KEYS = (
+    _QUERY_CATEGORY | _QUERY_TAG | _QUERY_LISTING | _QUERY_DETAIL
+)
+
 
 def _classify_token(t: str) -> str:
     if not t:
@@ -105,12 +136,17 @@ def _classify_token(t: str) -> str:
 
 
 def templatize(url: str) -> str:
-    """Normalise a URL's path into a template.
+    """Normalise a URL's path (and known nav query keys) into a template.
 
     Variable segments collapse to ``{int}/{slug}/{code}/{id}/{uuid}/{hex}``;
     static keywords (``tag``, ``page``, ...) stay verbatim. Returns ``/`` for
     the bare top URL. Trailing slash is normalised so ``/foo`` and ``/foo/``
     share a template.
+
+    Known navigation query keys (``page``, ``category``, ``tag``, ``s``,
+    WordPress ``p``, ...) are folded into the template (sorted by key,
+    values tokenised) so CMS sites that route through query parameters
+    rather than path segments don't all collapse to ``/``.
 
     Examples::
 
@@ -119,6 +155,8 @@ def templatize(url: str) -> str:
         /2024/03/abc-123.html      -> /{year}/{month}/abc-123.html/
         /v/Xy7Az                   -> /v/{id}/
         /                          -> /
+        /?page=4&category=foo      -> /?category={slug}&page={int}
+        /?p=123                    -> /?p={int}
     """
     try:
         p = urlparse(url or "")
@@ -126,9 +164,26 @@ def templatize(url: str) -> str:
         return ""
     path = (p.path or "/").rstrip("/") or "/"
     if path == "/":
-        return "/"
-    segs = [s for s in path.split("/") if s]
-    return "/" + "/".join(_classify_token(s.lower()) for s in segs) + "/"
+        path_tpl = "/"
+    else:
+        segs = [s for s in path.split("/") if s]
+        path_tpl = "/" + "/".join(_classify_token(s.lower()) for s in segs) + "/"
+    if not p.query:
+        return path_tpl
+    try:
+        from urllib.parse import parse_qsl
+        qs = parse_qsl(p.query, keep_blank_values=True)
+    except Exception:
+        return path_tpl
+    parts = []
+    for k, v in sorted(qs, key=lambda kv: kv[0].lower()):
+        kl = (k or "").lower()
+        if kl not in _NAV_QUERY_KEYS:
+            continue
+        parts.append(f"{kl}={_classify_token((v or '').lower())}")
+    if not parts:
+        return path_tpl
+    return path_tpl + "?" + "&".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -198,31 +253,51 @@ class HostPageRoles:
         tpl = templatize(url)
         if not tpl:
             return "unknown", 0.0, "empty url"
+        # Bare top: path is root AND no nav query keys folded in.
         if tpl == "/":
             return "top", 0.99, "top path"
-        segs = [s for s in tpl.strip("/").split("/") if s]
+
+        # Split path/query halves of the template so both sides feed the
+        # keyword checks. ``?`` is only present when templatize() folded
+        # in at least one nav query key.
+        path_tpl, _sep, query_tpl = tpl.partition("?")
+        qkeys: set[str] = set()
+        if query_tpl:
+            qkeys = {kv.split("=", 1)[0] for kv in query_tpl.split("&") if kv}
+
+        segs = [s for s in path_tpl.strip("/").split("/") if s]
         statics = [s for s in segs if not s.startswith("{")]
 
-        # 1) static error keyword
+        # 1) static error keyword (path-only; error pages don't use nav query)
         if any(s in _STATIC_ERROR for s in statics):
             return "error", 0.95, "static error keyword"
-        # 2) static category / tag keyword (more specific than 'listing')
+        # 2) static category / tag (path OR query) -- more specific than listing
         if any(s in _STATIC_CATEGORY for s in statics):
             return "category", 0.9, "category keyword"
+        if qkeys & _QUERY_CATEGORY:
+            return "category", 0.9, "category query key"
         if any(s in _STATIC_TAG for s in statics):
             return "tag", 0.9, "tag keyword"
+        if qkeys & _QUERY_TAG:
+            return "tag", 0.9, "tag query key"
         # 3) explicit pagination OR pagination co-occurrence (strongest listing)
-        if self._page_co_occurs(tpl):
+        if self._page_co_occurs(path_tpl):
             return "listing", 0.95, "pagination"
+        # 3b) query-side pagination / search / author -- strong listing too
+        if qkeys & _QUERY_LISTING:
+            return "listing", 0.9, "listing query key"
         # 4) static listing keyword
         if any(s in _STATIC_LISTING for s in statics):
             return "listing", 0.85, "listing keyword"
-        # 4) host-observed video evidence on this template -> detail (strong)
+        # 4b) WP-style detail query key on a top-ish path (?p=123)
+        if (qkeys & _QUERY_DETAIL) and len(segs) <= 1:
+            return "detail", 0.85, "detail query key"
+        # 5) host-observed video evidence on this template -> detail (strong)
         n = int(self.templates.get(tpl, 0))
         nv = int(self.video_seen.get(tpl, 0))
         if nv >= 2 or (n >= 3 and nv >= max(1, int(n * 0.3))):
             return "detail", 0.95, f"video evidence ({nv}/{n})"
-        # 5) variable segments + multiple observations -> probable detail
+        # 6) variable segments + multiple observations -> probable detail
         var_segs = sum(1 for s in segs if s.startswith("{"))
         if var_segs >= 1 and n >= 3:
             return "detail", 0.6, f"variable segs ({n} obs)"

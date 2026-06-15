@@ -105,16 +105,24 @@ async def session_save_cookies_to_host(session_id: str, body: dict) -> dict:
 
 
 @router.get("/sessions/{session_id}/operator_actions")
-async def get_operator_actions(session_id: str) -> dict:
+async def get_operator_actions(session_id: str, request: Request = None) -> dict:
     """Return the recorded operator-action trace for this session's job
     (for the 'save as recipe from operator demonstration' flow)."""
+    # Multi-hub: if the session lives on another hub, the operator_actions.json
+    # sidecar is in that hub's local cache -- forward the whole request there.
+    if request is not None:
+        fwd = await _maybe_forward_session(session_id, request, forward_timeout=15.0)
+        if fwd is not None:
+            return fwd
     info = _get_session_or_404(session_id)
     return {"session_id": session_id, "job_id": info.job_id,
             "actions": _load_operator_trace(info)}
 
 
 @router.post("/sessions/{session_id}/operator_action")
-async def session_operator_action(session_id: str, body: dict) -> dict:
+async def session_operator_action(
+    session_id: str, body: dict, request: Request = None,
+) -> dict:
     """Execute an operator-driven control action AND record it.
 
     Body::
@@ -137,6 +145,16 @@ async def session_operator_action(session_id: str, body: dict) -> dict:
     action = body.get("action")
     if not isinstance(action, dict) or not action.get("kind"):
         raise HTTPException(400, "missing 'action' (a dict with 'kind')")
+    # Multi-hub: when the session isn't held by this hub, the worker WS,
+    # the screenshot pipeline, and operator_actions.json all live on the
+    # owner hub. Reverse-proxy the whole request there so the trace
+    # append happens in the right place. Timeout = body.timeout (worker
+    # action) + screenshot 20s + slack.
+    if request is not None:
+        _to = float(body.get("timeout") or 30.0) + 60.0
+        fwd = await _maybe_forward_session(session_id, request, forward_timeout=_to)
+        if fwd is not None:
+            return fwd
     info = _get_session_or_404(session_id)
     label = (str(body.get("label") or action.get("kind") or "")).strip()
     do_record = body.get("record", True)
@@ -188,7 +206,9 @@ async def session_operator_action(session_id: str, body: dict) -> dict:
 
 
 @router.get("/sessions/{session_id}/state/{key}")
-async def get_session_state(session_id: str, key: str) -> dict:
+async def get_session_state(
+    session_id: str, key: str, request: Request = None,
+) -> dict:
     """Read persistent key/value state for the session's parent job.
 
     State is stored under ``data/jobs/{parent_job_id}/state/<key>.json``
@@ -200,6 +220,11 @@ async def get_session_state(session_id: str, key: str) -> dict:
     state was stored under that key. 400 if the session has no
     parent_job_id (state only makes sense bound to a job).
     """
+    # Multi-hub: the state sidecar is in the owner hub's local cache.
+    if request is not None:
+        fwd = await _maybe_forward_session(session_id, request, forward_timeout=15.0)
+        if fwd is not None:
+            return fwd
     info = _get_session_or_404(session_id)
     parent_jid = info.job_id
     if not parent_jid:
@@ -220,10 +245,17 @@ async def get_session_state(session_id: str, key: str) -> dict:
 
 
 @router.put("/sessions/{session_id}/state/{key}")
-async def put_session_state(session_id: str, key: str, body: dict) -> dict:
+async def put_session_state(
+    session_id: str, key: str, body: dict, request: Request = None,
+) -> dict:
     """Write persistent state for the session's parent job (see
     GET counterpart for storage layout). Body must be JSON object
     ``{"data": <any JSON>}``."""
+    # Multi-hub: the state sidecar is in the owner hub's local cache.
+    if request is not None:
+        fwd = await _maybe_forward_session(session_id, request, forward_timeout=15.0)
+        if fwd is not None:
+            return fwd
     info = _get_session_or_404(session_id)
     parent_jid = info.job_id
     if not parent_jid:

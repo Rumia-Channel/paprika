@@ -87,37 +87,62 @@ async def list_workers() -> dict:
     return payload
 
 
-@router.get("/workers/capacity")
-async def workers_capacity() -> dict:
-    """How many fetches the fleet can run AT ONCE (concurrent-fetch capacity).
+# ----------------------------------------------------------------------------
+# /workers/capacity: Stale-While-Revalidate cache.
+#
+# Crawler clients poll this at ~5-10 req/s to gate job submission. Each
+# request does a cross-hub stats_async() + a MariaDB COUNT on queued jobs,
+# and BOTH can spike to 1-3s under hub event-loop pressure (see
+# [[hub-eventloop-stalls]]). With the crawler's short HTTP timeout, that
+# spike shows up as a wave of HTTP 499 (client closed request) at the nginx
+# edge -- "20 連続失敗" complaint, incident 2026-06-15.
+#
+# Strategy: stale-while-revalidate (SWR).
+#   * cache FRESH (within TTL): return instantly.
+#   * cache STALE (past TTL but exists): return STALE instantly, kick off a
+#     background refresh task. Subsequent calls keep returning stale until
+#     the background refresh updates the cache. A slow underlying compute
+#     thus NEVER blocks a request -- the worst latency a client sees after
+#     the first-ever request is microseconds.
+#   * NO cache (first request after boot): compute synchronously, populate.
+#
+# Tunable via env ``PAPRIKA_WORKERS_CAPACITY_CACHE_S`` (default 1.0; set to
+# 0 to disable). A higher TTL just means more stale data; under SWR the
+# refresh still keeps it converging.
+# ----------------------------------------------------------------------------
+try:
+    _CAPACITY_CACHE_TTL_S = float(
+        os.environ.get("PAPRIKA_WORKERS_CAPACITY_CACHE_S") or 1.0
+    )
+except (TypeError, ValueError):
+    _CAPACITY_CACHE_TTL_S = 1.0
+_CAPACITY_CACHE_TTL_S = max(0.0, _CAPACITY_CACHE_TTL_S)
+_capacity_cache: tuple[dict | None, float] = (None, 0.0)
+_capacity_lock = asyncio.Lock()
+_capacity_refresh_in_flight = False
 
-    A fetch -- like every job -- runs on one worker *lane* (a worker's
-    ``capacity`` = its ``max_concurrent`` lanes), and fetch shares lanes with
-    all modes, so **max simultaneous fetches = total eligible lanes**.
 
-    * ``max_concurrent`` -- the HARD ceiling (sum of active workers' lanes).
-    * ``recommended_concurrency`` -- what a client should actually cap at:
-      ``round(max_concurrent * load_factor)`` (``load_factor`` env
-      ``PAPRIKA_FETCH_LOAD_FACTOR``, default 0.8 = 80% of capacity). Reserves
-      headroom for worker churn / bursts / non-fetch jobs (keeps the fleet out
-      of saturation). This is the number to use, not the raw ``max_concurrent``.
-    * ``available`` -- free lanes you can start RIGHT NOW without queuing;
-      beyond it, new jobs queue (redrive) or ``POST /jobs`` returns 503. This is
-      the number a client should cap its parallel fetches at.
-    * ``running`` -- lanes busy now.
+async def _refresh_capacity_cache_bg() -> None:
+    """Background-task entry point: recompute and update the SWR cache.
+    Coalesced via ``_capacity_refresh_in_flight`` so a burst of stale-cache
+    hits only schedules ONE background refresh."""
+    global _capacity_cache, _capacity_refresh_in_flight
+    try:
+        data = await _compute_capacity()
+        _capacity_cache = (data, time.monotonic() + _CAPACITY_CACHE_TTL_S)
+    except Exception:
+        log.warning(
+            "workers_capacity: background refresh failed",
+            exc_info=True,
+        )
+    finally:
+        _capacity_refresh_in_flight = False
 
-    Fleet-wide (all hubs, via the same cross-hub aggregation ``/workers`` uses,
-    so it survives a single hub's Redis hiccup). ``available`` mirrors the
-    dispatcher's eligibility (:meth:`pick_worker`): alive + status ``active`` +
-    has a Chrome lane + disk < 90%. Lightweight: no per-job hydration."""
+
+async def _compute_capacity() -> dict:
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
         "+00:00", "Z"
     )
-    # Recommended concurrency = a FRACTION of the hard ceiling (the "load
-    # factor"), leaving headroom for worker churn (a rolling deploy drops
-    # eligible capacity ~20-25%), fast-turnover/transient lane use, the
-    # occasional non-fetch job, and burst absorption. Tunable via env
-    # PAPRIKA_FETCH_LOAD_FACTOR (0..1, default 0.8 = recommend 80% of capacity).
     try:
         load_factor = float(os.environ.get("PAPRIKA_FETCH_LOAD_FACTOR") or 0.8)
     except (TypeError, ValueError):
@@ -138,7 +163,6 @@ async def workers_capacity() -> dict:
         c = w.get("capacity")
         return int(c) if isinstance(c, (int, float)) and c and c > 0 else 1
 
-    # Fleet ceiling / current load = active + alive workers.
     active = [
         w for w in workers
         if w.get("alive") and (w.get("status") or "active") == "active"
@@ -146,8 +170,6 @@ async def workers_capacity() -> dict:
     max_concurrent = sum(_cap(w) for w in active)
     running = sum(int(w.get("in_flight") or 0) for w in active)
 
-    # Dispatchable-now = active workers that ALSO have a usable Chrome lane and
-    # aren't disk-pressured (mirrors pick_worker, so we never over-promise).
     def _dispatchable(w) -> bool:
         return (
             len(w.get("lane_novnc_urls") or []) > 0
@@ -187,6 +209,66 @@ async def workers_capacity() -> dict:
         ),
         "as_of": now_iso,
     }
+
+
+@router.get("/workers/capacity")
+async def workers_capacity() -> dict:
+    """How many fetches the fleet can run AT ONCE (concurrent-fetch capacity).
+
+    A fetch -- like every job -- runs on one worker *lane* (a worker's
+    ``capacity`` = its ``max_concurrent`` lanes), and fetch shares lanes with
+    all modes, so **max simultaneous fetches = total eligible lanes**.
+
+    * ``max_concurrent`` -- the HARD ceiling (sum of active workers' lanes).
+    * ``recommended_concurrency`` -- what a client should actually cap at:
+      ``round(max_concurrent * load_factor)`` (``load_factor`` env
+      ``PAPRIKA_FETCH_LOAD_FACTOR``, default 0.8 = 80% of capacity). Reserves
+      headroom for worker churn / bursts / non-fetch jobs (keeps the fleet out
+      of saturation). This is the number to use, not the raw ``max_concurrent``.
+    * ``available`` -- free lanes you can start RIGHT NOW without queuing;
+      beyond it, new jobs queue (redrive) or ``POST /jobs`` returns 503. This is
+      the number a client should cap its parallel fetches at.
+    * ``running`` -- lanes busy now.
+
+    Fleet-wide (all hubs, via the same cross-hub aggregation ``/workers`` uses,
+    so it survives a single hub's Redis hiccup). ``available`` mirrors the
+    dispatcher's eligibility (:meth:`pick_worker`): alive + status ``active`` +
+    has a Chrome lane + disk < 90%. Lightweight: no per-job hydration.
+
+    Response is cached for ``PAPRIKA_WORKERS_CAPACITY_CACHE_S`` (default 1.0s)
+    under a stale-while-revalidate policy: past the TTL, the LAST KNOWN value
+    is returned instantly while a background task recomputes -- so a slow
+    underlying compute (hub event-loop spike) NEVER stalls a request after
+    the first-ever boot. Set the env to ``0`` to disable caching entirely."""
+    if _CAPACITY_CACHE_TTL_S <= 0:
+        return await _compute_capacity()
+    global _capacity_cache, _capacity_refresh_in_flight
+    now = time.monotonic()
+    cached, expires_at = _capacity_cache
+    if cached is not None and now < expires_at:
+        return cached  # FRESH
+    if cached is not None:
+        # STALE: return last-known immediately and kick off a single background
+        # refresh (the ``_capacity_refresh_in_flight`` flag coalesces a burst
+        # of stale hits into one recompute).
+        if not _capacity_refresh_in_flight:
+            _capacity_refresh_in_flight = True
+            try:
+                asyncio.create_task(_refresh_capacity_cache_bg())
+            except RuntimeError:
+                # No running loop (highly unlikely inside an HTTP handler);
+                # reset the flag so a future request can try again.
+                _capacity_refresh_in_flight = False
+        return cached
+    # NO cache yet -- first request after this hub's boot. Compute under the
+    # lock so a thundering herd of first requests collapses to one compute.
+    async with _capacity_lock:
+        cached, expires_at = _capacity_cache
+        if cached is not None and time.monotonic() < expires_at:
+            return cached
+        data = await _compute_capacity()
+        _capacity_cache = (data, time.monotonic() + _CAPACITY_CACHE_TTL_S)
+        return data
 
 
 @router.get("/workers/hosts")
@@ -1660,6 +1742,29 @@ async def worker_link(ws: WebSocket, worker_id: str):
                 if jinfo.status not in (JobStatus.queued, JobStatus.running):
                     continue  # already terminal
                 phase = getattr(jinfo.progress, "phase", "") if jinfo.progress else ""
+                if jinfo.status == JobStatus.queued:
+                    # Worker disconnected BEFORE reporting WorkerJobAccepted --
+                    # the job is still queued, which means the worker provably
+                    # never started it (status would be running otherwise). No
+                    # partial work to recover; re-queue and let redrive
+                    # re-dispatch onto the next free worker.
+                    # Pre-fix this dropped a perfectly-good job into "failed"
+                    # for a transient WS blip (deploy churn, heartbeat miss,
+                    # nginx ghost). Worker-disconnect was the #1 failure mode
+                    # — ~78% of all failures (incident 2026-06-15).
+                    jinfo.worker_id = None
+                    jinfo.started_at = None
+                    if jinfo.progress is not None:
+                        jinfo.progress.phase = "queued"
+                    try:
+                        await state.store.save_job_info(jinfo)
+                    except Exception:
+                        pass
+                    log.info(
+                        "worker %s disconnect: re-queued job %s (worker never ack'd)",
+                        worker_id, jid,
+                    )
+                    continue
                 if jinfo.status == JobStatus.running and phase == "keepalive":
                     # Crawl already finished; only the interactive
                     # keepalive session died with the worker. Mirror the

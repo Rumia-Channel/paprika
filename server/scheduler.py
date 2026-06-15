@@ -1261,14 +1261,27 @@ class WorkerRegistry:
     # ----- dispatch --------------------------------------------------------
 
     async def assign(self, worker: ConnectedWorker, msg: HubAssignJob) -> bool:
-        """Push an `assign_job` message and bump in_flight. Returns True
-        on success, False if the send raises."""
+        """Reserve a lane on this worker AND push the ``HubAssignJob``. Returns
+        True on success, False if the send raises (reservation is rolled back).
+
+        ``in_flight`` is bumped BEFORE the awaited ``worker.send`` so a second
+        ``pick_worker`` that races us during the send doesn't see the worker
+        as still-having-capacity and over-dispatch onto the same lanes. That
+        race is the source of the worker-side "no free lane in pool" failures
+        (incident 2026-06-15): with POST inline + redrive + post-assign-guard
+        all calling pick_worker concurrently, two pickers could both see
+        ``in_flight=1, max=2`` and both send -- the worker's lane_pool would
+        accept the first, run out of lanes on the second, and the WorkerJobFailed
+        cascade burned ~60% of recent failures."""
+        worker.in_flight += 1
+        self.assignments.setdefault(worker.worker_id, set()).add(msg.job_id)
         try:
             await worker.send(msg)
         except Exception:
+            # Roll back the reservation -- the worker never got the assign.
+            worker.in_flight = max(0, worker.in_flight - 1)
+            self.assignments.get(worker.worker_id, set()).discard(msg.job_id)
             return False
-        worker.in_flight += 1
-        self.assignments.setdefault(worker.worker_id, set()).add(msg.job_id)
         return True
 
     def release(self, worker_id: str, job_id: str) -> None:

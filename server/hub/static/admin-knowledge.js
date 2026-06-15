@@ -109,6 +109,16 @@
   };
 
   async function loadSkillsConventions() {
+    // _rolesSettings.skill_audit_warn_threshold drives the 監査要 badge
+    // in _aiRow. loadRoles() also populates it, but the operator may
+    // jump straight to the skills/conventions sub-tab without visiting
+    // 役割 first -- prime the settings cache here so the warning shows.
+    if (!_rolesSettings || Object.keys(_rolesSettings).length === 0) {
+      try {
+        const sr = await fetch('/settings');
+        if (sr.ok) _rolesSettings = ((await sr.json()).values) || {};
+      } catch (_e) { /* transient */ }
+    }
     await _loadAiTable('/skills', 'skills');
     await _loadAiTable('/conventions', 'conventions');
   }
@@ -429,7 +439,10 @@
     { key: 'codegen', setting: 'codegen_engine_order', icon: 'lucide:code-2', name: 'コード生成', code: 'codegen-loop', desc: 'スクリプト自動生成（Submit で上書き可）' },
     { key: 'page_agent', setting: 'page_agent_engine_order', icon: 'lucide:bot', name: '自律エージェント', code: 'page.agent()', desc: '空なら page.agent は無効' },
     { key: 'vision', setting: 'vision_engine_order', icon: 'lucide:eye', name: '視覚', code: 'perception', desc: 'ページを画像で見る（画像対応エンジンのみ）', vis: true },
-    { key: 'judge', setting: 'judge_engine_order', icon: 'lucide:scale', name: '判定', code: 'judge', desc: 'codegen がゴール達成か採点', mode: 'reasoning_judge_mode', modes: ['off', 'on', 'shadow'] },
+    { key: 'judge', setting: 'judge_engine_order', icon: 'lucide:scale', name: '判定', code: 'judge', desc: 'codegen がゴール達成か採点', mode: 'reasoning_judge_mode', modes: ['off', 'on', 'shadow'], flags: [
+      { key: 'judge_objective_gates_first', label: '客観gate優先', tip: '動画intent×assets数 など客観的に決まる場合は LLM 判定を呼ばずに確定（短絡）' },
+      { key: 'judge_blind_mode', label: 'blind', tip: 'judge にはスクリプト本体・stdout/stderr を見せない（asset 数・終了コード・スクショ・perception だけで判定 = "evaluator-optimizer" 原則）' },
+    ]},
     { key: 'distiller', setting: 'distiller_engine_order', icon: 'lucide:brain', name: '推論蒸留', code: 'distiller', desc: '失敗から壁・ホスト知識を学習', mode: 'reasoning_distiller_mode', modes: ['off', 'on', 'new'] },
     { key: 'translate', setting: 'translate_engine_order', icon: 'lucide:languages', name: '翻訳', code: 'POST /translate', desc: '#ai 作法モーダルの「翻訳」用。空ならチャット既定にフォールバック' },
   ];
@@ -459,51 +472,102 @@
     if (key === 'vision') return _visSlugs();
     return [];
   }
-  function _roleOrder(def) {
-    const all = _rolesEngines.map(e => e.slug);
-    let o = (_rolesSettings[def.setting] || '').split(',').map(x => x.trim()).filter(Boolean).filter(sl => all.includes(sl));
-    if (!o.length) o = _legacyDefault(def.key).filter(sl => all.includes(sl));
-    return o;
+  // Tier-aware CSV parse. `|` joins same-tier engines (load-balanced via
+  // round-robin in server/hub/_roles.py); `,` separates priority tiers
+  // (ranked fallback when the higher tier is throttled/disabled).
+  // Returns [[slug,...], ...]; outer = tiers, inner = same-tier engines.
+  function _roleOrderTiers(def) {
+    const all = new Set(_rolesEngines.map(e => e.slug));
+    const raw = _rolesSettings[def.setting] || '';
+    let tiers = raw.split(',').map(t =>
+      t.split('|').map(s => s.trim()).filter(s => s && all.has(s))
+    ).filter(t => t.length);
+    if (!tiers.length) tiers = _legacyDefault(def.key).filter(sl => all.has(sl)).map(sl => [sl]);
+    return tiers;
   }
+  function _flattenTiers(tiers) {
+    return (tiers || []).filter(t => t && t.length).map(t => t.join('|')).join(',');
+  }
+  function _tiersFlat(tiers) {
+    const out = []; tiers.forEach(t => t.forEach(s => out.push(s))); return out;
+  }
+  // Back-compat: callers that just want the flat slug list (no tier info).
+  function _roleOrder(def) { return _tiersFlat(_roleOrderTiers(def)); }
   function _roleCard(def) {
-    const order = _roleOrder(def);
+    const tiers = _roleOrderTiers(def);
     const editing = !!_rolesEditing[def.key];
-    const badge = (sl, first) => '<span class="aibadge ' + (first ? 'tier-cur' : 'tier-auto') + '"' + (_enabledOf(sl) ? '' : ' style="opacity:.5;text-decoration:line-through;"') + '>' + _esc(sl) + '</span>';
+    const used = new Set(_tiersFlat(tiers));
+    const pool = (def.vis ? _visSlugs() : _rolesEngines.map(e => e.slug)).filter(sl => !used.has(sl));
+    const badge = (sl, isFirstTier) => '<span class="aibadge ' + (isFirstTier ? 'tier-cur' : 'tier-auto') + '"' + (_enabledOf(sl) ? '' : ' style="opacity:.5;text-decoration:line-through;"') + '>' + _esc(sl) + '</span>';
+    const TIE_SEP = '<span style="color:#5b6770;margin:0 3px;font-size:11px;" title="同列（同優先度・ラウンドロビンで負荷分散）">⇄</span>';
+    const RANK_SEP = '<span style="color:#9aa3ab;margin:0 3px;" title="フォールバック（上が全部過熱/停止のときだけ次へ）">›</span>';
     let control;
     if (editing) {
-      const rows = order.map((sl, i) =>
-        '<div style="display:flex;align-items:center;gap:5px;margin:2px 0;">' +
-        '<span style="font-size:11px;color:#9aa3ab;width:13px;text-align:right;">' + (i + 1) + '</span>' +
-        '<span class="aibadge ' + (i === 0 ? 'tier-cur' : 'tier-auto') + '" style="min-width:124px;text-align:center;' + (_enabledOf(sl) ? '' : 'opacity:.5;text-decoration:line-through;') + '">' + _esc(sl) + '</span>' +
-        '<button class="aibtn ro-up" data-role="' + def.key + '" data-i="' + i + '"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
-        '<button class="aibtn ro-down" data-role="' + def.key + '" data-i="' + i + '"' + (i === order.length - 1 ? ' disabled' : '') + '>▼</button>' +
-        '<button class="aibtn del ro-del" data-role="' + def.key + '" data-i="' + i + '" title="外す">×</button></div>').join('');
-      const pool = (def.vis ? _visSlugs() : _rolesEngines.map(e => e.slug)).filter(sl => !order.includes(sl));
-      const addSel = pool.length ? '<select class="ro-add ro-sel" data-role="' + def.key + '"><option value="">＋ 追加…</option>' + pool.map(sl => '<option value="' + _esc(sl) + '">' + _esc(sl) + '</option>').join('') + '</select>' : '';
-      control = '<div style="display:flex;flex-direction:column;gap:2px;align-items:flex-end;">' + (rows || '<span style="font-size:12px;color:#9aa3ab;">なし</span>') + '<div style="margin-top:5px;display:flex;gap:6px;align-items:center;">' + addSel + '<button class="aibtn ro-done" data-role="' + def.key + '">完了</button></div></div>';
+      const tierRows = tiers.map((tier, ti) => {
+        const engs = tier.map((sl, ei) =>
+          '<span class="aibadge ' + (ti === 0 ? 'tier-cur' : 'tier-auto') + '" style="min-width:120px;text-align:center;display:inline-flex;align-items:center;gap:4px;' + (_enabledOf(sl) ? '' : 'opacity:.5;text-decoration:line-through;') + '">' +
+          '<span>' + _esc(sl) + '</span>' +
+          '<button class="aibtn del ro-del" data-role="' + def.key + '" data-ti="' + ti + '" data-ei="' + ei + '" style="padding:0 5px;font-size:11px;line-height:1.4;" title="このエンジンをティアから外す">×</button>' +
+          '</span>'
+        ).join(TIE_SEP);
+        const tierAddPool = pool.length
+          ? '<select class="ro-add-to-tier ro-sel" data-role="' + def.key + '" data-ti="' + ti + '" title="このティア(同優先度)に追加して負荷分散"><option value="">＋同列…</option>' + pool.map(sl => '<option value="' + _esc(sl) + '">' + _esc(sl) + '</option>').join('') + '</select>'
+          : '';
+        const mergeBtn = ti > 0
+          ? '<button class="aibtn ro-merge-up" data-role="' + def.key + '" data-ti="' + ti + '" title="上のティアと統合(同列・負荷分散)">⇧合体</button>'
+          : '';
+        return '<div style="display:flex;align-items:center;gap:5px;margin:2px 0;flex-wrap:wrap;">' +
+          '<span style="font-size:11px;color:#9aa3ab;width:14px;text-align:right;">' + (ti + 1) + '.</span>' +
+          '<div style="display:inline-flex;align-items:center;flex-wrap:wrap;">' + engs + '</div>' +
+          '<button class="aibtn ro-tier-up" data-role="' + def.key + '" data-ti="' + ti + '"' + (ti === 0 ? ' disabled' : '') + ' title="このティアの優先度を上げる">▲</button>' +
+          '<button class="aibtn ro-tier-down" data-role="' + def.key + '" data-ti="' + ti + '"' + (ti === tiers.length - 1 ? ' disabled' : '') + ' title="このティアの優先度を下げる">▼</button>' +
+          mergeBtn + tierAddPool +
+          '</div>';
+      }).join('');
+      const addNewTier = pool.length
+        ? '<select class="ro-add ro-sel" data-role="' + def.key + '" title="末尾に新しい優先度ティアとして追加"><option value="">＋ 新ティア…</option>' + pool.map(sl => '<option value="' + _esc(sl) + '">' + _esc(sl) + '</option>').join('') + '</select>'
+        : '';
+      control = '<div style="display:flex;flex-direction:column;gap:2px;align-items:flex-end;">' + (tierRows || '<span style="font-size:12px;color:#9aa3ab;">なし</span>') + '<div style="margin-top:5px;display:flex;gap:6px;align-items:center;">' + addNewTier + '<button class="aibtn ro-done" data-role="' + def.key + '">完了</button></div></div>';
     } else {
-      const chain = order.length ? order.map((sl, i) => badge(sl, i === 0)).join('<span style="color:#9aa3ab;margin:0 1px;">›</span>') : '<span style="font-size:12px;color:#9aa3ab;">（env 既定）</span>';
-      control = chain + ' <button class="aibtn ro-edit" data-role="' + def.key + '">編集</button>';
+      if (tiers.length) {
+        const tierStrs = tiers.map((tier, ti) =>
+          tier.map(sl => badge(sl, ti === 0)).join(TIE_SEP)
+        );
+        const chain = tierStrs.join(RANK_SEP);
+        control = chain + ' <button class="aibtn ro-edit" data-role="' + def.key + '">編集</button>';
+      } else {
+        control = '<span style="font-size:12px;color:#9aa3ab;">（env 既定）</span> <button class="aibtn ro-edit" data-role="' + def.key + '">編集</button>';
+      }
     }
     let modeSel = '';
     if (def.mode) {
       const cur = _rolesSettings[def.mode] || 'off';
       modeSel = ' <span class="ro-seg">' + def.modes.map(m => '<button type="button" class="ro-mode' + (m === cur ? ' on' : '') + '" data-mode="' + def.mode + '" data-val="' + m + '">' + m + '</button>').join('') + '</span>';
     }
+    let flagsSel = '';
+    if (def.flags && def.flags.length) {
+      flagsSel = ' ' + def.flags.map(fl => {
+        const on = !!_rolesSettings[fl.key];
+        const style = on
+          ? 'background:#1e6b3a;color:#fff;border:1px solid #155126;'
+          : 'background:#f0f1f5;color:#6b7380;border:1px solid #d6dae0;';
+        return '<button type="button" class="ro-flag' + (on ? ' on' : '') + '" data-flag="' + fl.key + '" data-val="' + (on ? 'off' : 'on') + '" title="' + _esc(fl.tip) + '" style="' + style + 'padding:2px 8px;font-size:0.76em;border-radius:6px;cursor:pointer;margin-left:4px;">' + (on ? '✓ ' : '☐ ') + _esc(fl.label) + '</button>';
+      }).join('');
+    }
     return '<div style="display:flex;align-items:' + (editing ? 'flex-start' : 'center') + ';gap:14px;border:1px solid ' + (def.vis ? '#b5d4f4' : '#e2e6ea') + ';border-radius:10px;padding:10px 14px;margin-bottom:9px;background:#fff;">' +
       '<iconify-icon icon="' + def.icon + '" style="font-size:20px;color:#5b6770;margin-top:' + (editing ? '2px' : '0') + ';"></iconify-icon>' +
-      '<div style="flex:1;min-width:0;"><div style="font-size:14.5px;font-weight:600;">' + def.name + ' <span style="font-size:11.5px;color:#9aa3ab;font-weight:400;font-family:monospace;">' + def.code + '</span>' + modeSel + '</div>' +
+      '<div style="flex:1;min-width:0;"><div style="font-size:14.5px;font-weight:600;">' + def.name + ' <span style="font-size:11.5px;color:#9aa3ab;font-weight:400;font-family:monospace;">' + def.code + '</span>' + modeSel + flagsSel + '</div>' +
       '<div style="font-size:12px;color:#6b7680;">' + def.desc + '</div></div>' +
       '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end;">' + control + '</div></div>';
   }
   function _renderRoles() {
     const el = document.getElementById('aiRolesPanel'); if (!el) return;
     el.innerHTML = _ROLE_DEFS.map(_roleCard).join('') +
-      '<div style="font-size:11.5px;color:#9aa3ab;margin-top:8px;line-height:1.5;">▲▼ で優先順、× で除外、＋ で追加。上から試し、過熱/停止のエンジンは飛ばして次へ。空欄は従来の既定（promoted / env / 単一設定）にフォールバック。</div>';
+      '<div style="font-size:11.5px;color:#9aa3ab;margin-top:8px;line-height:1.5;">▲▼ で優先度ティアを並べ替え、× でエンジン除外。＋同列で同優先度に追加（同ティア内はラウンドロビンで負荷分散）、＋新ティアで次の優先度を追加、⇧合体で上のティアに統合。上のティアから試し、全エンジンが過熱/停止のときだけ次のティアへ。空欄は従来の既定（promoted / env / 単一設定）にフォールバック。</div>';
     _wireRoles();
   }
   async function _putSetting(obj) { try { await fetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) }); } catch (e) { /* transient */ } }
-  async function _saveOrder(def, arr) { const o = {}; o[def.setting] = arr.join(','); await _putSetting(o); }
+  async function _saveOrder(def, tiers) { const o = {}; o[def.setting] = _flattenTiers(tiers); await _putSetting(o); }
   function _wireRoles() {
     const el = document.getElementById('aiRolesPanel'); if (!el || el._wired) return; el._wired = true;
     el.addEventListener('click', async (ev) => {
@@ -512,21 +576,43 @@
       if (b.classList.contains('ro-edit')) { _rolesEditing[role] = true; _renderRoles(); return; }
       if (b.classList.contains('ro-done')) { _rolesEditing[role] = false; _renderRoles(); return; }
       if (b.classList.contains('ro-mode')) { const o = {}; o[b.dataset.mode] = b.dataset.val; await _putSetting(o); loadRoles(); return; }
+      if (b.classList.contains('ro-flag')) { const o = {}; o[b.dataset.flag] = (b.dataset.val === 'on'); await _putSetting(o); loadRoles(); return; }
       if (!def) return;
-      const order = _roleOrder(def), i = parseInt(b.dataset.i, 10);
-      if (isNaN(i)) return;
-      const a = order.slice();
-      if (b.classList.contains('ro-up') && i > 0) { const t = a[i]; a[i] = a[i - 1]; a[i - 1] = t; }
-      else if (b.classList.contains('ro-down') && i < a.length - 1) { const t = a[i]; a[i] = a[i + 1]; a[i + 1] = t; }
-      else if (b.classList.contains('ro-del')) { a.splice(i, 1); }
-      else return;
-      await _saveOrder(def, a); loadRoles();
+      const tiers = _roleOrderTiers(def).map(t => t.slice());
+      const ti = parseInt(b.dataset.ti, 10);
+      if (isNaN(ti)) return;
+      if (b.classList.contains('ro-tier-up') && ti > 0) {
+        const t = tiers[ti]; tiers[ti] = tiers[ti - 1]; tiers[ti - 1] = t;
+      } else if (b.classList.contains('ro-tier-down') && ti < tiers.length - 1) {
+        const t = tiers[ti]; tiers[ti] = tiers[ti + 1]; tiers[ti + 1] = t;
+      } else if (b.classList.contains('ro-merge-up') && ti > 0) {
+        tiers[ti - 1] = tiers[ti - 1].concat(tiers[ti]);
+        tiers.splice(ti, 1);
+      } else if (b.classList.contains('ro-del')) {
+        const ei = parseInt(b.dataset.ei, 10);
+        if (isNaN(ei)) return;
+        tiers[ti].splice(ei, 1);
+        if (!tiers[ti].length) tiers.splice(ti, 1);
+      } else return;
+      await _saveOrder(def, tiers); loadRoles();
     });
     el.addEventListener('change', async (ev) => {
       const sel = ev.target;
-      if (sel.classList && sel.classList.contains('ro-add') && sel.value) {
-        const def = _ROLE_BY_KEY[sel.dataset.role]; const a = _roleOrder(def).slice(); a.push(sel.value);
-        await _saveOrder(def, a); loadRoles();
+      if (!sel.classList) return;
+      const def = _ROLE_BY_KEY[sel.dataset.role]; if (!def) return;
+      if (sel.classList.contains('ro-add') && sel.value) {
+        // Append as a NEW lowest-priority tier (fallback).
+        const tiers = _roleOrderTiers(def).map(t => t.slice());
+        tiers.push([sel.value]);
+        await _saveOrder(def, tiers); loadRoles();
+      } else if (sel.classList.contains('ro-add-to-tier') && sel.value) {
+        // Add to an existing tier (same priority = load-balanced).
+        const ti = parseInt(sel.dataset.ti, 10);
+        if (isNaN(ti)) return;
+        const tiers = _roleOrderTiers(def).map(t => t.slice());
+        if (!tiers[ti]) return;
+        tiers[ti].push(sel.value);
+        await _saveOrder(def, tiers); loadRoles();
       }
     });
   }
@@ -541,6 +627,16 @@
         (pct >= 50 ? '#4a9d6a' : (pct >= 20 ? '#d6a13a' : '#d65a5a')) + ';"></div><span>' +
         pct + '% (' + (x.success_count || 0) + '/' + (x.use_count || 0) + ')</span></div>';
     const tierBadge = '<span class="aibadge ' + (x.tier === 'curated' ? 'tier-cur' : 'tier-auto') + '">' + _esc(x.tier || 'auto') + '</span>';
+    // Audit warning: an `auto`-tier skill/convention that has been used
+    // a lot WITHOUT operator promotion is a prompt-injection-style
+    // concern (0xCodez 14-step Tier 3 — "audit skill sources, skills
+    // are prompt-injection vectors"). Surface a warning badge so the
+    // operator notices and either promotes (curated = reviewed) or
+    // deletes. Threshold = Settings.skill_audit_warn_threshold.
+    const _auditThr = Number(_rolesSettings && _rolesSettings.skill_audit_warn_threshold);
+    const auditBadge = (x.tier !== 'curated' && _auditThr > 0 && Number(x.use_count || 0) >= _auditThr)
+      ? '<span class="aibadge" style="background:#fff4d6; color:#7a4a14; border:1px solid #d6a13a; margin-left:4px;" title="auto-tier のまま ' + _auditThr + ' 回以上使われています。注入経路として安全か内容を確認(promote)してください">⚠ 監査要</span>'
+      : '';
     const slug = _esc(x.slug);
     const desc = _esc((x.description || x.advice || '').slice(0, 100));
     const tierBtn = x.tier === 'curated'
@@ -556,7 +652,7 @@
       : kind === 'conventions'
       ? '<button class="aibtn" data-act="detail" data-kind="conventions" data-slug="' + slug + '" title="この作法の蒸留内容 (advice / good/bad example / 由来) を表示"><iconify-icon icon="lucide:scroll-text"></iconify-icon> 内容</button>'
       : '';
-    return '<tr title="' + desc + '"><td><code>' + slug + '</code></td><td>' + tierBadge + '</td>' +
+    return '<tr title="' + desc + '"><td><code>' + slug + '</code></td><td>' + tierBadge + auditBadge + '</td>' +
       '<td class="num">' + (x.use_count || 0) + '</td><td class="num">' + (x.success_count || 0) + '</td>' +
       '<td>' + bar + '</td><td>' + codeBtn + tierBtn + delBtn + '</td></tr>';
   }
@@ -1565,6 +1661,14 @@ try {
       "Asset / Proxy": "Asset / Proxy",
       "ストレージ / DB": "Storage / DB",
       "システム情報": "System info",
+      // --- host edit modal sub-tabs ---
+      "クッキー": "Cookies",
+      "ページ種別判定": "Page-role rules",
+      "その他": "Other",
+      "判定キーワード一覧": "Keyword rules",
+      "テンプレ化規則（URL の数字 / UUID / slug が変数に置換される順序）": "Templatization rules (priority order for converting digits / UUIDs / slugs into variables)",
+      "この変換に含まれる実 URL を見る": "Show real URLs collapsed into this template",
+      "新規ホストです。保存後に「ページ種別判定」が利用可能になります。": "New host. Page-role rules will be available after saving.",
       // --- convention detail modal ---
       "なぜ": "Why",
       "適用条件": "Applicable when",

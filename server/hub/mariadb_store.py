@@ -334,6 +334,79 @@ class MariaDBJobStore:
                 )
                 return cur.rowcount == 1
 
+    async def reclaim_stranded_queued_job(
+        self, job_id: str, expected_worker_id: str
+    ) -> bool:
+        """Clear a STALE ``worker_id`` from a job that's still ``queued``.
+
+        POST /jobs records ``worker_id`` the instant the assign WS send returns
+        (= "handed to the worker"), even though ``status`` only flips to
+        ``running`` after the worker reports ``WorkerJobAccepted``. If the
+        worker never acks (process hung, accept handler crashed, mid-deploy
+        churn), the row sits as ``queued + worker_id`` forever -- and the
+        redrive loop's ``worker_id IS NULL`` guard skips it. This is the
+        post-mortem fix for that case (incident 2026-06-15): clear the stale
+        ``worker_id`` so the next ``claim_queued_job`` pass can re-dispatch.
+
+        Guards:
+          * status MUST still be ``queued`` -- once the original worker DOES
+            accept (race window) the row flips to ``running`` and this UPDATE
+            no-ops (rowcount 0).
+          * ``worker_id`` MUST still match ``expected_worker_id`` -- defensive
+            against a concurrent reclaim by a peer hub that already won.
+
+        Returns True iff THIS call won the reclaim. The caller may then run
+        the existing ``claim_queued_job`` to take the row for a fresh worker."""
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE jobs SET worker_id=NULL, started_at=NULL "
+                    "WHERE job_id=%s AND status='queued' AND worker_id=%s",
+                    (job_id, expected_worker_id),
+                )
+                return cur.rowcount == 1
+
+    async def get_page_roles(self, job_ids: "list[str]") -> dict:
+        """Read persisted auto page-roles for these jobs
+        (``job_id -> {value, confidence, reason}``). Lets the /jobs list reuse
+        the stored role instead of recomputing ``role_for_url`` for every job
+        on every request -- the role is URL-derived + stable, so it's computed
+        once (and written back via :meth:`set_page_roles`) and read here."""
+        if not job_ids:
+            return {}
+        ph = ",".join(["%s"] * len(job_ids))
+        out: dict = {}
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT job_id, page_role FROM jobs "
+                    f"WHERE job_id IN ({ph}) AND page_role IS NOT NULL",
+                    tuple(job_ids),
+                )
+                for jid, pr in await cur.fetchall():
+                    if not pr:
+                        continue
+                    try:
+                        out[jid] = pr if isinstance(pr, dict) else json.loads(pr)
+                    except Exception:
+                        pass
+        return out
+
+    async def set_page_roles(self, roles: dict) -> None:
+        """Persist computed auto page-roles (``job_id -> dict``). Best-effort
+        write-back: a row that vanished mid-flight just matches 0 rows."""
+        rows = [
+            (json.dumps(v), jid) for jid, v in (roles or {}).items() if jid
+        ]
+        if not rows:
+            return
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    "UPDATE jobs SET page_role=%s WHERE job_id=%s",
+                    rows,
+                )
+
     async def list_job_ids(
         self, offset: int = 0, limit: int = 0
     ) -> list[str]:

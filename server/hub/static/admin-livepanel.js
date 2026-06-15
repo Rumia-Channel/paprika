@@ -1457,3 +1457,126 @@ function ljpSetTab(name) {
   if (typeof ljpNetOnTabChange === 'function') ljpNetOnTabChange(name);
 }
 
+
+// ===========================================================================
+// Page-role pill + 訂正 modal (Live job panel)
+// ===========================================================================
+const _LJP_ROLE_LABEL = { detail: '詳細', listing: '一覧', category: 'カテゴリ', tag: 'タグ', top: 'トップ', error: 'エラー', unknown: '不明' };
+const _LJP_ROLE_CHOICES = ['detail', 'listing', 'category', 'tag', 'top', 'error', 'unknown'];
+let _ljpPageRoleState = null;
+
+function _ljpRoleEsc(s) { return (s == null ? '' : ('' + s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+function _ljpRolePillRender(data) {
+  const pill = document.getElementById('ljpRolePill');
+  const wrap = document.getElementById('ljpRoleWrap');
+  if (!pill || !wrap) return;
+  if (!data || !data.value) {
+    pill.className = 'role-pill role-unknown'; pill.textContent = '—';
+    wrap.style.display = 'none'; return;
+  }
+  const v = data.value;
+  const label = _LJP_ROLE_LABEL[v] || v;
+  pill.className = 'role-pill role-' + _ljpRoleEsc(v);
+  const overridden = !!data.job_override || (!!data.host_override && data.host_override === v);
+  pill.innerHTML = (overridden ? '<iconify-icon icon="lucide:pin" style="vertical-align:-2px; font-size:.9em;"></iconify-icon> ' : '') + label;
+  const conf = (data.confidence != null) ? Math.round(data.confidence * 100) + '%' : '';
+  pill.title = v + (conf ? ' · ' + conf : '') + ' · ' + (data.reason || '') + (overridden ? '\n\n(訂正済み)' : '');
+  wrap.style.display = '';
+}
+
+async function ljpLoadPageRole(jobId) {
+  if (!jobId) return;
+  try {
+    const r = await fetch('/jobs/' + encodeURIComponent(jobId) + '/page-role');
+    if (!r.ok) { _ljpRolePillRender(null); return; }
+    _ljpPageRoleState = await r.json();
+    _ljpRolePillRender(_ljpPageRoleState);
+  } catch (_e) { _ljpRolePillRender(null); }
+}
+
+function _ljpOpenPageRoleEdit() {
+  const m = document.getElementById('pageRoleEditModal');
+  if (!m || !_ljpPageRoleState) return;
+  const $ = (id) => document.getElementById(id);
+  const s = _ljpPageRoleState;
+  $('pageRoleEditUrl').textContent = s.url || '';
+  const autoLabel = _LJP_ROLE_LABEL[s.value] || s.value || '—';
+  const conf = (s.confidence != null) ? ' (conf ' + Math.round(s.confidence * 100) + '%)' : '';
+  $('pageRoleEditAuto').innerHTML = '<span class="role-pill role-' + _ljpRoleEsc(s.value) + '">' + _ljpRoleEsc(autoLabel) + '</span> ' + _ljpRoleEsc(s.reason || '') + _ljpRoleEsc(conf);
+  $('pageRoleEditTplPreview').textContent = s.url_template || '(no template)';
+  const current = s.job_override || s.host_override || s.value || '';
+  const choicesHost = $('pageRoleEditChoices');
+  choicesHost.dataset.selected = current;
+  choicesHost.innerHTML = _LJP_ROLE_CHOICES.map(v => {
+    const isSel = v === current;
+    const style = isSel
+      ? 'cursor:pointer; padding:5px 12px; background:#196b2c; color:#fff; border-color:#196b2c; font-weight:600;'
+      : 'cursor:pointer; padding:5px 12px;';
+    return '<button type="button" class="role-pill role-' + v + ' pre-edit-choice" data-val="' + v + '" style="' + style + '">' + _ljpRoleEsc(_LJP_ROLE_LABEL[v]) + '</button>';
+  }).join('');
+  choicesHost.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      choicesHost.dataset.selected = b.dataset.val;
+      choicesHost.querySelectorAll('button').forEach(bb => {
+        bb.style.cssText = bb === b
+          ? 'cursor:pointer; padding:5px 12px; background:#196b2c; color:#fff; border-color:#196b2c; font-weight:600;'
+          : 'cursor:pointer; padding:5px 12px;';
+      });
+    });
+  });
+  $('pageRoleEditApplyHost').checked = true;
+  $('pageRoleEditMsg').textContent = '';
+  m.style.display = 'flex';
+}
+
+function _ljpClosePageRoleEdit() {
+  const m = document.getElementById('pageRoleEditModal');
+  if (m) m.style.display = 'none';
+}
+
+async function _ljpSavePageRoleEdit(clear) {
+  if (!_ljpPageRoleState || !_ljpPageRoleState.job_id) return;
+  const $ = (id) => document.getElementById(id);
+  const msg = $('pageRoleEditMsg');
+  msg.style.color = '#666'; msg.textContent = '保存中…';
+  const value = clear ? '' : (($('pageRoleEditChoices').dataset.selected) || '');
+  const applyHost = !clear && $('pageRoleEditApplyHost').checked;
+  try {
+    const r = await fetch('/jobs/' + encodeURIComponent(_ljpPageRoleState.job_id) + '/page-role-override', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value, apply_to_host: applyHost }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      msg.style.color = '#933';
+      msg.textContent = '保存に失敗 (HTTP ' + r.status + '): ' + t.slice(0, 200);
+      return;
+    }
+    msg.style.color = '#196b2c';
+    msg.textContent = clear ? '訂正を解除しました' : (applyHost ? '保存しました (同テンプレ全ジョブへ反映)' : '保存しました (このジョブのみ)');
+    await ljpLoadPageRole(_ljpPageRoleState.job_id);
+    setTimeout(_ljpClosePageRoleEdit, 800);
+  } catch (e) {
+    msg.style.color = '#933';
+    msg.textContent = '通信に失敗: ' + (e && e.message ? e.message : e);
+  }
+}
+
+(function wirePageRoleEdit() {
+  function _wire() {
+    const editBtn = document.getElementById('ljpRoleEdit');
+    if (editBtn) editBtn.addEventListener('click', _ljpOpenPageRoleEdit);
+    const closeBtn = document.getElementById('pageRoleEditClose');
+    if (closeBtn) closeBtn.addEventListener('click', _ljpClosePageRoleEdit);
+    const m = document.getElementById('pageRoleEditModal');
+    if (m) m.addEventListener('click', (e) => { if (e.target === m) _ljpClosePageRoleEdit(); });
+    const saveBtn = document.getElementById('pageRoleEditSave');
+    if (saveBtn) saveBtn.addEventListener('click', () => _ljpSavePageRoleEdit(false));
+    const clearBtn = document.getElementById('pageRoleEditClear');
+    if (clearBtn) clearBtn.addEventListener('click', () => _ljpSavePageRoleEdit(true));
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _wire);
+  else _wire();
+})();
+

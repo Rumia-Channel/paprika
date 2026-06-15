@@ -86,6 +86,7 @@
       <button class="tab" data-tab="extensions" role="menuitem"><iconify-icon icon="lucide:puzzle"></iconify-icon> <span data-i18n="tab.extensions">Extensions</span> <span class="count" id="cntExtensions">0</span></button>
       <button class="tab" data-tab="presets" role="menuitem"><iconify-icon icon="lucide:bookmark"></iconify-icon> <span data-i18n="tab.presets">Preset job</span> <span class="count" id="cntPresets">0</span></button>
       <button class="tab" data-tab="plugins" role="menuitem"><iconify-icon icon="lucide:plug"></iconify-icon> <span data-i18n="tab.plugins">Plugins</span> <span class="count" id="cntPlugins">0</span></button>
+      <button class="tab" data-tab="storage" role="menuitem"><iconify-icon icon="lucide:hard-drive"></iconify-icon> <span data-i18n="tab.storage">Storage</span> <span class="count" id="cntStorageStatus" style="background:#e8e8e8; color:#555;">—</span></button>
       <button class="tab" data-tab="settings" role="menuitem"><iconify-icon icon="lucide:settings"></iconify-icon> <span data-i18n="tab.settings">Settings</span></button>
       <!-- v2: Recipes / Skills / Conventions tabs removed.
            Their data lives in HostKnowledge (per_page.content_extraction /
@@ -1333,32 +1334,42 @@ asyncio.run(main())"
 
 <div class="panel" data-panel="hosts">
   <section>
-    <h2><span data-i18n="tab.hosts">Hosts</span> (<span id="hostCount">0</span>)
+    <h2 style="margin-bottom:8px;"><span data-i18n="tab.hosts">Hosts</span> (<span id="hostCount">0</span>)
       <span class="hctrl">
         <input type="search" id="hostSearch" data-i18n-placeholder="hosts.search.placeholder" placeholder="host / notes で絞り込み" style="padding:4px 8px; min-width:220px;">
         <button id="addHostBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:plus"></iconify-icon> <span data-i18n="hosts.add">add host</span></button>
         <button id="refreshHostsBtn" class="pill" style="background:#f5f5fa; border-color:#bbc; color:#444;"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> <span data-i18n="hosts.refresh">refresh</span></button>
       </span>
     </h2>
-    <p class="help" style="margin:4px 0 12px;">
-      ホスト毎に Cookie / 既訪問URL / 再クロール対象パターンを管理。
-      Cookie はセッション開始時に自動注入、Visited URL は <code>pap.walk()</code> の
-      重複防止に共有、Recrawl Patterns は visited に登録済みでも常に再訪問する URL の
-      glob (<code>*</code> ワイルドカード)。
-    </p>
-    <table id="hostsTable"><thead>
-      <tr>
-        <th data-i18n="hosts.th.host">host</th>
-        <th data-i18n="hosts.th.cookies">cookies</th>
-        <th data-i18n="hosts.th.dedup">dedup</th>
-        <th data-i18n="hosts.th.recipes">recipes</th>
-        <th data-i18n="hosts.th.notes">notes</th>
-        <th data-i18n="hosts.th.updated">updated</th>
-        <th data-i18n="hosts.th.lastused">last used</th>
-        <th data-i18n="hosts.th.actions">actions</th>
-      </tr>
-    </thead><tbody><tr><td colspan=8 class="empty" data-i18n="hosts.empty">no hosts registered</td></tr></tbody></table>
-    <div id="hostsPager" style="margin-top:10px; display:flex; gap:8px; align-items:center; justify-content:center; color:#666; font-size:.9em;"></div>
+    <!-- Master-detail layout: list on the left (always visible),
+         edit pane on the right (driven by the selected row). The host
+         edit DOM (form + sub-tabs) gets rehoused into #hostDetailMount
+         on first load by admin-hosts.js, so the legacy modal stays
+         compatible while the day-to-day flow becomes inline. -->
+    <!-- Mail-app-style master-detail: ONE container with a single border
+         wraps both panes, a divider line between them. Both panes stretch
+         to the same height (no floating right pane). The left pane is
+         intentionally minimal (domain only) so the focus stays on the
+         right pane's editor. -->
+    <div id="hostsMasterDetail" style="display:grid; grid-template-columns: minmax(220px, 28%) 1fr; align-items:stretch; height: calc(100vh - 160px); min-height:420px; border:1px solid #d5dade; border-radius:8px; overflow:hidden; background:#fff;">
+      <div id="hostsListPane" style="min-width:0; border-right:1px solid #e2e6ea; background:#fafbfd; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; scrollbar-gutter: stable;">
+          <table id="hostsTable" style="width:100%; border-collapse:collapse;"><thead style="position:sticky; top:0; background:#fafbfd; z-index:1;">
+            <tr>
+              <th data-i18n="hosts.th.host" style="text-align:left; padding:6px 10px; border-bottom:1px solid #e2e6ea; font-size:.82em; color:#666; font-weight:600;">host</th>
+            </tr>
+          </thead><tbody><tr><td colspan=1 class="empty" data-i18n="hosts.empty">no hosts registered</td></tr></tbody></table>
+        </div>
+        <div id="hostsPager" style="flex:0 0 auto; border-top:1px solid #e2e6ea; padding:6px; display:flex; gap:6px; align-items:center; justify-content:center; color:#666; font-size:.82em; background:#fafbfd;"></div>
+      </div>
+      <div id="hostDetailPane" style="min-width:0; background:#fff; display:flex; flex-direction:column;">
+        <div id="hostDetailEmpty" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#888; text-align:center; padding:30px;">
+          <iconify-icon icon="lucide:mouse-pointer-click" style="font-size:2.4em; color:#bbc;"></iconify-icon>
+          <div style="margin-top:10px;">左の一覧から host を選択するか、<strong>+ add host</strong> で新規追加してください。</div>
+        </div>
+        <div id="hostDetailMount" style="display:none; flex:1; min-height:0; flex-direction:column;"></div>
+      </div>
+    </div>
   </section>
 </div>
 
@@ -1371,54 +1382,112 @@ asyncio.run(main())"
       <button id="hostModalClose" style="background:transparent; border:none; cursor:pointer; font-size:1.4em; color:#666; padding:0 6px;" title="close">✕</button>
     </div>
     <div style="padding:14px; overflow:auto; display:flex; flex-direction:column; gap:10px;">
+      <!-- Host name stays OUTSIDE the subtabs so it's always visible
+           (it's identity / required, not a per-section concern). -->
       <label style="display:flex; flex-direction:column; gap:4px;">
         <span style="font-weight:600;">Host <span style="color:#a00;">*</span></span>
         <input type="text" id="hostModalHost" placeholder="example.com (www. は自動で除去)"
                style="font-family:ui-monospace, Consolas, monospace; padding:6px 8px; font-size:0.95em;">
       </label>
-      <label style="display:flex; flex-direction:column; gap:4px;">
-        <span style="font-weight:600; display:flex; align-items:center; gap:8px;">
-          Cookies (JSON array)
-          <button type="button" id="hostModalPaste" class="pill" style="background:#eef8ff; border-color:#9bf; font-size:0.78em;" title="DevTools → Application → Cookies の export を貼り付けやすいテンプレを挿入">📋 paste template</button>
-          <span id="hostModalCookieErr" style="color:#a00; font-size:0.85em;"></span>
-        </span>
-        <textarea id="hostModalCookies" rows="14" spellcheck="false"
-                  style="font-family:ui-monospace, Consolas, monospace; font-size:12.5px; line-height:1.45; padding:8px; tab-size:2;"
-                  placeholder='[\n  {"name": "session_token", "value": "abc...", "domain": ".example.com", "path": "/", "secure": true, "httpOnly": true, "sameSite": "Lax"},\n  {"name": "lang", "value": "en", "domain": ".example.com", "path": "/"}\n]'></textarea>
-      </label>
-      <label style="display:flex; flex-direction:column; gap:4px;">
-        <span style="font-weight:600;">Notes (任意)</span>
-        <input type="text" id="hostModalNotes" placeholder="ex: 2026-05-17 paps acct"
-               style="padding:6px 8px;">
-      </label>
-      <label style="display:flex; flex-direction:column; gap:4px;">
-        <span style="font-weight:600;">Popup policy <small style="font-weight:normal; color:#888;">— 別タブが開いたときの処理</small></span>
-        <select id="hostModalPopupPolicy" style="padding:6px 8px; max-width:380px;">
-          <option value="kill">kill — popup を閉じる + 同ドメインのときだけ main tab を redirect (デフォ)</option>
-          <option value="follow">follow — popup を閉じる + ドメイン無関係に main tab を redirect</option>
-        </select>
-        <small style="color:#888;">
-          window.open / target="_blank" でクリック先が別タブに飛ぶ動画サイトでは <strong>follow</strong>。
-          main tab がそのまま動画ページに遷移するので、後続の <code>page.download_video()</code> が効きます。
-        </small>
-      </label>
-      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-        <input type="checkbox" id="hostModalExcluded">
-        <span><strong>対象外（このサイトは何もしない）</strong> <small style="font-weight:normal; color:#888;">— 「課題(review)」判定も AI エスカレーションも対象から外す。確実に動画が無い／そっとしておきたいサイト向け</small></span>
-      </label>
-      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-        <input type="checkbox" id="hostModalDownloadVideo">
-        <span><strong>動画あり（download_video）</strong> <small style="font-weight:normal; color:#888;">— このサイトは動画サイト。fetch の download_video 未指定(null)時に動画DLを行う。動画の無いサイトは OFF にして重い動画処理(1h timeout)を避ける</small></span>
-      </label>
-      <div style="display:flex; gap:6px; flex-wrap:wrap; color:#666; font-size:0.85em;">
-        <span>使える CDP フィールド:</span>
-        <code>name</code> <code>value</code> <code>domain</code> <code>path</code>
-        <code>expires</code> <code>secure</code> <code>httpOnly</code>
-        <code>sameSite</code> <code>priority</code> <code>url</code>
+      <!-- Subtab bar — same submit-subtab visual language as the Submit
+           panel, scoped via data-host-subtab so JS handlers don't cross
+           with the Submit form's subtabs. -->
+      <div class="submit-subtabs" role="tablist" style="margin-top:2px;">
+        <button type="button" class="submit-subtab active" data-host-subtab="cookies" role="tab" aria-selected="true"><iconify-icon icon="lucide:cookie"></iconify-icon> クッキー</button>
+        <button type="button" class="submit-subtab" data-host-subtab="roles" role="tab" aria-selected="false"><iconify-icon icon="lucide:layout-list"></iconify-icon> ページ種別判定</button>
+        <button type="button" class="submit-subtab" data-host-subtab="strategy" role="tab" aria-selected="false"><iconify-icon icon="lucide:notebook-pen"></iconify-icon> 戦略</button>
+        <button type="button" class="submit-subtab" data-host-subtab="other" role="tab" aria-selected="false"><iconify-icon icon="lucide:settings-2"></iconify-icon> その他</button>
       </div>
-      <div style="background:#f7f7fc; padding:8px 12px; border-radius:6px; font-size:.88em; color:#555;">
-        🗂 <strong>Dedup data</strong> (既訪問URL一覧 / Recrawl patterns) は
-        Hosts タブの <strong>📋 dedup</strong> ボタンから別画面で管理。
+      <!-- Subpane 1: Cookies -->
+      <div class="submit-subpane" data-host-subpane="cookies">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-weight:600; display:flex; align-items:center; gap:8px;">
+            Cookies (JSON array)
+            <button type="button" id="hostModalPaste" class="pill" style="background:#eef8ff; border-color:#9bf; font-size:0.78em;" title="DevTools → Application → Cookies の export を貼り付けやすいテンプレを挿入">📋 paste template</button>
+            <span id="hostModalCookieErr" style="color:#a00; font-size:0.85em;"></span>
+          </span>
+          <textarea id="hostModalCookies" rows="14" spellcheck="false"
+                    style="font-family:ui-monospace, Consolas, monospace; font-size:12.5px; line-height:1.45; padding:8px; tab-size:2;"
+                    placeholder='[\n  {"name": "session_token", "value": "abc...", "domain": ".example.com", "path": "/", "secure": true, "httpOnly": true, "sameSite": "Lax"},\n  {"name": "lang", "value": "en", "domain": ".example.com", "path": "/"}\n]'></textarea>
+        </label>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; color:#666; font-size:0.85em; margin-top:8px;">
+          <span>使える CDP フィールド:</span>
+          <code>name</code> <code>value</code> <code>domain</code> <code>path</code>
+          <code>expires</code> <code>secure</code> <code>httpOnly</code>
+          <code>sameSite</code> <code>priority</code> <code>url</code>
+        </div>
+      </div>
+      <!-- Subpane 2: ページ種別判定 (flex column so the templates table
+           expands to fill the remaining pane height instead of being
+           capped at a fixed max-height). data-active-display tells the
+           subtab switcher which display value to use when this pane is
+           visible (vs the default ''). -->
+      <div class="submit-subpane" data-host-subpane="roles" data-active-display="flex" style="display:none; flex-direction:column; min-height:0; flex:1 1 auto;">
+        <div style="flex:0 0 auto; display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+          <iconify-icon icon="lucide:layout-list" style="color:#5b3aa6;"></iconify-icon>
+          <strong>ページ種別判定</strong>
+          <small style="font-weight:normal; color:#888; margin-left:6px;">URL 構造と統計から自動判定。誤判定は per-URL-template で訂正可能（同テンプレ全ジョブに反映）。</small>
+        </div>
+        <details style="flex:0 0 auto; margin-bottom:8px;">
+          <summary style="cursor:pointer; color:#444; font-size:.85em;"><strong>判定キーワード一覧</strong>（クリックで展開）</summary>
+          <div id="hostRoleAutoRules" style="margin-top:8px; font-size:.82em; color:#555;">読み込み中…</div>
+        </details>
+        <div id="hostRoleTemplates" style="flex:1 1 0; min-height:0; overflow-y:auto; scrollbar-gutter:stable; font-size:.85em;">
+          <div style="color:#888; padding:8px 0;">読み込み中…</div>
+        </div>
+      </div>
+      <!-- Subpane 3: 戦略 (per-host strategy digest / VISION.md). Free-form
+           Markdown summary that distiller_r1 reads at the start of every
+           escalation as standing context. Auto-written by the nightly
+           review subagent when enabled; operator can edit any time. -->
+      <div class="submit-subpane" data-host-subpane="strategy" data-active-display="flex" style="display:none; flex-direction:column; min-height:0; flex:1 1 auto;">
+        <div style="flex:0 0 auto; display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+          <iconify-icon icon="lucide:notebook-pen" style="color:#1e6b3a;"></iconify-icon>
+          <strong>戦略ダイジェスト</strong>
+          <small style="font-weight:normal; color:#888; margin-left:6px;">「ここで効いたこと / 効かなかったこと / 現在の戦略」を 1 枚に。distiller-r1 が毎エスカレ冒頭で読み込み。夜間 review が日次 auto-roll-up。</small>
+        </div>
+        <div id="hostStrategyMeta" style="flex:0 0 auto; color:#666; font-size:.82em; margin-bottom:6px;">読み込み中…</div>
+        <textarea id="hostStrategyMd" spellcheck="false"
+                  style="flex:1 1 0; min-height:200px; font-family:ui-monospace, Consolas, monospace; font-size:12.5px; line-height:1.5; padding:8px; resize:vertical;"
+                  placeholder="## 何を取りに行くか&#10;&#10;## 効いた手 / 効かなかった手&#10;&#10;## 既知の壁&#10;&#10;## 次に試すこと"></textarea>
+        <div style="flex:0 0 auto; display:flex; gap:8px; align-items:center; margin-top:8px;">
+          <button type="button" id="hostStrategySave" class="aibtn" style="padding:6px 14px; background:#1e6b3a; color:#fff; border-color:#155126;">保存</button>
+          <button type="button" id="hostStrategyClear" class="aibtn" style="padding:6px 12px;" title="このホストの戦略を削除(次の夜間 review で自動再生成される)">削除</button>
+          <span id="hostStrategySaveStatus" style="color:#1e6b3a; font-size:.85em;"></span>
+        </div>
+      </div>
+      <!-- Subpane 4: その他 -->
+      <div class="submit-subpane" data-host-subpane="other" style="display:none;">
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-weight:600;">Notes (任意)</span>
+            <input type="text" id="hostModalNotes" placeholder="ex: 2026-05-17 paps acct"
+                   style="padding:6px 8px;">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-weight:600;">Popup policy <small style="font-weight:normal; color:#888;">— 別タブが開いたときの処理</small></span>
+            <select id="hostModalPopupPolicy" style="padding:6px 8px; max-width:380px;">
+              <option value="kill">kill — popup を閉じる + 同ドメインのときだけ main tab を redirect (デフォ)</option>
+              <option value="follow">follow — popup を閉じる + ドメイン無関係に main tab を redirect</option>
+            </select>
+            <small style="color:#888;">
+              window.open / target="_blank" でクリック先が別タブに飛ぶ動画サイトでは <strong>follow</strong>。
+              main tab がそのまま動画ページに遷移するので、後続の <code>page.download_video()</code> が効きます。
+            </small>
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="hostModalExcluded">
+            <span><strong>対象外（このサイトは何もしない）</strong> <small style="font-weight:normal; color:#888;">— 「課題(review)」判定も AI エスカレーションも対象から外す。確実に動画が無い／そっとしておきたいサイト向け</small></span>
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="hostModalDownloadVideo">
+            <span><strong>動画あり（download_video）</strong> <small style="font-weight:normal; color:#888;">— このサイトは動画サイト。fetch の download_video 未指定(null)時に動画DLを行う。動画の無いサイトは OFF にして重い動画処理(1h timeout)を避ける</small></span>
+          </label>
+          <div style="background:#f7f7fc; padding:8px 12px; border-radius:6px; font-size:.88em; color:#555;">
+            🗂 <strong>Dedup data</strong> (既訪問URL一覧 / Recrawl patterns) は
+            Hosts タブの <strong>📋 dedup</strong> ボタンから別画面で管理。
+          </div>
+        </div>
       </div>
     </div>
     <div class="flat-actions" style="display:flex; gap:8px; padding:10px 14px; border-top:1px solid #eee; background:#fafafa;">
@@ -2409,6 +2478,12 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
   </section>
     </div>
     <div class="ai-subpane" data-ai-subpane="skills" style="display:none;">
+      <details style="margin:0 0 8px; font-size:0.85em; color:#555;">
+        <summary style="cursor:pointer; color:#7a4a14;"><iconify-icon icon="lucide:shield-alert" style="color:#d6a13a;"></iconify-icon> <strong>監査ポリシー</strong>（クリックで展開）</summary>
+        <div style="margin-top:6px; padding:8px 10px; background:#fff8e6; border-left:3px solid #d6a13a; line-height:1.55;">
+          スキルは codegen-loop の system prompt に注入される<strong>コード断片</strong>で、ページ出力経由で間接的なプロンプト注入経路になり得ます。<code>auto</code> 段階のスキルが頻繁に使われている場合、内容を確認（<strong>コード</strong>ボタン → 内容を読む → 不安なら <strong>delete</strong>、安全なら <strong>promote</strong> = curated）してください。閾値超過のものには <span style="background:#fff4d6; color:#7a4a14; border:1px solid #d6a13a; padding:1px 6px; border-radius:4px; font-size:.9em;">⚠ 監査要</span> バッジが付きます（しきい値=<code>skill_audit_warn_threshold</code>）。
+        </div>
+      </details>
       <table id="skTable" class="aitbl" style="width:100%;">
         <thead><tr><th>slug</th><th>tier</th><th class="num">use</th><th class="num">success</th><th>success_rate</th><th style="width:150px;">actions</th></tr></thead>
         <tbody><tr><td colspan=6 class="empty">loading…</td></tr></tbody>
@@ -2417,6 +2492,12 @@ curl 'http://paprika.lan/extensions/ublock-lite/download' --output ublock-lite.t
     </div>
     <div class="ai-subpane" data-ai-subpane="conventions" style="display:none;">
       <p style="font-size:0.85em; color:#999; margin:0 0 8px;">※ convention は毎ジョブ注入されるため success_rate は全体成功率＝個別の優劣ではありません。</p>
+      <details style="margin:0 0 8px; font-size:0.85em; color:#555;">
+        <summary style="cursor:pointer; color:#7a4a14;"><iconify-icon icon="lucide:shield-alert" style="color:#d6a13a;"></iconify-icon> <strong>監査ポリシー</strong>（クリックで展開）</summary>
+        <div style="margin-top:6px; padding:8px 10px; background:#fff8e6; border-left:3px solid #d6a13a; line-height:1.55;">
+          convention は codegen system prompt に<strong>毎ジョブ注入</strong>される作法文で、ページ出力由来の文字列が混入していると間接プロンプト注入の経路になり得ます。<code>auto</code> のまま頻繁に注入されているものは <strong>内容</strong> ボタンで蒸留元 (extracted_from) を確認し、不審なら <strong>delete</strong>、確認できれば <strong>promote</strong>（curated = 操作者監査済み）。閾値超過には <span style="background:#fff4d6; color:#7a4a14; border:1px solid #d6a13a; padding:1px 6px; border-radius:4px; font-size:.9em;">⚠ 監査要</span> が付きます。
+        </div>
+      </details>
       <table id="cvTable" class="aitbl" style="width:100%;">
         <thead><tr><th>slug</th><th>tier</th><th class="num">use</th><th class="num">success</th><th>success_rate</th><th style="width:150px;">actions</th></tr></thead>
         <tbody><tr><td colspan=6 class="empty">loading…</td></tr></tbody>
@@ -2536,6 +2617,18 @@ table.aitbl code { font-size:0.95em; }
 .aibtn.del:hover { background:#fdecea; }
 /* /jobs テーブル「種類」列のバッジ (URL 構造ベースの page_role) */
 .role-pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:0.78em; font-weight:600; border:1px solid; line-height:1.5; white-space:nowrap; }
+/* #hosts master-detail: row hover + tighter table styling for the narrower left pane */
+#hostsTable tr.host-row:hover td { background:#f7faff !important; }
+#hostsTable tr.host-row td { transition: background 0.1s; }
+#hostsTable th, #hostsTable td { padding:5px 8px; font-size:0.92em; }
+#hostDetailPane { box-shadow: 0 0 0 1px transparent; transition: box-shadow .15s; }
+#hostsMasterDetail { min-height:400px; }
+@media (max-width: 900px) {
+  /* On a narrow viewport stack the panes vertically -- the sticky detail
+     pane drops below the list so both stay usable on mobile. */
+  #hostsMasterDetail { grid-template-columns: 1fr !important; }
+  #hostDetailPane { position:static !important; max-height:none !important; }
+}
 .role-pill.role-detail   { background:#e0f5ed; color:#147a5a; border-color:#7cc4a8; }
 .role-pill.role-listing  { background:#ece6f8; color:#5b3aa6; border-color:#b6a3df; }
 .role-pill.role-category { background:#e6f0fa; color:#1a4f8a; border-color:#8eb6dc; }
@@ -3186,6 +3279,40 @@ table.aitbl code { font-size:0.95em; }
     </div>
     </div><!-- /.settings-card Worker SSH -->
 
+    <!-- B10. Storage capacity monitor thresholds (server/hub/_storage_metrics.py) -->
+    <div class="settings-card">
+    <h3><iconify-icon icon="lucide:hard-drive"></iconify-icon> ストレージ容量監視
+      <small>MinIO 残容量のサンプリング間隔と警告閾値</small>
+    </h3>
+    <p style="margin:4px 0 8px; color:#666; font-size:.88em;">
+      バックグラウンドサンプラー (各ハブから 1 つだけが交代で実行) が MinIO の
+      <code>/minio/v2/metrics/cluster</code> から容量を取得し、MariaDB に時系列で蓄積します。
+      <a href="#storage">Storage タブ</a> でグラフ・現在値・枯渇 ETA を表示。
+      警告/危険閾値を超えると Storage タブ右側にバッジ＋色付きバナーが出ます。
+      MinIO 接続が OFF (<code>PAPRIKA_S3_ENABLED</code>) のときはサンプリングは行われません。
+    </p>
+
+    <div style="display:grid; grid-template-columns: 200px 1fr; gap:8px 12px; align-items:center; padding:8px 4px;">
+      <label for="setStorageInterval" title="MinIO 容量を何秒ごとにサンプリングするか (最短 30s, 既定 300s = 5分)">サンプル間隔:</label>
+      <div><input type="number" id="setStorageInterval" placeholder="300" min="30" max="3600" style="width:120px; padding:4px 8px;"> 秒</div>
+
+      <label for="setStorageKeepDays" title="MariaDB に何日分のサンプルを残すか (古いものは自動削除)">保持日数:</label>
+      <div><input type="number" id="setStorageKeepDays" placeholder="60" min="1" max="365" style="width:120px; padding:4px 8px;"> 日</div>
+
+      <label for="setStorageWarnPct" title="使用率がこの値を超えると Storage タブ右側バッジが黄色＋警告バナー表示">警告閾値:</label>
+      <div><input type="number" id="setStorageWarnPct" placeholder="85" min="0" max="100" style="width:120px; padding:4px 8px;"> %</div>
+
+      <label for="setStorageCritPct" title="使用率がこの値を超えると赤＋緊急対応推奨バナー">危険閾値:</label>
+      <div><input type="number" id="setStorageCritPct" placeholder="95" min="0" max="100" style="width:120px; padding:4px 8px;"> %</div>
+
+      <div></div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+        <button id="setSaveStorageBtn" class="pill" style="background:#eef8ee; border-color:#7ab68a; color:#196b2c;"><iconify-icon icon="lucide:save"></iconify-icon> 容量監視設定を保存</button>
+        <span id="setStorageStatus" style="font-size:.9em; margin-left:4px;"></span>
+      </div>
+    </div>
+    </div><!-- /.settings-card Storage capacity monitor -->
+
     </div><!-- /.settings-subpane storage -->
 
     <!-- ============================================================
@@ -3207,6 +3334,84 @@ table.aitbl code { font-size:0.95em; }
 
     </div><!-- /.settings-subpane system -->
 
+  </section>
+</div>
+
+<div class="panel" data-panel="storage">
+  <section>
+    <h2 style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <iconify-icon icon="lucide:hard-drive"></iconify-icon>
+      <span data-i18n="storage.heading">ストレージ容量</span>
+      <span class="hctrl" style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+        <label style="font-size:.85em; color:#555;">
+          <span data-i18n="storage.range">期間</span>
+          <select id="stRangeDays" style="margin-left:4px;">
+            <option value="1">24h</option>
+            <option value="3">3日</option>
+            <option value="7" selected>7日</option>
+            <option value="14">14日</option>
+            <option value="30">30日</option>
+            <option value="60">60日</option>
+          </select>
+        </label>
+        <button type="button" id="stRefreshBtn" class="pill" title="再読み込み" style="padding:3px 10px;">
+          <iconify-icon icon="lucide:refresh-cw"></iconify-icon> <span data-i18n="storage.refresh">更新</span>
+        </button>
+        <button type="button" id="stSampleNowBtn" class="pill" title="今すぐ MinIO に問い合わせて 1 件保存" style="padding:3px 10px; background:#eef8ff; border-color:#9bf;">
+          <iconify-icon icon="lucide:cloud-download"></iconify-icon> <span data-i18n="storage.samplenow">今すぐサンプリング</span>
+        </button>
+      </span>
+    </h2>
+
+    <!-- 警告/危険バナー -->
+    <div id="stBanner" style="display:none; margin-bottom:12px; padding:10px 14px; border-radius:6px; font-weight:600;"></div>
+
+    <!-- サマリー (現在値) -->
+    <div id="stSummary" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:10px; margin-bottom:14px;">
+      <div class="kv-card" style="background:#f7f7fc; padding:10px 12px; border-radius:6px; border:1px solid #e0e0e8;">
+        <div style="font-size:.78em; color:#777; text-transform:uppercase; letter-spacing:.04em;" data-i18n="storage.kv.total">総容量</div>
+        <div id="stKvTotal" style="font-size:1.4em; font-weight:600; color:#222; margin-top:2px;">—</div>
+      </div>
+      <div class="kv-card" style="background:#f7f7fc; padding:10px 12px; border-radius:6px; border:1px solid #e0e0e8;">
+        <div style="font-size:.78em; color:#777; text-transform:uppercase; letter-spacing:.04em;" data-i18n="storage.kv.used">使用量</div>
+        <div id="stKvUsed" style="font-size:1.4em; font-weight:600; color:#222; margin-top:2px;">—</div>
+        <div id="stKvUsedPct" style="font-size:.85em; color:#888;">—</div>
+      </div>
+      <div class="kv-card" style="background:#f7f7fc; padding:10px 12px; border-radius:6px; border:1px solid #e0e0e8;">
+        <div style="font-size:.78em; color:#777; text-transform:uppercase; letter-spacing:.04em;" data-i18n="storage.kv.free">空き</div>
+        <div id="stKvFree" style="font-size:1.4em; font-weight:600; color:#196b2c; margin-top:2px;">—</div>
+      </div>
+      <div class="kv-card" style="background:#f7f7fc; padding:10px 12px; border-radius:6px; border:1px solid #e0e0e8;">
+        <div style="font-size:.78em; color:#777; text-transform:uppercase; letter-spacing:.04em;" data-i18n="storage.kv.bucket">paprika バケット</div>
+        <div id="stKvBucket" style="font-size:1.4em; font-weight:600; color:#222; margin-top:2px;">—</div>
+        <div id="stKvObjects" style="font-size:.85em; color:#888;">—</div>
+      </div>
+      <div class="kv-card" style="background:#f7f7fc; padding:10px 12px; border-radius:6px; border:1px solid #e0e0e8;">
+        <div style="font-size:.78em; color:#777; text-transform:uppercase; letter-spacing:.04em;" data-i18n="storage.kv.eta">枯渇 ETA (直近 24h レート)</div>
+        <div id="stKvEta" style="font-size:1.4em; font-weight:600; color:#444; margin-top:2px;">—</div>
+        <div id="stKvEtaDetail" style="font-size:.78em; color:#888;">—</div>
+      </div>
+      <div class="kv-card" style="background:#f7f7fc; padding:10px 12px; border-radius:6px; border:1px solid #e0e0e8;">
+        <div style="font-size:.78em; color:#777; text-transform:uppercase; letter-spacing:.04em;" data-i18n="storage.kv.latest">最終サンプル</div>
+        <div id="stKvLatest" style="font-size:1.0em; color:#222; margin-top:2px;">—</div>
+        <div id="stKvLatestHub" style="font-size:.78em; color:#888;">—</div>
+      </div>
+    </div>
+
+    <!-- グラフ本体 -->
+    <div style="position:relative; height:340px; margin-bottom:12px;">
+      <canvas id="storageChart"></canvas>
+      <div id="storageChartEmpty" style="display:none; position:absolute; inset:0; align-items:center; justify-content:center; color:#888;">
+        まだサンプルがありません — まもなくグラフが描画されます。
+      </div>
+    </div>
+
+    <!-- メモ + Settings へのリンク -->
+    <p style="font-size:.85em; color:#666; margin-top:8px;">
+      <iconify-icon icon="lucide:info" style="opacity:.7;"></iconify-icon>
+      警告閾値 (<code id="stWarnPct">85</code>% / 危険 <code id="stCritPct">95</code>%) とサンプリング間隔は <a href="#settings">Settings タブ</a> から変更できます。
+      MinIO 接続 (PAPRIKA_S3_ENABLED) が OFF のときはサンプリングが行われず空のまま表示されます。
+    </p>
   </section>
 </div>
 
@@ -3297,5 +3502,6 @@ table.aitbl code { font-size:0.95em; }
 <script src="/static/admin-hosts.js?v=@@PAPRIKA_VERSION@@" defer></script>
 <script src="/static/admin-presets-engines.js?v=@@PAPRIKA_VERSION@@" defer></script>
 <script src="/static/admin-settings.js?v=@@PAPRIKA_VERSION@@" defer></script>
+<script src="/static/admin-storage.js?v=@@PAPRIKA_VERSION@@" defer></script>
 </body>
 </html>

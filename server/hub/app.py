@@ -436,7 +436,8 @@ async def lifespan(app: FastAPI):
     # delete records, prune the registry, or re-dispatch jobs.
     reaper_task = retire_task = dead_worker_task = job_lease_task = None
     preview_sub_task = cache_evict_task = stale_reconcile_task = None
-    redrive_task = salvage_task = None
+    redrive_task = salvage_task = storage_metrics_task = None
+    nightly_review_task = None
     if not _ADMIN_MODE:
         reaper_task = asyncio.create_task(_session_reaper_loop())
         retire_task = asyncio.create_task(_skill_convention_reaper_loop())
@@ -481,6 +482,26 @@ async def lifespan(app: FastAPI):
         from server.hub._cache_evict import _cache_evict_loop
 
         cache_evict_task = asyncio.create_task(_cache_evict_loop())
+
+        # MinIO capacity sampler. Periodically pulls /minio/v2/metrics/cluster
+        # and writes one row to storage_capacity_samples. Cross-hub gated by
+        # Redis SET NX EX so only one hub samples per interval. Inert when
+        # PAPRIKA_S3_ENABLED is off (mirrors objstore.enabled()). See
+        # _storage_metrics.py.
+        from server.hub._storage_metrics import _storage_metrics_loop
+
+        storage_metrics_task = asyncio.create_task(_storage_metrics_loop())
+
+        # Nightly per-host strategy digest. Runs once per day at the
+        # configured UTC hour (default 16:00 UTC = 01:00 JST). Picks hosts
+        # with notable failure/review activity in the last 24h and writes a
+        # fresh VISION.md-style digest into host_strategy via the reasoning
+        # engine. Cross-hub: only ONE hub per day takes the work (Redis
+        # lease). Disabled by default (Settings nightly_review_enabled).
+        # See server/hub/_nightly_review.py.
+        from server.hub._nightly_review import scheduler_loop as _nightly_review_loop
+
+        nightly_review_task = asyncio.create_task(_nightly_review_loop())
 
         # Push-based previews: while an admin watches a worker (interest-gated
         # via Redis), tell that worker to self-capture + push frames so the
@@ -547,7 +568,8 @@ async def lifespan(app: FastAPI):
 
     for _t in (reaper_task, retire_task, dead_worker_task, job_lease_task,
                invalidate_task, preview_sub_task, cache_evict_task,
-               stale_reconcile_task, redrive_task, salvage_task):
+               stale_reconcile_task, redrive_task, salvage_task,
+               storage_metrics_task, nightly_review_task):
         if _t is not None:
             _t.cancel()
     # Stop hub heartbeat + drop the registry row so peers see us as
@@ -821,6 +843,83 @@ async def _auth_middleware(request: "_Request", call_next):
     return await call_next(request)
 
 
+# ============================================================================
+# Cross-hub session auto-forward (multi-hub structural fix)
+# ============================================================================
+# A single middleware reverse-proxies /sessions/{sid}/* HTTP requests to the
+# hub that owns the session, when this hub doesn't. Why this exists:
+#
+#   2026-06-14 the operator-action endpoint (戻る / 進む / Go) silently 404'd
+#   under multi-hub nginx round-robin because POST /sessions/{sid}/operator_action
+#   forgot to call _maybe_forward_session. The same footgun bit /jobs/{id}/
+#   sessions in 2026-06-04. Both were per-endpoint patches; this middleware
+#   makes the forward STRUCTURAL so any future /sessions/{sid}/* endpoint
+#   inherits cross-hub routing automatically -- no per-endpoint code needed.
+#
+# The pattern mirrors _maybe_forward_session in routes/sessions/_base.py
+# exactly (same loop guard via X-Paprika-Hub-Forwarded, same fast-path local,
+# same Redis owner lookup, same _proxy_request_to_hub). Per-endpoint
+# _maybe_forward_session calls are KEPT as belts: they (a) provide
+# defense-in-depth and (b) let close_session / download_video / etc. set
+# their own forward_timeout. The middleware's loop guard makes the
+# per-endpoint call a no-op once forwarded; no double-forward.
+#
+# WebSockets (novnc/websockify, screencast/ws) bypass HTTP middleware and
+# keep their existing per-handler cross-hub proxy in routes/novnc.py.
+#
+# forward_timeout = 1920s covers the slowest known endpoint
+# (DELETE /sessions/{sid} with PAPRIKA_VIDEO_DRAIN_HARD_S default 1800 + slack).
+# A healthy downstream returns much sooner; this just caps slow ones.
+import re as _re_sfwd
+
+_SESSION_PATH_RE = _re_sfwd.compile(r'^/sessions/([^/]+)(?:/|$)')
+
+
+@app.middleware("http")
+async def _session_forward_middleware(request: "_Request", call_next):
+    path = request.url.path
+    m = _SESSION_PATH_RE.match(path)
+    if not m:
+        return await call_next(request)
+    if request.headers.get("X-Paprika-Hub-Forwarded"):
+        return await call_next(request)
+    if state.sessions is None:
+        return await call_next(request)
+    sid = m.group(1)
+    if state.sessions.get(sid) is not None:
+        return await call_next(request)
+    try:
+        owner = await state.sessions.lookup_owner(sid)
+    except Exception:
+        log.warning(
+            "session-forward middleware: lookup_owner crashed for %s",
+            sid, exc_info=True,
+        )
+        return await call_next(request)
+    if not owner:
+        return await call_next(request)
+    _wid, owner_hub = owner
+    if not owner_hub or owner_hub == config.hub_id:
+        return await call_next(request)
+    from server.hub.routes.sessions._base import _proxy_request_to_hub
+    from fastapi import HTTPException as _HTTPException
+    try:
+        return await _proxy_request_to_hub(
+            owner_hub, request, forward_timeout=1920.0,
+        )
+    except _HTTPException as he:
+        return _JSONResponse({"detail": he.detail}, status_code=he.status_code)
+    except Exception as e:
+        log.warning(
+            "session-forward middleware: forward %s -> %s failed: %s: %s",
+            path, owner_hub, type(e).__name__, e,
+        )
+        return _JSONResponse(
+            {"detail": f"hub forward failed: {type(e).__name__}"},
+            status_code=502,
+        )
+
+
 def require_user(request: "_Request") -> None:
     """FastAPI dependency: require an authenticated principal. No-op unless
     ``auth_mode == enforce`` (off/optional stay non-breaking). Exported for
@@ -1025,6 +1124,10 @@ app.include_router(_llm_router)
 from server.hub.routes.translate import router as _translate_router
 
 app.include_router(_translate_router)
+
+from server.hub.routes.storage import router as _storage_router
+
+app.include_router(_storage_router)
 
 
 # ---- CDP-Screencast live viewer (Windows portable noVNC replacement) -------

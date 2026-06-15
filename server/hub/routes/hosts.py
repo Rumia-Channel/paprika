@@ -1037,6 +1037,25 @@ async def get_host_url_roles(host: str) -> dict:
     except Exception:
         roles = None
     tpls: list = []
+    # Bulk-fetch sample URLs for every template in one MariaDB connection so
+    # the operator can see "what concrete URLs got collapsed into this".
+    pool = getattr(state, "mariadb_pool", None)
+    samples_by_tpl: dict = {}
+    obs_count_by_tpl: dict = {}
+    video_evidence_by_tpl: dict = {}
+    if roles is not None:
+        try:
+            obs_count_by_tpl = dict(roles.templates or {})
+            video_evidence_by_tpl = dict(getattr(roles, "video_seen", {}) or {})
+        except Exception:
+            pass
+    if roles is not None and pool is not None:
+        try:
+            from server.hub.mariadb import host_urls_by_template_get
+            for tpl in (roles.templates or {}).keys():
+                samples_by_tpl[tpl] = await host_urls_by_template_get(pool, h, tpl, 3)
+        except Exception:
+            pass
     if roles is not None:
         try:
             for tpl in sorted((roles.templates or {}).keys()):
@@ -1045,6 +1064,9 @@ async def get_host_url_roles(host: str) -> dict:
                     "url_template": tpl,
                     "auto": {"value": v, "confidence": round(float(c), 3), "reason": why},
                     "override": "", "set_by": "", "set_at": "",
+                    "obs_count": int(obs_count_by_tpl.get(tpl, 0)),
+                    "video_evidence_count": int(video_evidence_by_tpl.get(tpl, 0)),
+                    "samples": samples_by_tpl.get(tpl, []),
                 })
         except Exception:
             pass
@@ -1075,14 +1097,38 @@ async def get_host_url_roles(host: str) -> dict:
                 "auto": {"value": "unknown", "confidence": 0.0, "reason": "no observations"},
                 "override": ovrole, "set_by": ov_meta[tpl]["set_by"], "set_at": ov_meta[tpl]["set_at"],
             })
+    from server.hub._page_role import (
+        _QUERY_CATEGORY, _QUERY_TAG, _QUERY_LISTING, _QUERY_DETAIL,
+    )
     auto_rules = [
-        {"role": "category", "keywords": sorted(_STATIC_CATEGORY)},
-        {"role": "tag",      "keywords": sorted(_STATIC_TAG)},
-        {"role": "listing",  "keywords": sorted(_STATIC_LISTING)},
-        {"role": "error",    "keywords": sorted(_STATIC_ERROR)},
-        {"role": "top",      "keywords": ["/"]},
+        {"role": "category", "keywords": sorted(_STATIC_CATEGORY), "query_keys": sorted(_QUERY_CATEGORY)},
+        {"role": "tag",      "keywords": sorted(_STATIC_TAG),      "query_keys": sorted(_QUERY_TAG)},
+        {"role": "listing",  "keywords": sorted(_STATIC_LISTING),  "query_keys": sorted(_QUERY_LISTING)},
+        {"role": "detail",   "keywords": [],                       "query_keys": sorted(_QUERY_DETAIL)},
+        {"role": "error",    "keywords": sorted(_STATIC_ERROR),    "query_keys": []},
+        {"role": "top",      "keywords": ["/"],                    "query_keys": []},
     ]
-    return {"host": h, "auto_rules": auto_rules, "templates": tpls}
+    # Token-level templatization rules: how a raw path segment becomes a
+    # variable placeholder in the template. Mirrors _classify_token in
+    # server/hub/_page_role.py — kept in sync by reading the regex
+    # docstrings here. Order = priority (first match wins).
+    templatization_rules = [
+        {"placeholder": "{year}",  "matches": "4-digit year (19xx / 20xx)",         "examples": ["2024", "1999"]},
+        {"placeholder": "{month}", "matches": "1-12 integer (month-of-year)",       "examples": ["6", "12"]},
+        {"placeholder": "{int}",   "matches": "any pure-digit run",                 "examples": ["12345", "67890"]},
+        {"placeholder": "{uuid}",  "matches": "RFC-4122 UUID",                      "examples": ["550e8400-e29b-41d4-a716-446655440000"]},
+        {"placeholder": "{hex}",   "matches": "≥ 16-char lowercase hex",            "examples": ["a1b2c3d4e5f60718", "deadbeef12345678"]},
+        {"placeholder": "{code}",  "matches": "[A-Za-z]{2,6} + digits (product code)", "examples": ["SACZ-179", "ABC123"]},
+        {"placeholder": "{id}",    "matches": "≥ 5 chars containing at least one digit", "examples": ["vid12345", "p20240617"]},
+        {"placeholder": "{slug}",  "matches": "kebab-case OR non-ASCII (Japanese path)", "examples": ["how-to-cook-pasta", "日本語スラッグ"]},
+        {"placeholder": "(verbatim)", "matches": "everything else (keywords stay as-is)", "examples": ["tag", "category", "page", "about"]},
+    ]
+    return {
+        "host": h,
+        "auto_rules": auto_rules,
+        "templatization_rules": templatization_rules,
+        "templates": tpls,
+    }
 
 
 @router.put("/hosts/{host}/url-role-overrides")
@@ -1131,3 +1177,93 @@ async def delete_host_url_role_override(host: str, url_template: str) -> dict:
     deleted = await host_url_role_override_delete(pool, h, tpl)
     invalidate_host_overrides(h)
     return {"host": h, "url_template": tpl, "deleted": int(deleted)}
+
+
+# ---------------------------------------------------------------------------
+# Per-host STATE digest (VISION.md-style synthesis).
+# ---------------------------------------------------------------------------
+# A free-form Markdown summary of "what we know, what worked, what to
+# try next" for this host. Read by distiller_r1 at the start of every
+# escalation as standing context (= goal-drift prevention). Written by
+# the nightly review subagent (auto-rolled-up from yesterday's signals)
+# and operator (admin UI / direct API).
+#
+# Distinct from the structured per-host knowledge (skills, conventions,
+# fetch_recipes, barriers): those are MACHINE-actionable; this is a
+# HUMAN-readable synthesis the agent reads as advisory context.
+
+@router.get("/hosts/{host}/strategy")
+async def get_host_strategy(host: str) -> dict:
+    """Read the strategy digest for ``host``. Returns an empty document
+    (``summary_md=""``) when no digest exists yet rather than 404, so the
+    UI can show an editable empty state with no special-casing."""
+    from server.hub._page_role import _normalise_host_str
+    h = _normalise_host_str(host)
+    if not h:
+        raise HTTPException(400, "host cannot be empty")
+    pool = getattr(state, "mariadb_pool", None)
+    if pool is None:
+        raise HTTPException(503, "no MariaDB pool configured")
+    from server.hub.mariadb import host_strategy_get
+    rec = await host_strategy_get(pool, h)
+    if rec is None:
+        return {
+            "host": h,
+            "summary_md": "",
+            "updated_at": None,
+            "updated_by": "",
+            "revision": 0,
+            "exists": False,
+        }
+    rec["exists"] = True
+    return rec
+
+
+@router.post("/hosts/strategy/refresh")
+async def trigger_nightly_review() -> dict:
+    """Run the nightly per-host strategy review NOW (operator on-demand).
+
+    Same code path the scheduler uses (server/hub/_nightly_review.run_once).
+    Honors the cross-hub Redis lease, so calling this on multiple hubs in
+    quick succession produces ONE pass. Returns a small stats dict
+    (hosts considered / updated / skipped / elapsed)."""
+    from server.hub import _nightly_review
+    return await _nightly_review.run_once()
+
+
+@router.put("/hosts/{host}/strategy")
+async def put_host_strategy(host: str, body: dict, request: Request) -> dict:
+    """Write the strategy digest for ``host``. ``summary_md=""`` deletes
+    the digest. ``updated_by`` is captured from the principal (auth) or
+    defaults to ``'operator'`` -- the nightly review subagent writes
+    with ``updated_by='nightly_review'`` via the helper directly."""
+    from server.hub._page_role import _normalise_host_str
+    h = _normalise_host_str(host)
+    if not h:
+        raise HTTPException(400, "host cannot be empty")
+    body = body or {}
+    summary_md = body.get("summary_md")
+    if summary_md is None:
+        raise HTTPException(400, "summary_md is required")
+    if not isinstance(summary_md, str):
+        raise HTTPException(400, "summary_md must be a string")
+    if len(summary_md) > 64_000:
+        raise HTTPException(400, "summary_md too large (>64k)")
+    pool = getattr(state, "mariadb_pool", None)
+    if pool is None:
+        raise HTTPException(503, "no MariaDB pool configured")
+    # Provenance: prefer the authenticated principal name, fall back to
+    # 'operator' when AUTH_MODE=off (LAN-trust mode).
+    updated_by = "operator"
+    try:
+        p = getattr(request.state, "principal", None)
+        if p and getattr(p, "name", None):
+            updated_by = str(p.name)
+    except Exception:
+        pass
+    from server.hub.mariadb import host_strategy_upsert, host_strategy_delete
+    if summary_md.strip():
+        await host_strategy_upsert(pool, h, summary_md, updated_by)
+    else:
+        await host_strategy_delete(pool, h)
+    return {"host": h, "updated_by": updated_by, "cleared": (not summary_md.strip())}

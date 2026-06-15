@@ -145,10 +145,19 @@ def _format_outcome_summary(
     assets_dir: Path | None = None,
     progress_count: int = 0,
     target_pages: int | None = None,
+    blind: bool = False,
 ) -> str:
     """Render the attempt's outcome into a compact string the judge
     LLM can read. Trims long stdout/stderr to recent tails because
     context budget is limited.
+
+    ``blind`` (Settings ``judge_blind_mode``, default True) strips
+    the AGENT SCRIPT block and STDOUT/STDERR tails from the prompt
+    so the judge can ONLY rule on hard outcomes (asset counts,
+    exit_code, progress marker count, screenshot). Goal: prevent the
+    judge from being persuaded by the maker's narrative — the
+    "evaluator-optimizer" pattern requires the verifier to be
+    blind to the maker's reasoning trace.
     """
     # Asset summary: count + group by extension. Keeps the judge's
     # prompt small (a profile with 200 cookies doesn't need every
@@ -177,8 +186,9 @@ def _format_outcome_summary(
     # Truncating mid-script confuses the judge -- "what does the loop
     # do?" needs the full loop body -- so we accept the slight token
     # cost in exchange for accurate pinpointing.
+    # Suppressed in blind mode (see docstring).
     script_section = ""
-    if script:
+    if script and not blind:
         script_section = f"# AGENT SCRIPT (the Python the LLM wrote)\n```python\n{script}\n```\n\n"
 
     parts = [
@@ -193,11 +203,23 @@ def _format_outcome_summary(
         f"progress_markers_in_stdout: {progress_count}"
         + (f" (target hint: {target_pages})" if target_pages else ""),
         asset_line,
-        "",
-        f"# STDOUT TAIL\n{_tail(stdout, 2500)}",
-        "",
-        f"# STDERR TAIL\n{_tail(stderr, 1200)}",
     ]
+    if not blind:
+        parts += [
+            "",
+            f"# STDOUT TAIL\n{_tail(stdout, 2500)}",
+            "",
+            f"# STDERR TAIL\n{_tail(stderr, 1200)}",
+        ]
+    else:
+        parts += [
+            "",
+            "# NOTE",
+            "Blind-judge mode: script source, stdout, and stderr are",
+            "INTENTIONALLY withheld. Rule on the screenshot and the",
+            "asset counts above. If the evidence does not unambiguously",
+            "show the goal achieved, return satisfied=false.",
+        ]
     return "\n".join(p for p in parts if p)
 
 
@@ -262,6 +284,7 @@ async def judge_attempt(
     max_tokens: int = 400,
     temperature: float = 0.0,
     target: LLMTarget | None = None,
+    blind: bool = False,
 ) -> Verdict | None:
     """Ask the LLM whether the attempt satisfied the goal.
 
@@ -285,6 +308,7 @@ async def judge_attempt(
         assets_dir=assets_dir,
         progress_count=progress_count,
         target_pages=target_pages,
+        blind=blind,
     )
 
     # Compose the user message. If a screenshot is available and the
@@ -575,6 +599,7 @@ async def judge_via_reasoning(
     stderr: str = "",
     script: str = "",
     target: LLMTarget,
+    blind: bool = False,
 ) -> Verdict | None:
     """Reasoning-model-based goal verification.
 
@@ -603,29 +628,46 @@ async def judge_via_reasoning(
     # Tails: stdout-last is where the goal-relevant prints live; stderr-
     # last is where a traceback lives if the script failed. Cap both to
     # keep the prompt small (R1's thinking tokens are expensive).
-    stdout_tail = _tail(stdout, n_lines=30, max_chars=2000)
-    stderr_tail = _tail(stderr, n_lines=20, max_chars=1500)
+    # In blind mode these are intentionally withheld so R1 rules on
+    # perception + asset counts only (see `judge_blind_mode` setting).
+    stdout_tail = "" if blind else _tail(stdout, n_lines=30, max_chars=2000)
+    stderr_tail = "" if blind else _tail(stderr, n_lines=20, max_chars=1500)
 
     # Script: include only when reasonably short (R1 doesn't need to see
     # 3000-line scripts to judge -- the assumption is that the script's
     # OUTPUT is the proof, not its source. We include short scripts to
     # help R1 explain WHY it failed in the hint field.)
+    # Suppressed entirely in blind mode.
     script_block = ""
-    if script and len(script) <= 4000:
+    if script and len(script) <= 4000 and not blind:
         script_block = f"SCRIPT\n{script}\n\n"
 
-    user_msg = (
-        f"GOAL\n{goal.strip()}\n\n"
-        f"PERCEPTION\n{perception_brief}\n\n"
-        f"{script_block}"
-        f"STDOUT (last lines)\n{stdout_tail or '(empty)'}\n\n"
-        f"STDERR (last lines)\n{stderr_tail or '(empty)'}\n\n"
-        f"OUTCOME\n"
-        f"  exit_code:        {exit_code}\n"
-        f"  assets_by_ext:    {assets_str}\n"
-        f"  stderr_has_error: {stderr_has_error}\n\n"
-        f"Produce the verdict JSON now."
-    )
+    if blind:
+        user_msg = (
+            f"GOAL\n{goal.strip()}\n\n"
+            f"PERCEPTION\n{perception_brief}\n\n"
+            f"OUTCOME\n"
+            f"  exit_code:        {exit_code}\n"
+            f"  assets_by_ext:    {assets_str}\n\n"
+            f"NOTE\nBlind-judge mode: script source, stdout, stderr are\n"
+            f"INTENTIONALLY withheld. Rule on the perception facts and\n"
+            f"asset counts above. If the evidence does not unambiguously\n"
+            f"show the goal achieved, return satisfied=false.\n\n"
+            f"Produce the verdict JSON now."
+        )
+    else:
+        user_msg = (
+            f"GOAL\n{goal.strip()}\n\n"
+            f"PERCEPTION\n{perception_brief}\n\n"
+            f"{script_block}"
+            f"STDOUT (last lines)\n{stdout_tail or '(empty)'}\n\n"
+            f"STDERR (last lines)\n{stderr_tail or '(empty)'}\n\n"
+            f"OUTCOME\n"
+            f"  exit_code:        {exit_code}\n"
+            f"  assets_by_ext:    {assets_str}\n"
+            f"  stderr_has_error: {stderr_has_error}\n\n"
+            f"Produce the verdict JSON now."
+        )
 
     body = {
         "model": target.model,

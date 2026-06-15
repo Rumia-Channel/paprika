@@ -290,9 +290,25 @@ def _build_brief(
     stderr_tail: str,
     script: str,
     current_knowledge: dict,
+    strategy_md: str = "",
 ) -> str:
     parts: list[str] = []
     parts.append(f"HOST\n{host}\n")
+
+    # Standing per-host strategy digest (VISION.md-style). Inserted
+    # near the top so it frames the distiller's reading of everything
+    # below. Operator-edited or nightly-review-generated; the goal is
+    # goal-drift prevention (records the host's QUIRKS and the
+    # operator's intent across many distillation passes).
+    if strategy_md and strategy_md.strip():
+        parts.append(
+            "STANDING STRATEGY (operator / nightly review)\n"
+            "Read this as advisory context. It is NOT a fact list to\n"
+            "transcribe -- it is what we already KNOW about this host,\n"
+            "what worked before, and what to try next.\n\n"
+            + strategy_md.strip()[:3000]
+            + "\n"
+        )
 
     parts.append(
         f"OUTCOME\n  status:  {'success' if success else 'failure'}\n"
@@ -470,6 +486,21 @@ async def distill_for_job(
         _log.info("[distiller-r1] engine resolve failed: %s", e)
         return None
 
+    # Pull the standing per-host strategy digest (VISION.md-style) as
+    # advisory context. Best-effort: a missing/empty digest just yields ""
+    # and the distiller works as before. Goal: keep cross-run learning
+    # context in front of the model so it can stop re-deriving from zero.
+    strategy_md = ""
+    try:
+        pool = getattr(state, "mariadb_pool", None)
+        if pool is not None:
+            from server.hub.mariadb import host_strategy_get
+            _strat_rec = await host_strategy_get(pool, host)
+            if _strat_rec is not None:
+                strategy_md = (_strat_rec.get("summary_md") or "")
+    except Exception as _se:
+        _log.info("[distiller-r1] strategy read failed (non-fatal): %s", _se)
+
     brief = _build_brief(
         host=host,
         goal=goal,
@@ -480,6 +511,7 @@ async def distill_for_job(
         stderr_tail=stderr_tail,
         script=script,
         current_knowledge=current,
+        strategy_md=strategy_md,
     )
 
     body = {

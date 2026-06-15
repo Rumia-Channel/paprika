@@ -176,6 +176,16 @@ async function loadSettingsPanel() {
       const _wsPort = document.getElementById('setWorkerSshPort');
       if (_wsPort) _wsPort.value = hub.worker_ssh_port || 22;
       _setVal('setWorkerSshKeyPath', hub.worker_ssh_key_path);
+
+      // ---- Storage capacity monitor ----
+      const _stInt  = document.getElementById('setStorageInterval');
+      if (_stInt)  _stInt.value  = hub.storage_sample_interval_s || 300;
+      const _stKp   = document.getElementById('setStorageKeepDays');
+      if (_stKp)   _stKp.value   = hub.storage_sample_keep_days || 60;
+      const _stWn   = document.getElementById('setStorageWarnPct');
+      if (_stWn)   _stWn.value   = hub.storage_capacity_warn_percent || 85;
+      const _stCr   = document.getElementById('setStorageCritPct');
+      if (_stCr)   _stCr.value   = hub.storage_capacity_crit_percent || 95;
       const _wsKeyState = document.getElementById('setWorkerSshKeyState');
       if (_wsKeyState) _wsKeyState.textContent = _secretsSet.worker_ssh_key_pem
         ? _slvT('salvage.key.uploaded', '✓ 鍵アップロード済み（変更時のみ再アップロード）')
@@ -240,6 +250,40 @@ function _slvT(key, fallback) {
 // three worker_ssh_* keys; no secret redaction (the key is a *path*, not
 // the key material). The actual private key lives in the hub container at
 // that path; operator provisions it out-of-band.
+// Save storage-capacity monitor knobs (interval / keep_days / warn / crit
+// thresholds). Plain PUT /settings; the background loop re-reads on every
+// pass so no restart needed.
+async function saveSettingsStorageCapacity() {
+  const stEl = document.getElementById('setStorageStatus');
+  if (stEl) { stEl.textContent = ''; stEl.style.color = ''; }
+  const body = {
+    storage_sample_interval_s: Math.max(30, Math.min(3600,
+      parseInt(document.getElementById('setStorageInterval')?.value, 10) || 300)),
+    storage_sample_keep_days: Math.max(1, Math.min(365,
+      parseInt(document.getElementById('setStorageKeepDays')?.value, 10) || 60)),
+    storage_capacity_warn_percent: Math.max(0, Math.min(100,
+      parseInt(document.getElementById('setStorageWarnPct')?.value, 10) || 85)),
+    storage_capacity_crit_percent: Math.max(0, Math.min(100,
+      parseInt(document.getElementById('setStorageCritPct')?.value, 10) || 95)),
+  };
+  try {
+    const r = await fetch(SETTINGS_URL, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      if (stEl) { stEl.textContent = '保存失敗: ' + t.slice(0, 120); stEl.style.color = '#c0392b'; }
+      return;
+    }
+    if (stEl) { stEl.textContent = '✓ 保存しました (全ハブへ伝播)'; stEl.style.color = '#196b2c'; }
+    flashSavedHint();
+  } catch (e) {
+    if (stEl) { stEl.textContent = '保存失敗: ' + (e.message || e); stEl.style.color = '#c0392b'; }
+  }
+}
+
 async function saveSettingsWorkerSsh() {
   const stEl = document.getElementById('setWorkerSshStatus');
   if (stEl) { stEl.textContent = ''; stEl.style.color = ''; }
@@ -826,6 +870,9 @@ async function mdbRefreshTableCounts() {
   // Worker salvage SSH (サルベージ用)
   const saveWSsh = document.getElementById('setSaveWorkerSshBtn');
   if (saveWSsh) saveWSsh.addEventListener('click', saveSettingsWorkerSsh);
+  // Storage capacity monitor thresholds
+  const saveStor = document.getElementById('setSaveStorageBtn');
+  if (saveStor) saveStor.addEventListener('click', saveSettingsStorageCapacity);
   const wsKeyFile = document.getElementById('setWorkerSshKeyFile');
   if (wsKeyFile) wsKeyFile.addEventListener('change', (e) => {
     const f = e.target.files && e.target.files[0];

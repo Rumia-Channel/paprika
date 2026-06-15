@@ -110,25 +110,46 @@ async def _build_page_roles_map(page) -> dict:
     except Exception:
         return {}
     urls = [(getattr(p, "job_id", "") or "", getattr(p, "url", "") or "") for p in page]
-    try:
-        results = await asyncio.gather(
-            *[role_for_url(u) for _, u in urls],
-            return_exceptions=True,
-        )
-    except Exception:
-        return {}
     out: dict = {}
-    for (jid, _u), r in zip(urls, results):
-        if not jid:
-            continue
-        if isinstance(r, tuple) and len(r) == 3:
+    # Persisted read-back: role_for_url is URL-derived + stable, so it's
+    # computed ONCE and stored on the jobs row (page_role). Read the stored
+    # auto-roles first and only compute (then write back) the jobs we don't
+    # have yet, instead of re-running role_for_url for every job on every
+    # /jobs request (the #jobs "初回表示が遅い" cost the operator hit).
+    _ids = [jid for jid, _u in urls if jid]
+    _getter = getattr(state.store, "get_page_roles", None)
+    if callable(_getter):
+        try:
+            out.update(await _getter(_ids))
+        except Exception:
+            pass
+    _missing = [(jid, u) for jid, u in urls if jid and u and jid not in out]
+    if _missing:
+        try:
+            results = await asyncio.gather(
+                *[role_for_url(u) for _, u in _missing],
+                return_exceptions=True,
+            )
+        except Exception:
+            results = []
+        computed: dict = {}
+        for (jid, _u), r in zip(_missing, results):
+            if isinstance(r, tuple) and len(r) == 3:
+                try:
+                    val, conf, reason = r
+                    computed[jid] = {
+                        "value": str(val or "unknown"),
+                        "confidence": float(conf or 0.0),
+                        "reason": str(reason or ""),
+                    }
+                except Exception:
+                    pass
+        out.update(computed)
+        # Write back so the next request reads instead of recomputing.
+        _setter = getattr(state.store, "set_page_roles", None)
+        if callable(_setter) and computed:
             try:
-                val, conf, reason = r
-                out[jid] = {
-                    "value": str(val or "unknown"),
-                    "confidence": float(conf or 0.0),
-                    "reason": str(reason or ""),
-                }
+                await _setter(computed)
             except Exception:
                 pass
     # Per-job overrides take precedence over the URL heuristic + per-host-
@@ -223,7 +244,7 @@ async def list_jobs(
         _now = time.time()
         _hit = _JOBS_LIST_CACHE.get(_ck)
         if _hit is not None and (_now - _hit[0]) < _JOBS_LIST_CACHE_TTL_S:
-            infos, filtered_total = _hit[1]
+            infos, filtered_total, page_roles = _hit[1]
         else:
             infos, filtered_total = await fast(
                 offset=off,
@@ -233,6 +254,13 @@ async def list_jobs(
                 url_substr=q,
                 owner_id=own,
             )
+            # page_roles depends only on each job's id + url (stable across the
+            # cache TTL), so memoise it WITH the infos. It was re-running
+            # role_for_url for every job on EVERY request -- even cache hits,
+            # outside this cache -- which was the bulk of the
+            # /jobs?status=running cost (~0.5s for ~40 running jobs, the #jobs
+            # "初回表示が遅い" the operator hit).
+            page_roles = await _build_page_roles_map(infos)
             if _JOBS_LIST_CACHE_TTL_S > 0:
                 if len(_JOBS_LIST_CACHE) >= _JOBS_LIST_CACHE_MAX:
                     _oldest = min(
@@ -240,7 +268,7 @@ async def list_jobs(
                         key=lambda k: _JOBS_LIST_CACHE[k][0],
                     )
                     _JOBS_LIST_CACHE.pop(_oldest, None)
-                _JOBS_LIST_CACHE[_ck] = (_now, (infos, filtered_total))
+                _JOBS_LIST_CACHE[_ck] = (_now, (infos, filtered_total, page_roles))
         page = [_proxy_info(i, request) for i in infos]
         return {
             "total": filtered_total,
@@ -248,7 +276,7 @@ async def list_jobs(
             "offset": off,
             "limit": lim,
             "jobs": page,
-            "page_roles": await _build_page_roles_map(page),
+            "page_roles": page_roles,
         }
 
     # ------------------------------------------------------------------
@@ -837,14 +865,28 @@ async def cleanup_jobs(body: dict) -> dict:
                 }
             )
 
+    # Also purge each job's DURABLE bucket data (MinIO/S3). The local size shown
+    # above is the on-disk cache only (evicted to ~0 for old jobs), so without
+    # this the cleanup deleted the DB row + cache but ORPHANED the real bytes in
+    # the bucket. Default on; pass purge_minio=false to keep the durable copy.
+    purge_minio = bool(body.get("purge_minio", True))
     deleted: list[str] = []
     total_freed = 0
+    minio_freed = 0
+    minio_objects = 0
     if not dry_run:
         for c in candidates:
             try:
                 t = state.local_tasks.pop(c["job_id"], None)
                 if t and not t.done():
                     t.cancel()
+                if purge_minio and objstore.enabled():
+                    try:
+                        r = await objstore.delete_prefix(c["job_id"])
+                        minio_freed += int(r.get("bytes") or 0)
+                        minio_objects += int(r.get("objects") or 0)
+                    except Exception:
+                        pass
                 await state.store.delete_job(c["job_id"])
                 d = get_storage_dir() / c["job_id"]
                 if d.exists():
@@ -861,6 +903,9 @@ async def cleanup_jobs(body: dict) -> dict:
         "candidate_total_bytes": sum(c["size_bytes"] for c in candidates),
         "deleted": deleted,
         "total_freed_bytes": total_freed,
+        "purge_minio": purge_minio,
+        "minio_freed_bytes": minio_freed,
+        "minio_objects_deleted": minio_objects,
         "skipped": skipped,
         "protected_count": len(protected),
     }
@@ -869,6 +914,73 @@ async def cleanup_jobs(body: dict) -> dict:
 @router.post("/admin/cleanup_jobs", include_in_schema=False)
 async def cleanup_jobs_legacy(body: dict) -> dict:
     return await cleanup_jobs(body)
+
+
+@router.post("/jobs/minio-orphan-sweep")
+async def minio_orphan_sweep(body: dict) -> dict:
+    """Reclaim bucket (MinIO/S3) data for jobs whose DB row no longer exists --
+    orphaned by a prior delete/cleanup that only removed the row + local cache.
+
+    DRY-RUN by default (counts orphans, deletes nothing). ``execute=true``
+    deletes; ``limit`` caps deletions per call (0 = no cap). DESTRUCTIVE +
+    permanent when execute=true: the bucket is the durable store.
+
+    Safety: aborts execute when the DB job-id read looks incomplete (empty, or
+    far off from ``count_jobs``) so a transient DB hiccup can't make every
+    prefix look orphaned and nuke live data."""
+    assert state.store is not None
+    body = body or {}
+    execute = bool(body.get("execute") or False)
+    limit = int(body.get("limit") or 0)
+    if not objstore.enabled():
+        return {"error": "objstore disabled"}
+    db_ids = set(await state.store.list_job_ids())
+    minio_ids = await objstore.list_job_prefixes()
+    orphans = [j for j in minio_ids if j not in db_ids]
+    out: dict = {
+        "execute": execute,
+        "db_jobs": len(db_ids),
+        "minio_prefixes": len(minio_ids),
+        "orphans": len(orphans),
+        "sample_orphans": orphans[:10],
+    }
+    if not execute:
+        return out
+    # Destructive path -- guard against a partial DB read making everything
+    # look orphaned (which would wipe the whole bucket).
+    try:
+        db_count = await state.store.count_jobs()
+    except Exception:
+        db_count = -1
+    if len(db_ids) == 0 or (
+        db_count >= 0 and abs(len(db_ids) - db_count) > max(50, db_count // 20)
+    ):
+        out["error"] = (
+            f"aborted: DB id read looks incomplete (ids={len(db_ids)} "
+            f"count={db_count}); refusing to delete to avoid nuking live data"
+        )
+        return out
+    targets = orphans[:limit] if limit > 0 else orphans
+    freed_objects = 0
+    freed_bytes = 0
+    deleted = 0
+    for jid in targets:
+        try:
+            r = await objstore.delete_prefix(jid)
+            freed_objects += int(r.get("objects") or 0)
+            freed_bytes += int(r.get("bytes") or 0)
+            deleted += 1
+        except Exception:
+            pass
+    out.update(
+        {
+            "deleted_prefixes": deleted,
+            "freed_objects": freed_objects,
+            "freed_bytes": freed_bytes,
+            "remaining_orphans": len(orphans) - deleted,
+        }
+    )
+    return out
 
 
 async def _fleet_has_spare_capacity() -> bool:
@@ -1581,6 +1693,24 @@ async def create_job(req: JobRequest, request: Request) -> JobInfo:
                     register_codegen_loop(job_id)
                 except Exception:
                     pass
+            # ACK watchdog: the WS assign returning True only proves the
+            # message was ENQUEUED, not that the worker actually picked the
+            # job up. If WorkerJobAccepted never lands (worker hung, accept
+            # handler crashed, deploy churn between assign + ack), the row
+            # sits queued+worker_id forever -- pre-fix this drove 80%+ of
+            # "queue timeout" failures (incident 2026-06-15). Spawn a guard
+            # that flips back to "stranded" after _POST_ASSIGN_ACK_TIMEOUT_S
+            # and immediately re-dispatches onto another free lane. Periodic
+            # redrive reclaim is the safety-net for guards killed by a hub
+            # restart before they could fire.
+            try:
+                import asyncio as _asyncio
+                from server.hub._redrive import post_assign_ack_guard
+                _asyncio.create_task(
+                    post_assign_ack_guard(job_id, worker.worker_id)
+                )
+            except Exception:
+                pass
             log.info(
                 f"[hub] job {job_id} → worker {worker.worker_id} "
                 f"(in_flight={worker.in_flight}/"

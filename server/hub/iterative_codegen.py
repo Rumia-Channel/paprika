@@ -227,6 +227,87 @@ def _is_crawl_intent(goal: str) -> bool:
     return bool(goal) and bool(_CRAWL_INTENT_RX.search(goal))
 
 
+# Video-intent: goals that ask for a video file (or several). Triggers
+# the objective pre-gate in the codegen-loop: "did the script actually
+# produce a video file in assets?" replaces the LLM judge's opinion on
+# the same question -- the gate is objective and unambiguous (a file
+# either exists or it doesn't).
+_VIDEO_INTENT_RX = re.compile(
+    r"(?:"
+    # API-call names worker exposes: download_video, page.download_video,
+    # save_video. Match exact tokens (operator-set goal strings often
+    # paste these).
+    r"\bdownload_video\b|\bsave_video\b|"
+    # Free English: "download (the) video", "save (the) video to disk",
+    # "grab the video", etc. Up to 20 chars between verb and "video".
+    r"\b(?:download|save|fetch|grab|capture)\b.{0,20}\bvideo\b|"
+    # Japanese: 動画/ビデオ ...(保存|ダウンロード|取得|落と)
+    r"動画.{0,15}(?:保存|ダウンロード|取得|落と)|"
+    r"ビデオ.{0,15}(?:保存|ダウンロード|取得|落と)|"
+    r"(?:保存|ダウンロード|取得|落と).{0,15}(?:動画|ビデオ)|"
+    # Hard signal: goal mentions a video file extension explicitly.
+    r"\bvideo file\b|"
+    r"\.mp4|\.webm|\.mkv|\.m4v|\.mov"
+    r")",
+    re.IGNORECASE,
+)
+# File extensions that count as "a video asset" for the gate. Matches
+# typical worker outputs: mp4 (most), webm (yt-dlp default for some
+# hosts), mkv (high-bitrate sources), m4v / mov (Apple-flavoured).
+_VIDEO_ASSET_EXTS = frozenset({".mp4", ".webm", ".mkv", ".m4v", ".mov"})
+
+
+def _is_video_intent(goal: str) -> bool:
+    return bool(goal) and bool(_VIDEO_INTENT_RX.search(goal))
+
+
+def _count_video_assets(assets_dir) -> int:
+    """Count concrete video files in ``assets_dir``. Used by the
+    codegen-loop's objective pre-gate to settle video-intent goals
+    without an LLM call. Returns 0 on any I/O failure (treat as "no
+    video produced" -- the judge fallback can still rule on it)."""
+    try:
+        if assets_dir is None:
+            return 0
+        from pathlib import Path as _P
+        p = _P(assets_dir)
+        if not p.is_dir():
+            return 0
+        n = 0
+        for f in p.rglob("*"):
+            try:
+                if f.is_file() and f.suffix.lower() in _VIDEO_ASSET_EXTS:
+                    n += 1
+            except OSError:
+                continue
+        return n
+    except Exception:
+        return 0
+
+
+def _objective_pregate(
+    *, goal: str, assets_dir
+) -> tuple[bool | None, str]:
+    """Hard-evidence verdict BEFORE the LLM judge.
+
+    Returns ``(satisfied, reason)`` when an unambiguous objective fact
+    settles the attempt; ``(None, "")`` when no objective signal applies
+    (-> fall through to the LLM judge as before).
+
+    Implemented gates (extend cautiously -- each one removes a class
+    of cases from judge oversight):
+
+      * video-intent goal + ≥1 video asset → True
+      * video-intent goal + 0 video assets → False
+    """
+    if _is_video_intent(goal):
+        n = _count_video_assets(assets_dir)
+        if n >= 1:
+            return True, f"objective: {n} video file(s) saved"
+        return False, "objective: video-intent goal but 0 video files in assets"
+    return None, ""
+
+
 # Goal-text patterns that hint at a target page count. Catches the
 # common ways users phrase "I want at least N pages":
 #   "100 pages"       "at least 30"      "30+ pages"   "up to 50"
@@ -645,7 +726,34 @@ async def run_iterative_codegen(
         )
         attempt_timeout_s = _VIDEO_MIN_TIMEOUT
 
-    _log(f"start: max_attempts={max_attempts} timeout={attempt_timeout_s}s")
+    # Per-job token budget kill-switch (Settings job_max_tokens, default
+    # 500k tokens). Catches the "Ralph Wiggum" failure mode: an iteration
+    # loop that quietly fails N times while burning tokens. Default is
+    # high enough that a normal 3-attempt run with vision perception and
+    # reasoning judge fits comfortably; 0 = unlimited (= legacy behaviour).
+    # The scope is opened HERE (entry point) and closed in the finally
+    # block at function exit so every LLM call inside this orchestrator
+    # tallies against the same budget regardless of which helper made
+    # the call (codegen / judge / perception / distiller).
+    _job_budget = 500_000
+    try:
+        from server.hub._state import state as _budget_st
+        if _budget_st.settings is not None:
+            _job_budget = int(_budget_st.settings.get("job_max_tokens", 500_000))
+    except Exception:
+        pass
+    from server.hub.codegen import (
+        open_job_token_scope,
+        close_job_token_scope,
+        check_job_token_budget,
+        get_job_token_total,
+        JobTokenBudgetExceeded,
+    )
+    _budget_token = open_job_token_scope(_job_budget)
+    _log(
+        f"start: max_attempts={max_attempts} timeout={attempt_timeout_s}s "
+        f"job_token_budget={_job_budget if _job_budget > 0 else 'unlimited'}"
+    )
     attempts: list[Attempt] = []
     t0 = time.time()
 
@@ -787,6 +895,24 @@ async def run_iterative_codegen(
         enriched_goal = enriched_goal + "\n\n" + preflight_block
 
     for n in range(1, max_attempts + 1):
+        # Token budget kill-switch: check before starting a new attempt.
+        # The previous attempt(s) may have spent close to the budget on
+        # judges + perception; if we crossed it, bail out with a clear
+        # outcome instead of burning another generate-execute-judge cycle.
+        try:
+            check_job_token_budget()
+        except JobTokenBudgetExceeded as _bx:
+            _log(f"abort: {_bx} (job_max_tokens setting)")
+            outcome = Outcome(
+                success=False,
+                attempts=attempts,
+                final_code=(attempts[-1].code if attempts else ""),
+                total_elapsed_ms=int((time.time() - t0) * 1000),
+                error=f"token budget exceeded: {get_job_token_total()} / {_job_budget} tokens",
+            )
+            _save_outcome(data_dir, job_id, outcome)
+            close_job_token_scope(_budget_token)
+            return outcome
         retry_ctx = _build_retry_context(attempts)
         # Surface the prompt that's about to go to the LLM. The goal
         # text was logged once up top; for retries the retry-context
@@ -955,6 +1081,7 @@ async def run_iterative_codegen(
                     error=err,
                 )
                 _save_outcome(data_dir, job_id, outcome)
+                close_job_token_scope(_budget_token)
                 return outcome
             err = f"codegen call failed: {type(e).__name__}: {e}"
             _log(err)
@@ -1125,6 +1252,21 @@ async def run_iterative_codegen(
                     await capture_task
                 except (asyncio.CancelledError, Exception):
                     pass
+            # End-of-attempt FULL-PAGE capture. If a session this attempt
+            # opened is still alive (mid-script crash / timeout SIGKILL /
+            # ``keep_session=True``), grab one CDP-based scroll capture
+            # capped at 3000 px and OVERWRITE final_screenshot.jpg. For
+            # clean-exit scripts the session is already closed by the
+            # SDK's async context manager, so this is a no-op and the
+            # last polled viewport remains as the final.
+            if capture_attempt_screenshot is not None:
+                try:
+                    await capture_attempt_screenshot(job_id, n, full_page=True)
+                except TypeError:
+                    # Older runner that doesn't accept ``full_page``.
+                    pass
+                except Exception:
+                    pass
         attempt = Attempt(n=n, code=code, result=result, actions=attempt_actions)
         attempts.append(attempt)
         _save_attempt(data_dir, job_id, attempt)
@@ -1249,11 +1391,6 @@ async def run_iterative_codegen(
             # error). In that case we keep the heuristic verdict
             # (= treat as success) so a flaky judge doesn't kill
             # otherwise-good attempts.
-            _log(
-                f"attempt {n}: heuristics passed (progress={progress}, "
-                f"elapsed={result.elapsed_ms}ms); consulting judge "
-                f"LLM for goal verification..."
-            )
             judge_assets = data_dir / job_id / "assets"
             # Hand the planner's testable success criterion to
             # the Judge so it has a concrete bar to measure
@@ -1262,20 +1399,66 @@ async def run_iterative_codegen(
             judge_goal = goal
             if plan is not None and plan.success_criteria:
                 judge_goal = f"{goal}\n\nSuccess criterion (from planner): {plan.success_criteria}"
-            verdict: Verdict | None = await judge_attempt(
-                goal=judge_goal,
-                script=code,
-                exit_code=result.exit_code,
-                elapsed_ms=result.elapsed_ms,
-                timed_out=result.timed_out,
-                stdout=result.stdout or "",
-                stderr=result.stderr or "",
-                assets_dir=judge_assets,
-                screenshot_path=screenshot_path,
-                progress_count=progress,
-                target_pages=target,
-                target=llm_target,
-            )
+
+            # Pre-judge settings (judge_blind_mode + judge_objective_gates_first).
+            # Read once here so both judge call sites use the same value.
+            _blind_judge = True
+            _objective_first = True
+            try:
+                from server.hub._state import state as _jst
+                if _jst.settings is not None:
+                    _blind_judge = bool(_jst.settings.get("judge_blind_mode", True))
+                    _objective_first = bool(_jst.settings.get("judge_objective_gates_first", True))
+            except Exception:
+                pass
+
+            # OBJECTIVE PRE-GATE: settle unambiguous cases without an
+            # LLM call. Currently fires on video-intent goals (count
+            # the .mp4/.webm/.mkv/.m4v/.mov files in assets). When
+            # decisive (True/False) we synthesise a Verdict and SKIP
+            # the LLM judges entirely -- the gate becomes objective,
+            # not "a second agent with an opinion".
+            verdict: Verdict | None = None
+            if _objective_first:
+                _obj_sat, _obj_reason = _objective_pregate(
+                    goal=judge_goal, assets_dir=judge_assets,
+                )
+                if _obj_sat is not None:
+                    verdict = Verdict(
+                        satisfied=bool(_obj_sat),
+                        reason=_obj_reason,
+                        hint="",
+                    )
+                    verdict.model = "objective-pregate"
+                    verdict.elapsed_ms = 0
+                    _log(
+                        f"attempt {n}: objective gate settles verdict "
+                        f"({'OK' if _obj_sat else 'NG'}) -- {_obj_reason}; "
+                        f"skipping LLM judge"
+                    )
+
+            if verdict is None:
+                _log(
+                    f"attempt {n}: heuristics passed (progress={progress}, "
+                    f"elapsed={result.elapsed_ms}ms); consulting judge "
+                    f"LLM for goal verification"
+                    f"{' (blind)' if _blind_judge else ''}..."
+                )
+                verdict = await judge_attempt(
+                    goal=judge_goal,
+                    script=code,
+                    exit_code=result.exit_code,
+                    elapsed_ms=result.elapsed_ms,
+                    timed_out=result.timed_out,
+                    stdout=result.stdout or "",
+                    stderr=result.stderr or "",
+                    assets_dir=judge_assets,
+                    screenshot_path=screenshot_path,
+                    progress_count=progress,
+                    target_pages=target,
+                    target=llm_target,
+                    blind=_blind_judge,
+                )
 
             # Reasoning judge (shadow / primary mode).
             # Settings → reasoning_judge_mode controls how the reasoning
@@ -1286,6 +1469,10 @@ async def run_iterative_codegen(
             #              the engine is unreachable / unparseable.
             # Persists to attempts/{n}/judge_reasoning.json for offline
             # comparison regardless of mode.
+            #
+            # SKIPPED when the objective pregate already settled the
+            # verdict (verdict.model == "objective-pregate"): an
+            # objective gate must not be overridden by an LLM opinion.
             _reasoning_mode = "off"
             try:
                 from server.hub._state import state as _reasoning_st
@@ -1296,7 +1483,10 @@ async def run_iterative_codegen(
             if not _reasoning_mode or _reasoning_mode == "off":
                 _reasoning_mode = (os.environ.get("PAPRIKA_R1_JUDGE_MODE", "off") or "off").lower().strip()
 
-            if _reasoning_mode in ("shadow", "primary"):
+            _from_objective_pregate = (
+                verdict is not None and getattr(verdict, "model", "") == "objective-pregate"
+            )
+            if _reasoning_mode in ("shadow", "primary") and not _from_objective_pregate:
                 try:
                     from server.hub.codegen import resolve_engine_target
                     from server.hub.judge_llm import judge_via_reasoning
@@ -1390,6 +1580,7 @@ async def run_iterative_codegen(
                             stderr=result.stderr or "",
                             script=code or "",
                             target=reasoning_target,
+                            blind=_blind_judge,
                         )
 
                     # Persist reasoning verdict for offline comparison.
@@ -1509,6 +1700,7 @@ async def run_iterative_codegen(
                 final_actions=(attempts[-1].actions if attempts else []),
             )
             _save_outcome(data_dir, job_id, outcome)
+            close_job_token_scope(_budget_token)
             return outcome
 
     # All attempts failed.
@@ -1521,7 +1713,8 @@ async def run_iterative_codegen(
         error=f"all {len(attempts)} attempts failed",
     )
     _save_outcome(data_dir, job_id, outcome)
-    _log(f"FAILED after {len(attempts)} attempts")
+    _log(f"FAILED after {len(attempts)} attempts (tokens={get_job_token_total()})")
+    close_job_token_scope(_budget_token)
     return outcome
 
 

@@ -77,6 +77,27 @@ _MAX_PER_PASS = int(_num("PAPRIKA_QUEUE_REDRIVE_MAX_PER_PASS", 0))
 # has definitively finished -- a still-queued+unassigned row is genuinely
 # stranded. The CAS ``worker_id IS NULL`` guard is the belt; this is the braces.
 _MIN_AGE_S = _num("PAPRIKA_QUEUE_REDRIVE_MIN_AGE_S", 90.0)
+# Stranded-by-stale-``worker_id`` reclaim threshold (incident 2026-06-15).
+# POST records ``worker_id`` the instant the WS assign send returns -- but if
+# the worker NEVER acks (process hung, deploy churn between assign + accept),
+# the row sits as ``queued + worker_id`` forever and the redrive's
+# ``worker_id IS NULL`` guard skips it. Past this age the original POST has
+# long given up -- treat the assignment as lost, NULL the stale ``worker_id``,
+# and re-dispatch onto a fresh free lane. Generously > _MIN_AGE_S so a
+# live-in-flight POST never collides; even at 120s the 180s queue reaper still
+# has a buffer to catch jobs nobody could place. Safety-net for cases the
+# per-POST ``post_assign_ack_guard`` (below) couldn't cover (hub restart
+# between assign + ack timeout -> guard task died with the process).
+_STALE_WORKER_ID_AGE_S = _num("PAPRIKA_QUEUE_REDRIVE_STALE_WORKER_AGE_S", 120.0)
+
+# POST /jobs ACK-watchdog timeout. Each successful inline assign spawns a
+# guard task that flips back to "stranded" if WorkerJobAccepted doesn't land
+# within this window. Should be SHORT (we want fast recovery) but generous
+# enough that a healthy worker on a slow link still acks in time (typical
+# happy-path is 1-5s; 30s gives 5-30x headroom). Bounds stranded latency to
+# under the 90s _MIN_AGE_S window so the recovered job dispatches IMMEDIATELY
+# without waiting for the redrive's grace clock.
+_POST_ASSIGN_ACK_TIMEOUT_S = _num("PAPRIKA_POST_ASSIGN_ACK_TIMEOUT_S", 30.0)
 
 
 async def _assign_worker_job(info, worker, base: str, started) -> bool:
@@ -320,6 +341,7 @@ async def _redrive_pass() -> int:
     infos.sort(key=lambda i: i.created_at or datetime.min)
     now = datetime.utcnow()  # JobInfo.created_at is naive-UTC (mirrors the reaper)
     placed = 0
+    reclaimed_count = 0
     for info in infos:  # oldest first
         try:
             age = (now - info.created_at).total_seconds() if info.created_at else 1e9
@@ -328,7 +350,38 @@ async def _redrive_pass() -> int:
         if age < _MIN_AGE_S:
             break  # sorted oldest-first -> everything after is younger too
         if info.worker_id:
-            continue  # POST already handed this to a worker -> not stranded
+            # Two cases:
+            #   * age < _STALE_WORKER_ID_AGE_S -> a live POST may still be in
+            #     flight; original guard applies, skip.
+            #   * age >= _STALE_WORKER_ID_AGE_S -> POST is definitively gone;
+            #     the worker_id is stale (worker never acked). Null it out and
+            #     fall through to the normal dispatch path so claim_queued_job
+            #     (worker_id IS NULL) can take it for a fresh worker.
+            if age < _STALE_WORKER_ID_AGE_S:
+                continue
+            stale_worker = info.worker_id
+            try:
+                ok_reclaim = await store.reclaim_stranded_queued_job(
+                    info.job_id, stale_worker,
+                )
+            except Exception:
+                log.warning("redrive: reclaim(%s) failed", info.job_id, exc_info=True)
+                continue
+            if not ok_reclaim:
+                # Either the row finally moved on (worker DID ack mid-pass,
+                # status flipped to running) or a peer hub beat us to the
+                # reclaim. Either way, leave it alone.
+                continue
+            log.info(
+                "redrive: reclaimed stranded queued job %s (stale worker %s, age=%.0fs)",
+                info.job_id, stale_worker, age,
+            )
+            reclaimed_count += 1
+            # Mirror the DB change into the in-memory ``info`` so the dispatch
+            # below sees a NULL worker_id (avoids re-tripping our own guard
+            # one line up if this loop ever fans out to multiple infos).
+            info.worker_id = None
+            info.started_at = None
         if _MAX_PER_PASS and placed >= _MAX_PER_PASS:
             break
         if state.registry.pick_worker() is None:
@@ -337,6 +390,11 @@ async def _redrive_pass() -> int:
             placed += 1
     if placed:
         log.info("redrive: placed %d stranded queued job(s) onto free lanes", placed)
+    elif reclaimed_count:
+        # Only log the reclaim summary when no placements followed -- otherwise
+        # the per-job reclaim line above is enough and the next pass will pick
+        # them up.
+        log.info("redrive: reclaimed %d stranded worker_id(s); next pass will dispatch", reclaimed_count)
     return placed
 
 
@@ -359,3 +417,88 @@ async def _queued_redrive_loop() -> None:
             await _redrive_pass()
         except Exception:
             log.warning("redrive: pass failed", exc_info=True)
+
+
+async def post_assign_ack_guard(job_id: str, worker_id: str) -> None:
+    """Background watchdog spawned by ``POST /jobs`` right after a successful
+    inline assign. The fix for the OPTION-2 root cause of stranded jobs:
+
+    POST records ``worker_id`` the instant the WS assign send returns -- but
+    that only proves the message ENQUEUED on the WS, not that the worker
+    actually picked the job up. If the worker never sends ``WorkerJobAccepted``
+    (hung event loop, accept-handler crash, mid-deploy WS churn), the row sits
+    ``queued + worker_id`` and the old redrive guard (``worker_id IS NULL``)
+    skipped it forever; pre-fix the 180s queue reaper killed it as a failure.
+    Option-1's periodic redrive reclaim catches it eventually but only after
+    ``_STALE_WORKER_ID_AGE_S`` (120s). This guard catches it in
+    ``_POST_ASSIGN_ACK_TIMEOUT_S`` (default 30s) AND immediately re-dispatches.
+
+    Flow:
+      1. Sleep _POST_ASSIGN_ACK_TIMEOUT_S.
+      2. If status moved off ``queued`` (worker acked, or completed/failed) ->
+         no-op.
+      3. If worker_id no longer matches (peer reclaimed, or POST didn't actually
+         persist) -> no-op.
+      4. Otherwise: ``reclaim_stranded_queued_job`` NULLs the stale ``worker_id``
+         + ``started_at``, ``registry.release`` returns the worker's in_flight
+         slot (it never actually started the job, so we mustn't carry a phantom
+         charge against its capacity), and ``_redrive_dispatch_one`` places it
+         on whichever free lane the scheduler picks NOW.
+
+    Best-effort: every step is wrapped so a transient DB / scheduler hiccup
+    can't take the guard task down silently -- the periodic redrive remains
+    as the safety-net. Disable via ``PAPRIKA_POST_ASSIGN_ACK_DISABLE=1``."""
+    if _flag("PAPRIKA_POST_ASSIGN_ACK_DISABLE", False):
+        return
+    try:
+        await asyncio.sleep(_POST_ASSIGN_ACK_TIMEOUT_S)
+    except asyncio.CancelledError:
+        return
+    store = state.store
+    if store is None or state.registry is None:
+        return
+    try:
+        info = await store.get_job_info(job_id)
+    except Exception:
+        log.debug("post-assign guard: get_job_info(%s) failed", job_id, exc_info=True)
+        return
+    if info is None:
+        return  # row was deleted -- nothing to recover.
+    if info.status != JobStatus.queued:
+        return  # worker acked (-> running) or job moved on (completed/failed).
+    if info.worker_id != worker_id:
+        return  # peer hub already reclaimed, or POST never persisted us.
+    try:
+        ok = await store.reclaim_stranded_queued_job(job_id, worker_id)
+    except Exception:
+        log.warning("post-assign guard: reclaim(%s) failed", job_id, exc_info=True)
+        return
+    if not ok:
+        return  # raced with another reclaim path; let it handle.
+    log.info(
+        "post-assign ack timeout: cleared stale worker_id %s from job %s "
+        "(no JobAccepted in %.0fs); re-dispatching",
+        worker_id, job_id, _POST_ASSIGN_ACK_TIMEOUT_S,
+    )
+    # Return the worker's in_flight slot -- it never actually started this job.
+    # Without this the worker carries a phantom charge that blocks dispatch
+    # to it until the next WorkerHeartbeat re-syncs in_flight from the worker
+    # side. Cross-hub: ``release`` is a no-op when the worker isn't local
+    # (it lives on whichever hub the worker is connected to); the scheduler
+    # rebalance loop converges the in_flight figure from heartbeats anyway.
+    try:
+        state.registry.release(worker_id, job_id)
+    except Exception:
+        pass
+    # Re-dispatch NOW, skipping the redrive loop's _MIN_AGE_S grace window
+    # (which would otherwise add ~60s of latency). We know this job is
+    # genuinely stranded by ack timeout, not POST's grace period.
+    info.worker_id = None
+    info.started_at = None
+    try:
+        await _redrive_dispatch_one(info)
+    except Exception:
+        log.warning(
+            "post-assign guard: re-dispatch(%s) failed; redrive loop will catch it",
+            job_id, exc_info=True,
+        )

@@ -488,6 +488,97 @@ def record_engine_usage(target: "LLMTarget", usage_payload: dict) -> None:
             pass
     # Shared cross-hub counter (the #engines source of truth).
     _schedule_engine_usage_db(slug, prompt, completion)
+    # Per-job token tally (kill-switch). When the orchestrator opens a
+    # job_token_budget scope, every LLM round-trip charges its tokens to
+    # the ContextVar dict. The scope owner (codegen-loop) reads the dict
+    # after each LLM call and aborts when total > budget. Outside the
+    # scope (no orchestrator set), this is a no-op.
+    try:
+        _add_job_tokens(prompt + completion)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Per-job token budget kill-switch.
+# ---------------------------------------------------------------------------
+# Codegen-loop opens a "scope" at job start (``open_job_token_scope``) that
+# records the running token total and the budget. Every ``record_engine_usage``
+# call inside that scope adds its tokens. The orchestrator polls the scope
+# after each LLM round-trip via ``check_job_token_budget`` and aborts the
+# job when the running total crosses the budget. Defends against the
+# "Ralph Wiggum" failure mode (0xCodez 14-step Tier 3): a loop that fails
+# quietly while burning tokens.
+
+import contextvars as _ctxvars
+
+_current_job_token_scope: "_ctxvars.ContextVar[dict | None]" = _ctxvars.ContextVar(
+    "paprika_job_token_scope", default=None,
+)
+
+
+def open_job_token_scope(budget_tokens: int) -> object:
+    """Start tracking tokens for the current asyncio task.
+
+    Returns a token usable with ``close_job_token_scope`` (``ContextVar.reset``)
+    so the orchestrator can take down the scope at job end / on exception.
+
+    ``budget_tokens <= 0`` means "no limit"; the scope is still opened so
+    callers can read the running total via ``get_job_token_total`` but the
+    budget check ALWAYS PASSES.
+    """
+    scope = {"total": 0, "budget": int(budget_tokens or 0)}
+    return _current_job_token_scope.set(scope)
+
+
+def close_job_token_scope(reset_token) -> None:
+    """Restore the previous scope. ``reset_token`` is whatever
+    ``open_job_token_scope`` returned. Always safe to call (no-op if the
+    token has already been used)."""
+    try:
+        _current_job_token_scope.reset(reset_token)
+    except (LookupError, ValueError):
+        pass
+
+
+def _add_job_tokens(n: int) -> None:
+    """Charge ``n`` tokens to the active scope, if any. Called from
+    ``record_engine_usage`` after the per-engine and DB writes succeed."""
+    if n <= 0:
+        return
+    scope = _current_job_token_scope.get()
+    if scope is None:
+        return
+    scope["total"] = int(scope.get("total") or 0) + int(n)
+
+
+class JobTokenBudgetExceeded(Exception):
+    """Raised when the job's cumulative token usage crosses its budget."""
+
+
+def check_job_token_budget() -> None:
+    """Raise :class:`JobTokenBudgetExceeded` when the running total is
+    over the scope's budget. No-op when no scope is active or the budget
+    is 0 (= unlimited). Orchestrator calls this after each LLM round-
+    trip; the exception bubbles up and lets the loop fail the job with a
+    clean reason instead of churning to its max_attempts cap."""
+    scope = _current_job_token_scope.get()
+    if scope is None:
+        return
+    budget = int(scope.get("budget") or 0)
+    total = int(scope.get("total") or 0)
+    if budget > 0 and total > budget:
+        raise JobTokenBudgetExceeded(
+            f"job token budget exceeded: {total} > {budget}"
+        )
+
+
+def get_job_token_total() -> int:
+    """Running token total for the active scope; 0 if no scope is active."""
+    scope = _current_job_token_scope.get()
+    if scope is None:
+        return 0
+    return int(scope.get("total") or 0)
 
 
 def resolve_engine_target(

@@ -73,48 +73,50 @@ async function renderHosts() {
   if (tabCnt) tabCnt.textContent = data.total || 0;
   if (!tbody) return;
   if (items.length === 0) {
-    tbody.innerHTML = '<tr><td colspan=7 class="empty">'
+    tbody.innerHTML = '<tr><td colspan=1 class="empty" style="padding:14px; text-align:center; color:#888;">'
       + (q ? `no hosts matched ${esc(q)}` : 'no hosts registered')
       + '</td></tr>';
     renderHostsPager(0, 0);
     return;
   }
+  // Mail-app-style list: 2-line row per host. Top = domain (clickable
+  // anywhere). Bottom = compact meta chips so the operator can scan
+  // engagement at a glance (cookie count / dedup pattern count /
+  // recipe count / last-used relative time) plus state badges
+  // (対象外 / 自動ログイン configured). The detail pane still owns the
+  // full editing surface.
   tbody.innerHTML = items.map(h => {
     const host = esc(h.host || '');
-    const notes = h.notes ? esc(h.notes) : '<span style="color:#999;">—</span>';
-    const visited = h.visited_count || 0;
-    // Show recrawl_patterns count alongside visited count so the
-    // operator can see at a glance whether either is set.
-    const patCount = (h.recrawl_patterns || []).length;
-    const patHint = patCount > 0 ? ` <small style="color:#196b2c;" title="${patCount} recrawl pattern(s)">🎯${patCount}</small>` : '';
-    const visitedBtn = visited > 0
-      ? `<button class="pill" style="background:#eef8ff; border-color:#9bf; padding:1px 8px; font-size:.78em;" onclick="openVisitedModal('${host}')"><iconify-icon icon="lucide:filter"></iconify-icon> dedup (${visited})${patHint}</button>`
-      : `<button class="pill" style="background:#f5f5fa; border-color:#bbc; color:#888; padding:1px 8px; font-size:.78em;" onclick="openVisitedModal('${host}')"><iconify-icon icon="lucide:filter"></iconify-icon> dedup (0)${patHint}</button>`;
-    // Recipes column: count badge only. The standalone Recipes browse
-    // tab was removed in v2 (recipe data lives in HostKnowledge now,
-    // auto-maintained by the R1 Distiller). HostRecord.fetch_recipes
-    // still exists on disk so the count is informative, but the click-
-    // through to a Recipes tab is gone; open the host's modal to edit.
-    const rcpCount = (h.fetch_recipes || []).length;
-    const rcpBtn = rcpCount > 0
-      ? `<span class="pill" style="background:#fff7e6; border-color:#e8c97a; color:#7a5a14; padding:1px 8px; font-size:.78em;" title="${rcpCount} legacy fetch_recipes (browse removed in v2; managed via Host edit modal)"><iconify-icon icon="lucide:bookmark-plus"></iconify-icon> ${rcpCount}</span>`
-      : `<span style="color:#999; font-size:.78em;">—</span>`;
+    const isSel = (_selectedHost === host);
+    const ck = Number(h.cookie_count || 0);
+    const dp = Array.isArray(h.recrawl_patterns) ? h.recrawl_patterns.length : 0;
+    const rc = Array.isArray(h.fetch_recipes) ? h.fetch_recipes.length : 0;
+    const lastStr = fmtAgoOrNever(h.last_used_at);
+    const excluded = h.excluded
+      ? ' <span style="color:#b00020; font-weight:600;" title="対象外">⊘</span>' : '';
+    const login = h.has_login_recipe
+      ? ' <span style="color:#0a7d2f;" title="自動ログイン設定済">🔐</span>' : '';
+    const chip = (n, emoji, title) =>
+      `<span title="${title}" style="margin-right:9px;">${emoji} ${n}</span>`;
     return `
-      <tr>
-        <td><code>${host}</code></td>
-        <td>${h.cookie_count || 0}</td>
-        <td>${visitedBtn}</td>
-        <td>${rcpBtn}</td>
-        <td>${notes}</td>
-        <td><small>${fmtAgoOrNever(h.updated_at)}</small></td>
-        <td><small>${fmtAgoOrNever(h.last_used_at)}</small></td>
-        <td>
-          <button class="pill" style="background:#eef8ff; border-color:#9bf;" onclick="openHostModal('${host}')"><iconify-icon icon="lucide:pencil"></iconify-icon> edit</button>
+      <tr data-host-row="${host}" class="host-row" style="cursor:pointer; ${isSel ? 'background:#fff7d6;' : ''}">
+        <td style="padding:6px 12px 7px; border-bottom:1px solid #eef0f4; line-height:1.3;">
+          <div style="font-family:ui-monospace,Consolas,monospace; font-size:.88em; ${isSel ? 'color:#7a4a14; font-weight:600;' : 'color:#1f2328;'}">${host}</div>
+          <div style="font-size:.72em; color:#6a737d; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+            ${chip(ck, '🍪', 'cookies')}${chip(dp, '📋', 'dedup patterns')}${chip(rc, '🎯', 'fetch recipes')}<span style="color:#8a929a;">${lastStr}</span>${excluded}${login}
+          </div>
         </td>
       </tr>`;
   }).join('');
+  // Delegate row click -> open detail pane (whole row is clickable).
+  tbody.querySelectorAll('tr.host-row').forEach((tr) => {
+    tr.addEventListener('click', () => openHostModal(tr.dataset.hostRow));
+  });
   renderHostsPager(_hostListState.total, _hostListState.offset);
 }
+
+// Currently-selected host for row highlighting + master-detail context.
+let _selectedHost = '';
 
 function renderHostsPager(total, offset) {
   const el = document.getElementById('hostsPager');
@@ -138,19 +140,84 @@ function hostsPagerJump(dir) {
   renderHosts();
 }
 
+// Master-detail rehousing: the legacy #hostModal lives in the DOM but we
+// move its inner editing controls (header / body / footer) into the right
+// pane (#hostDetailMount) on first edit so the same form HTML drives both
+// the inline experience and the legacy modal-style callers (cookie save
+// flow). The old hostModal element becomes a hidden carrier when in
+// inline mode -- never displayed as a popup.
+let _hostModalRehoused = false;
 function _hostModalEl() { return document.getElementById('hostModal'); }
 
+function _rehouseHostModalBodyIntoDetailPane() {
+  if (_hostModalRehoused) return true;
+  const mount = document.getElementById('hostDetailMount');
+  const modal = _hostModalEl();
+  if (!mount || !modal) return false;
+  // The hostModal markup is:  outer overlay > inner card > [header, body, footer]
+  // We want the inner card's children moved verbatim into hostDetailMount.
+  const card = modal.firstElementChild;
+  if (!card) return false;
+  while (card.firstChild) mount.appendChild(card.firstChild);
+  // Adjust margins / sizes for the inline layout.
+  mount.style.padding = '0';
+  // The original first child of the inner card was the header bar with
+  // the close X; in the inline pane we hide the close because the detail
+  // pane is never modal -- there's no overlay to dismiss.
+  const closeBtn = document.getElementById('hostModalClose');
+  if (closeBtn) closeBtn.style.display = 'none';
+  // Make the body area scroll while the header + footer stay sticky.
+  const bodyArea = mount.children[1]; // body
+  if (bodyArea) {
+    bodyArea.style.flex = '1 1 auto';
+    bodyArea.style.minHeight = '0';
+    bodyArea.style.overflow = 'auto';
+  }
+  const footer = mount.querySelector('.flat-actions');
+  if (footer) {
+    footer.style.position = 'sticky';
+    footer.style.bottom = '0';
+    footer.style.borderTop = '1px solid #eee';
+    footer.style.background = '#fafafa';
+  }
+  _hostModalRehoused = true;
+  return true;
+}
+
 function _openHostModal() {
+  // Inline-master-detail mode: show the right pane, hide the legacy modal.
+  // First time we open, rehouse the modal's body so the form fields are
+  // mounted inside #hostDetailMount.
+  _rehouseHostModalBodyIntoDetailPane();
+  const empty = document.getElementById('hostDetailEmpty');
+  const mount = document.getElementById('hostDetailMount');
+  if (empty) empty.style.display = 'none';
+  if (mount) mount.style.display = 'flex';
+  // Make sure the legacy overlay is hidden (we are not using it as a modal).
   const m = _hostModalEl();
-  if (m) { m.style.display = 'flex'; }
+  if (m) m.style.display = 'none';
 }
 
 function closeHostModal() {
   _entityHashClear('hosts');
-  const m = _hostModalEl();
-  if (m) { m.style.display = 'none'; }
+  _selectedHost = '';
+  const empty = document.getElementById('hostDetailEmpty');
+  const mount = document.getElementById('hostDetailMount');
+  if (empty) empty.style.display = '';
+  if (mount) mount.style.display = 'none';
   const err = document.getElementById('hostModalCookieErr');
   if (err) err.textContent = '';
+  // Clear the row highlight in the list.
+  document.querySelectorAll('#hostsTable tbody tr.host-row').forEach((tr) => {
+    tr.style.background = '';
+  });
+}
+
+function _updateHostRowHighlight(host) {
+  _selectedHost = host || '';
+  document.querySelectorAll('#hostsTable tbody tr.host-row').forEach((tr) => {
+    tr.style.background = (tr.dataset.hostRow === _selectedHost) ? '#fff7d6' : '';
+  });
 }
 
 async function openHostModal(host) {
@@ -159,6 +226,7 @@ async function openHostModal(host) {
   // when the modal was reached via "save → host" on a live session,
   // so hide it for this plain add/edit path.
   if (typeof _hideCookieRefetchToggle === 'function') _hideCookieRefetchToggle();
+  _updateHostRowHighlight(host);
   const titleEl = document.getElementById('hostModalTitle');
   const hostInput = document.getElementById('hostModalHost');
   const cookiesArea = document.getElementById('hostModalCookies');
@@ -207,6 +275,295 @@ async function openHostModal(host) {
   }
   _openHostModal();
   if (!host) hostInput.focus();
+  // Reset subtab state -- start on クッキー (the most common edit case).
+  // Clear the roles-loaded marker so re-opening the same host re-fetches
+  // fresh data (observed templates + overrides may have changed since).
+  _hostRolesLoadedFor = '';
+  // Same reasoning for the strategy digest -- updated_at / revision may
+  // have changed since (operator edit, nightly review run, etc.).
+  _hostStrategyLoadedFor = '';
+  setHostModalSubtab('cookies');
+}
+
+// ---------------------------------------------------------------------------
+// Host modal subtabs: クッキー / ページ種別判定 / その他
+// Same submit-subtab visual language as the Submit panel; scoped via
+// data-host-subtab to keep its handlers isolated. The ページ種別判定 panel
+// lazy-loads the URL-roles API to avoid a wasted MariaDB query when the
+// operator just wants to edit cookies.
+// ---------------------------------------------------------------------------
+let _hostRolesLoadedFor = '';
+
+function setHostModalSubtab(name) {
+  if (!name) name = 'cookies';
+  document.querySelectorAll('.submit-subtab[data-host-subtab]').forEach((t) => {
+    const on = t.dataset.hostSubtab === name;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('.submit-subpane[data-host-subpane]').forEach((p) => {
+    if (p.dataset.hostSubpane === name) {
+      // Some subpanes need flex layout to fill remaining height (so the
+      // templates table can stretch). Use data-active-display to opt in.
+      p.style.display = p.dataset.activeDisplay || '';
+    } else {
+      p.style.display = 'none';
+    }
+  });
+  // Lazy-load: only fetch URL roles when the operator actually opens the
+  // page-role tab AND there's a host context (don't fire on Add-new).
+  if (name === 'roles') {
+    const hostInput = document.getElementById('hostModalHost');
+    const host = hostInput ? hostInput.value.trim() : '';
+    if (host && _hostRolesLoadedFor !== host && typeof loadHostUrlRoles === 'function') {
+      _hostRolesLoadedFor = host;
+      try { loadHostUrlRoles(host); } catch (_e) {}
+    } else if (!host) {
+      const tbl = document.getElementById('hostRoleTemplates');
+      const rules = document.getElementById('hostRoleAutoRules');
+      if (tbl)   tbl.innerHTML = '<div style="color:#888; padding:8px 0;">新規ホストです。保存後に「ページ種別判定」が利用可能になります。</div>';
+      if (rules) rules.innerHTML = '';
+    }
+  } else if (name === 'strategy') {
+    const hostInput = document.getElementById('hostModalHost');
+    const host = hostInput ? hostInput.value.trim() : '';
+    if (host && _hostStrategyLoadedFor !== host && typeof loadHostStrategy === 'function') {
+      _hostStrategyLoadedFor = host;
+      try { loadHostStrategy(host); } catch (_e) {}
+    } else if (!host) {
+      const meta = document.getElementById('hostStrategyMeta');
+      const ta   = document.getElementById('hostStrategyMd');
+      if (meta) meta.textContent = '新規ホストです。保存後に「戦略」が利用可能になります。';
+      if (ta)   ta.value = '';
+    }
+  }
+}
+
+// ===========================================================================
+// 戦略 (per-host strategy digest / VISION.md) — load + save
+// ===========================================================================
+let _hostStrategyLoadedFor = '';
+
+async function loadHostStrategy(host) {
+  const meta = document.getElementById('hostStrategyMeta');
+  const ta   = document.getElementById('hostStrategyMd');
+  const stat = document.getElementById('hostStrategySaveStatus');
+  if (stat) stat.textContent = '';
+  if (meta) meta.textContent = '読み込み中…';
+  try {
+    const r = await fetch('/hosts/' + encodeURIComponent(host) + '/strategy');
+    if (!r.ok) {
+      if (meta) meta.textContent = '取得失敗 (HTTP ' + r.status + ')';
+      return;
+    }
+    const d = await r.json();
+    if (ta)   ta.value = d.summary_md || '';
+    if (meta) {
+      if (!d.exists) {
+        meta.textContent = '未設定。テンプレートに沿って書くと distiller-r1 が次のエスカレーションから読みます。';
+      } else {
+        const u = d.updated_by || '(unknown)';
+        const at = d.updated_at || '';
+        const rev = d.revision || 1;
+        meta.innerHTML = '最終更新: <strong>' + (u + '').replace(/[<>&]/g, '') + '</strong> ' + at + ' (rev ' + rev + ')';
+      }
+    }
+  } catch (e) {
+    if (meta) meta.textContent = '取得失敗: ' + (e && e.message ? e.message : e);
+  }
+}
+
+async function saveHostStrategy() {
+  const hostInput = document.getElementById('hostModalHost');
+  const host = hostInput ? hostInput.value.trim() : '';
+  if (!host) return;
+  const ta = document.getElementById('hostStrategyMd');
+  const stat = document.getElementById('hostStrategySaveStatus');
+  const md = ta ? ta.value : '';
+  if (stat) { stat.style.color = '#1e6b3a'; stat.textContent = '保存中…'; }
+  try {
+    const r = await fetch('/hosts/' + encodeURIComponent(host) + '/strategy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summary_md: md }),
+    });
+    if (!r.ok) {
+      if (stat) { stat.style.color = '#a00'; stat.textContent = '保存失敗 (HTTP ' + r.status + ')'; }
+      return;
+    }
+    if (stat) { stat.style.color = '#1e6b3a'; stat.textContent = '保存しました'; }
+    // Re-fetch to update the meta line (updated_at / revision / updated_by).
+    setTimeout(() => loadHostStrategy(host), 200);
+  } catch (e) {
+    if (stat) { stat.style.color = '#a00'; stat.textContent = '保存失敗: ' + (e && e.message ? e.message : e); }
+  }
+}
+
+async function clearHostStrategy() {
+  if (!confirm('このホストの戦略ダイジェストを削除しますか? (次の夜間 review で自動再生成されます)')) return;
+  const ta = document.getElementById('hostStrategyMd');
+  if (ta) ta.value = '';
+  await saveHostStrategy();  // empty summary_md = delete
+}
+
+(function _wireHostStrategyBtns() {
+  function wire() {
+    const save = document.getElementById('hostStrategySave');
+    if (save) save.addEventListener('click', saveHostStrategy);
+    const clr = document.getElementById('hostStrategyClear');
+    if (clr) clr.addEventListener('click', clearHostStrategy);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
+  else wire();
+})();
+
+// Wire the subtab clicks once at load.
+(function _wireHostModalSubtabs() {
+  function wire() {
+    document.querySelectorAll('.submit-subtab[data-host-subtab]').forEach((btn) => {
+      btn.addEventListener('click', () => setHostModalSubtab(btn.dataset.hostSubtab));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
+  else wire();
+})();
+
+// ===========================================================================
+// ページ種別判定 visualization + override editor (in host modal)
+// ===========================================================================
+const _HOST_ROLE_LABEL = { detail: '詳細', listing: '一覧', category: 'カテゴリ', tag: 'タグ', top: 'トップ', error: 'エラー', unknown: '不明' };
+const _HOST_ROLE_CHOICES = ['detail', 'listing', 'category', 'tag', 'top', 'error', 'unknown'];
+
+function _hostRoleEsc(s) { return (s == null ? '' : ('' + s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+async function loadHostUrlRoles(host) {
+  const tblHost = document.getElementById('hostRoleTemplates');
+  const rulesHost = document.getElementById('hostRoleAutoRules');
+  if (tblHost) tblHost.innerHTML = '<div style="color:#888; padding:8px 0;">読み込み中…</div>';
+  try {
+    const r = await fetch('/hosts/' + encodeURIComponent(host) + '/url-roles');
+    if (!r.ok) {
+      if (tblHost) tblHost.innerHTML = '<div style="color:#933; padding:8px 0;">取得失敗 (HTTP ' + r.status + ')</div>';
+      return;
+    }
+    const d = await r.json();
+    // Auto-rules summary (keywords + tokenisation rules).
+    if (rulesHost) {
+      const kwHtml = (d.auto_rules || []).map(rule => {
+        const kw = (rule.keywords || []).map(_hostRoleEsc).join(', ');
+        const qk = (rule.query_keys || []).map(_hostRoleEsc).join(', ');
+        const pill = '<span class="role-pill role-' + _hostRoleEsc(rule.role) + '">' + _hostRoleEsc(_HOST_ROLE_LABEL[rule.role] || rule.role) + '</span>';
+        const pathPart = kw
+          ? ' <span style="color:#888; font-size:.85em;">パス:</span> <code style="color:#555;">' + kw + '</code>'
+          : '';
+        const qPart = qk
+          ? ' <span style="color:#888; font-size:.85em; margin-left:6px;">クエリ:</span> <code style="color:#5b3aa6;">?' + qk + '=</code>'
+          : '';
+        return '<div style="margin:3px 0;">' + pill + pathPart + qPart + '</div>';
+      }).join('');
+      const tplRules = d.templatization_rules || [];
+      const tplHtml = tplRules.length
+        ? '<div style="margin-top:10px; padding-top:8px; border-top:1px dashed #d9dde2;">' +
+          '<div style="font-weight:600; color:#444; margin-bottom:4px;">テンプレ化規則（URL の数字 / UUID / slug が変数に置換される順序）</div>' +
+          '<table style="width:100%; font-size:.82em; border-collapse:collapse;">' +
+          '<thead><tr style="color:#666;"><th style="text-align:left; padding:3px 6px;">変数</th><th style="text-align:left; padding:3px 6px;">マッチする条件</th><th style="text-align:left; padding:3px 6px;">例</th></tr></thead>' +
+          '<tbody>' + tplRules.map(rule =>
+            '<tr style="border-top:1px solid #eef0f4;">' +
+            '<td style="padding:4px 6px; font-family:monospace; color:#5b3aa6;">' + _hostRoleEsc(rule.placeholder) + '</td>' +
+            '<td style="padding:4px 6px; color:#555;">' + _hostRoleEsc(rule.matches) + '</td>' +
+            '<td style="padding:4px 6px; font-family:monospace; color:#888;">' + (rule.examples || []).map(_hostRoleEsc).join(', ') + '</td>' +
+            '</tr>'
+          ).join('') + '</tbody></table>' +
+          '<div style="margin-top:6px; color:#777;">上から順に判定 / 最初に一致したものが採用される。例えば <code>2024</code> は <code>{year}</code> → <code>{month}</code> → <code>{int}</code> の順で <code>{year}</code> に決まる。</div>' +
+          '</div>'
+        : '';
+      rulesHost.innerHTML = kwHtml + tplHtml + '<div style="margin-top:8px; color:#777; font-size:.85em;">他: ページネーション共起 → 一覧 (0.95)・URL パスの可変セグメント + 観測回数 → 詳細 (0.6〜0.95)・どれにも該当しない → 不明</div>';
+    }
+    // Templates table.
+    const tpls = d.templates || [];
+    if (!tpls.length) {
+      if (tblHost) tblHost.innerHTML = '<div style="color:#888; padding:8px 0;">このホストでは URL テンプレが未観測です。</div>';
+      return;
+    }
+    const rows = tpls.map((t, idx) => {
+      const auto = t.auto || {};
+      const ov = t.override || '';
+      const cur = ov || auto.value || 'unknown';
+      const choices = _HOST_ROLE_CHOICES.map(v => {
+        const sel = v === cur;
+        const style = sel
+          ? 'cursor:pointer; padding:2px 8px; background:#196b2c; color:#fff; border-color:#196b2c; font-weight:600; font-size:.85em;'
+          : 'cursor:pointer; padding:2px 8px; font-size:.85em;';
+        return '<button type="button" class="role-pill role-' + v + ' hr-choice" data-host="' + _hostRoleEsc(host) + '" data-tpl="' + _hostRoleEsc(t.url_template) + '" data-val="' + v + '" style="' + style + '">' + _hostRoleEsc(_HOST_ROLE_LABEL[v]) + '</button>';
+      }).join('');
+      const autoConf = (auto.confidence != null) ? Math.round(auto.confidence * 100) + '%' : '—';
+      const ovTag = ov ? '<span style="color:#5b3aa6; font-size:.85em; margin-left:6px;" title="操作者により ' + _hostRoleEsc(ov) + ' に訂正済み (' + _hostRoleEsc(t.set_by || '') + ' / ' + _hostRoleEsc(t.set_at || '') + ')"><iconify-icon icon="lucide:pin"></iconify-icon> 訂正</span>' : '';
+      const clearBtn = ov ? '<button type="button" class="aibtn hr-clear" data-host="' + _hostRoleEsc(host) + '" data-tpl="' + _hostRoleEsc(t.url_template) + '" style="font-size:.78em; margin-left:6px;" title="この override を削除して自動判定に戻す">解除</button>' : '';
+      // Observed-count + video-evidence pills (templates without samples
+      // are overrides for not-yet-observed templates -- skip the meta).
+      const oc = (t.obs_count != null) ? t.obs_count : 0;
+      const ve = (t.video_evidence_count != null) ? t.video_evidence_count : 0;
+      const obsPills = oc > 0
+        ? '<span style="display:inline-block; margin-left:6px; padding:1px 6px; border-radius:8px; background:#eef4fa; color:#1a5a8a; font-size:.72em;" title="このテンプレでの観測回数">' + oc + '回</span>'
+            + (ve > 0 ? '<span style="display:inline-block; margin-left:3px; padding:1px 6px; border-radius:8px; background:#fff5e6; color:#7a4a00; font-size:.72em;" title="うち動画が捕捉できた回数 (detail 判定のシグナル)">📹 ' + ve + '</span>' : '')
+        : '';
+      // Samples — collapsible. Show them so the operator can SEE what
+      // concrete URLs got collapsed into this template (= make
+      // templatization tangible).
+      const samples = t.samples || [];
+      const sampleId = 'hr-samples-' + idx;
+      const sampleBlock = samples.length
+        ? '<details style="margin-top:4px;"><summary style="cursor:pointer; color:#5b3aa6; font-size:.78em;">この変換に含まれる実 URL を見る (' + samples.length + ')</summary>' +
+          '<ul style="margin:4px 0 0 14px; padding:0; font-size:.78em; color:#555; list-style:disc;">' +
+          samples.map(u => '<li style="word-break:break-all;"><a href="' + _hostRoleEsc(u) + '" target="_blank" rel="noopener" style="color:#1a5a8a;">' + _hostRoleEsc(u) + '</a></li>').join('') +
+          '</ul></details>'
+        : (oc > 0
+            ? '<div style="margin-top:4px; color:#aaa; font-size:.78em;">(実 URL のサンプル取得失敗 — host_url_history 未配置の可能性)</div>'
+            : '');
+      return '<tr style="border-bottom:1px solid #eef0f4;">' +
+        '<td style="padding:5px 6px; vertical-align:top; font-size:.85em;"><code style="font-family:monospace; color:#1a5a8a;">' + _hostRoleEsc(t.url_template) + '</code>' + ovTag + obsPills + sampleBlock + '</td>' +
+        '<td style="padding:5px 6px; vertical-align:top; font-size:.82em; color:#666;">' + _hostRoleEsc(auto.value || '—') + ' (' + autoConf + ')<br><small>' + _hostRoleEsc(auto.reason || '') + '</small></td>' +
+        '<td style="padding:5px 6px; vertical-align:top;"><div style="display:flex; flex-wrap:wrap; gap:3px;">' + choices + '</div>' + clearBtn + '</td>' +
+        '</tr>';
+    }).join('');
+    if (tblHost) {
+      tblHost.innerHTML = '<div style="max-height:280px; overflow:auto;"><table style="width:100%; border-collapse:collapse;">' +
+        '<thead><tr style="background:#f0f2f5;"><th style="text-align:left; padding:5px 6px; font-size:.82em; color:#444;">URL テンプレ</th><th style="text-align:left; padding:5px 6px; font-size:.82em; color:#444;">自動判定</th><th style="text-align:left; padding:5px 6px; font-size:.82em; color:#444;">役割を訂正</th></tr></thead><tbody>' +
+        rows + '</tbody></table></div>';
+      // Wire choice clicks (delegate).
+      tblHost.querySelectorAll('button.hr-choice').forEach(b => {
+        b.addEventListener('click', async () => {
+          const ok = await _hostRoleSetOverride(b.dataset.host, b.dataset.tpl, b.dataset.val);
+          if (ok) loadHostUrlRoles(host);
+        });
+      });
+      tblHost.querySelectorAll('button.hr-clear').forEach(b => {
+        b.addEventListener('click', async () => {
+          const ok = await _hostRoleSetOverride(b.dataset.host, b.dataset.tpl, '');
+          if (ok) loadHostUrlRoles(host);
+        });
+      });
+    }
+  } catch (e) {
+    if (tblHost) tblHost.innerHTML = '<div style="color:#933; padding:8px 0;">取得失敗: ' + _hostRoleEsc((e && e.message) ? e.message : ('' + e)) + '</div>';
+  }
+}
+
+async function _hostRoleSetOverride(host, tpl, role) {
+  try {
+    const r = await fetch('/hosts/' + encodeURIComponent(host) + '/url-role-overrides', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url_template: tpl, role }),
+    });
+    if (!r.ok) {
+      alert('保存に失敗: HTTP ' + r.status + '  ' + (await r.text()).slice(0, 200));
+      return false;
+    }
+    return true;
+  } catch (e) {
+    alert('通信に失敗: ' + (e && e.message ? e.message : e));
+    return false;
+  }
 }
 
 async function saveHostModal() {
@@ -330,19 +687,20 @@ function _pasteCookieTemplate() {
       }, 250);
     });
   }
-  // Close on Escape, click-outside.
+  // Close detail pane on Escape (master-detail mode -- there's no modal
+  // overlay to click outside of anymore).
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      const m = _hostModalEl();
-      if (m && m.style.display === 'flex') closeHostModal();
+    if (e.key !== 'Escape') return;
+    const mount = document.getElementById('hostDetailMount');
+    if (mount && mount.style.display !== 'none') {
+      // Don't hijack Escape while typing in a text/textarea input -- the
+      // operator may be trying to dismiss an autocomplete or revert an
+      // inline edit, not close the whole pane.
+      const tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      closeHostModal();
     }
   });
-  const m = _hostModalEl();
-  if (m) {
-    m.addEventListener('click', (e) => {
-      if (e.target === m) closeHostModal();
-    });
-  }
 
   // Refresh the table whenever the Hosts tab is activated.
   document.querySelectorAll('#tabs .tab').forEach(btn => {

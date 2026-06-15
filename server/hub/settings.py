@@ -191,6 +191,24 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # Engine slug registered in the Engines tab.  When empty, falls back
     # to env PAPRIKA_R1_DISTILLER_ENGINE (legacy compat) → "deepseek-r1".
     "reasoning_judge_engine": ("", "str"),
+    # Blind-judge: when ON (default), the codegen-loop judge prompt OMITS
+    # the agent script, stdout tail, and stderr tail — it must rule on
+    # asset counts + exit_code + screenshot + (for reasoning judge) the
+    # perception facts alone. Goal: stop the judge being persuaded by
+    # the maker's narrative. Aligns with the "evaluator-optimizer"
+    # pattern and the 0xCodez 14-step "the gate must be objective —
+    # never 'a second agent with an opinion'" principle.
+    "judge_blind_mode": (True, "bool"),
+    # Objective gates short-circuit: when ON (default), unambiguous
+    # objective evidence settles the verdict BEFORE the LLM judge is
+    # called. Currently implemented (server/hub/iterative_codegen.py
+    # _objective_pregate):
+    #   * video-intent goals + ≥1 video file in assets   → satisfied=True
+    #   * video-intent goals + 0 video files in assets   → satisfied=False
+    # Other intents fall through to judge. Saves an LLM round trip on
+    # the easy cases and removes the judge as the FINAL gate on them
+    # (it stays advisory for ambiguous cases).
+    "judge_objective_gates_first": (True, "bool"),
     # Reasoning DISTILLER (deep HostKnowledge updates from job outcomes, incl.
     # 課題/blocked pages via the eye's perception). Abstracted from the
     # DeepSeek-specific "R1" name -- any reasoning engine. mode: off/on/new
@@ -203,6 +221,34 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # recover). See server/hub/_page_role.py. Default OFF so operators can opt
     # in after the role tables warm up. Detected-video fetches always bypass.
     "escalate_page_role_gate": (False, "bool"),
+    # Nightly review subagent: runs once per day at the configured UTC hour,
+    # picks hosts with notable failure/review activity in the last 24h, and
+    # writes a fresh per-host strategy digest into host_strategy via the
+    # reasoning engine. Cross-hub safe (Redis lease — only ONE hub per day).
+    # Read-only: never mutates skills / conventions / fetch_recipes /
+    # HostKnowledge — only host_strategy gets updated. Operator-edited
+    # digests (updated_by='operator') are preserved. See
+    # server/hub/_nightly_review.py.
+    "nightly_review_enabled": (False, "bool"),
+    "nightly_review_hour_utc": (16, "int"),     # 16 UTC = 01 JST
+    "nightly_review_max_hosts": (30, "int"),
+    # Per-job token kill-switch (codegen-loop / rerun). Cumulative
+    # prompt+completion tokens across ALL LLM calls inside one job
+    # (codegen, judge, perception, reasoning judge). When the running
+    # total crosses this, the orchestrator aborts with a clean failure
+    # ("token budget exceeded: X / Y tokens") instead of letting the
+    # iteration loop burn through max_attempts. 0 = unlimited (legacy).
+    # See server/hub/codegen.py:check_job_token_budget (called at the
+    # start of each codegen-loop attempt). 500_000 covers normal 3-
+    # attempt runs with vision perception + reasoning judge comfortably.
+    "job_max_tokens": (500_000, "int"),
+    # Skill audit warn threshold: when an `auto`-tier skill or
+    # convention crosses this use_count without being promoted
+    # (= operator-reviewed), the admin UI surfaces a 監査要 warning
+    # badge. Reflects the 0xCodez 14-step Tier 3 guidance that skills
+    # are prompt-injection vectors and need operator review before
+    # heavy reliance. 0 disables the warning.
+    "skill_audit_warn_threshold": (10, "int"),
     # ---- Database: MariaDB -----------------------------------------------
     # External MariaDB / MySQL connection for persistent structured data.
     # When configured and reachable, the hub can migrate job state,
@@ -262,6 +308,17 @@ _SCHEMA: dict[str, tuple[Any, str]] = {
     # env. Lets the operator arm/disarm from the Settings UI with no hub restart
     # (re-evaluated every pass, cross-hub via settings).
     "salvage_enabled": (False, "bool"),
+    # ---- Storage capacity monitor (MinIO) -------------------------------
+    # The background sampler in server/hub/_storage_metrics.py snapshots
+    # MinIO's /minio/v2/metrics/cluster every `storage_sample_interval_s`
+    # seconds and writes one row to storage_capacity_samples for the admin-
+    # UI trend chart. `warn_percent` / `crit_percent` flip the admin
+    # banner from blue→amber→red. `keep_days` bounds the table (a 5-min
+    # sample for 60 days is ~17k rows = tiny).
+    "storage_sample_interval_s": (300, "int"),
+    "storage_sample_keep_days": (60, "int"),
+    "storage_capacity_warn_percent": (85, "int"),
+    "storage_capacity_crit_percent": (95, "int"),
 }
 
 
