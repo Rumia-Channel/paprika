@@ -1031,8 +1031,16 @@ class WorkerRegistry:
                     decoded.append(None)
             return decoded
 
+        # Decode INLINE, not via asyncio.to_thread. These ~57 rows are <1ms of
+        # json.loads. to_thread hands them to the default ThreadPoolExecutor,
+        # which under load is saturated by heavier offloaded work (asset
+        # mirror_file, /jobs row deser, HTML parse -- see hub-eventloop-stalls).
+        # When saturated, this tiny decode queues behind them and stats_async's
+        # 1.5s wait_for FIRES EVERY TIME -> _fetch_known_workers returns [] ->
+        # the Workers tab collapses to local-hub-only and nginx round-robin
+        # flaps the count (8 <-> 57). A <1ms inline decode beats that failure.
         try:
-            _decoded_rows = await asyncio.to_thread(_decode_rows, _raw_rows)
+            _decoded_rows = _decode_rows(_raw_rows)
         except Exception:
             _decoded_rows = [None] * len(wids)
         for _i, wid in enumerate(wids):
